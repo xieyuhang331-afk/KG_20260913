@@ -1,0 +1,66 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+
+# Node / Vite
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# Logs and runtime artifacts
+*.log
+logs/
+tmp/
+temp/
+artifacts/
+
+# Database dumps and local database files
+*.dump
+*.backup
+*.bak
+*.sqlite
+*.sqlite3
+*.db
+pgdata/
+db-data/
+dumps/
+backups/
+
+# IDE and operating system
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Synology metadata and conflict files
+@eaDir/
+.SynologyWorkingDirectory/
+*conflicted copy*
+*冲突*
