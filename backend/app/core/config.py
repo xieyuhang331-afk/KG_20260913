@@ -1,0 +1,57 @@
+from functools import lru_cache
+import json
+import os
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+def require_secret(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"Required secret environment variable is missing: {name}")
+    return value
+
+
+class Settings(BaseModel):
+    service_name: str = "KG_20260727"
+    version: str = "0.1.0"
+    environment: str = "local"
+    database_driver: str = "postgresql+asyncpg"
+    database_host: str = "localhost"
+    database_port: int = 5432
+    database_name: str = "kg_20260727"
+    database_user: str = "kg_app"
+    database_password: str
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 120
+    auth_context_map: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    async_runtime: str = "Celery + RabbitMQ"
+    file_storage_backend: str = "MinIO"
+    celery_queues: tuple[str, ...] = (
+        "ai",
+        "judgment",
+        "ocr",
+        "report",
+        "settlement",
+        "notification",
+    )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings(
+        environment=os.getenv("KG_ENV", "local"),
+        database_host=os.getenv("KG_DATABASE_HOST", "localhost"),
+        database_port=int(os.getenv("KG_DATABASE_PORT", "5432")),
+        database_name=os.getenv("KG_DATABASE_NAME", "kg_20260727"),
+        database_user=os.getenv("KG_DATABASE_USER", "kg_app"),
+        database_password=require_secret("KG_DATABASE_PASSWORD"),
+        jwt_secret_key=require_secret("KG_JWT_SECRET_KEY"),
+        jwt_algorithm=os.getenv("KG_JWT_ALGORITHM", "HS256"),
+        jwt_access_token_expire_minutes=int(
+            os.getenv("KG_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
+        ),
+        auth_context_map=json.loads(os.getenv("KG_AUTH_CONTEXT_MAP", "{}")),
+    )

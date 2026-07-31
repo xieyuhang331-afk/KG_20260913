@@ -1,0 +1,2 @@
+"""Product module placeholder."""
+

@@ -1,0 +1,22 @@
+[project]
+name = "kg-20260727-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.133.0",
+  "pydantic>=2.13.0",
+  "uvicorn[standard]>=0.35.0",
+  "httpx2>=2.9.1",
+  "sqlalchemy>=2.0.0",
+  "asyncpg>=0.30.0",
+  "alembic>=1.16.0",
+  "celery>=5.4.0",
+  "redis>=6.0.0",
+  "python-multipart>=0.0.20",
+]
+
+[tool.kg_20260727]
+backend = "FastAPI modular monolith"
+database = "PostgreSQL 16 + TimescaleDB"
+async_runtime = "Celery + RabbitMQ"
+file_storage = "MinIO"

@@ -1,0 +1,2 @@
+"""Member module placeholder."""
+
