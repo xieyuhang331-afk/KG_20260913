@@ -113,17 +113,23 @@ jobs:
       KG_DATABASE_HOST: 127.0.0.1
       KG_DATABASE_PORT: '5432'
       KG_DATABASE_NAME: kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_DATABASE_USER: postgres
-      KG_DATABASE_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      KG_DATABASE_USER: kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_DATABASE_PASSWORD: ci-app-${{ github.run_id }}-${{ github.run_attempt }}
       KG_JWT_SECRET_KEY: ci-jwt-${{ github.run_id }}-${{ github.run_attempt }}-ephemeral-only
-      KG_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_ROLE_SEPARATION: '1'
+      KG_TEST_APPLICATION_ROLE: kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_MIGRATION_ROLE: kg_ci_migration_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_READONLY_ROLE: kg_ci_readonly_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_DATABASE_URL: postgresql+asyncpg://kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}:ci-app-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_MIGRATION_DATABASE_URL: postgresql+asyncpg://kg_ci_migration_${{ github.run_id }}_${{ github.run_attempt }}:ci-migration-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_TEST_READONLY_DATABASE_URL: postgresql+asyncpg://kg_ci_readonly_${{ github.run_id }}_${{ github.run_attempt }}:ci-readonly-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
     services:
       timescaledb:
         image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          POSTGRES_PASSWORD: ci-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           TIMESCALEDB_TELEMETRY: off
         ports:
           - 5432:5432
@@ -150,22 +156,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export PGPASSWORD="$KG_DATABASE_PASSWORD"
+          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           expected_name="kg_it_${KG_TEST_RUN_ID}"
           if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
             echo 'Refusing to create a database outside the current ephemeral test run.'
             exit 1
           fi
-          createdb --host="$KG_DATABASE_HOST" --port="$KG_DATABASE_PORT" --username="$KG_DATABASE_USER" "$KG_DATABASE_NAME"
+          createdb --host="$KG_DATABASE_HOST" --port="$KG_DATABASE_PORT" --username=postgres "$KG_DATABASE_NAME"
           psql \
             --host="$KG_DATABASE_HOST" \
             --port="$KG_DATABASE_PORT" \
-            --username="$KG_DATABASE_USER" \
+            --username=postgres \
             --dbname=postgres \
             --set=ON_ERROR_STOP=1 \
             --set=database_name="$KG_DATABASE_NAME" \
             --set=sentinel="kg-test-disposable:${KG_TEST_RUN_ID}" <<'SQL'
           COMMENT ON DATABASE :"database_name" IS :'sentinel';
+          SQL
+
+      - name: Provision isolated validation roles
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          psql \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username=postgres \
+            --dbname="$KG_DATABASE_NAME" \
+            --set=ON_ERROR_STOP=1 \
+            --set=database_name="$KG_DATABASE_NAME" \
+            --set=migration_role="$KG_TEST_MIGRATION_ROLE" \
+            --set=migration_password="ci-migration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --set=application_role="$KG_TEST_APPLICATION_ROLE" \
+            --set=application_password="$KG_DATABASE_PASSWORD" \
+            --set=readonly_role="$KG_TEST_READONLY_ROLE" \
+            --set=readonly_password="ci-readonly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<'SQL'
+          CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"application_role" LOGIN PASSWORD :'application_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"readonly_role" LOGIN PASSWORD :'readonly_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE EXTENSION IF NOT EXISTS timescaledb;
+          ALTER DATABASE :"database_name" OWNER TO :"migration_role";
+          ALTER SCHEMA public OWNER TO :"migration_role";
+          REVOKE CREATE ON SCHEMA public FROM PUBLIC;
           SQL
 
       - name: Run PostgreSQL integration and migration tests
@@ -198,7 +231,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export PGPASSWORD="$KG_DATABASE_PASSWORD"
+          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           expected_name="kg_it_${KG_TEST_RUN_ID}"
           if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
             echo 'Refusing to drop a database outside the current ephemeral test run.'
@@ -209,7 +242,7 @@ jobs:
             --force \
             --host="$KG_DATABASE_HOST" \
             --port="$KG_DATABASE_PORT" \
-            --username="$KG_DATABASE_USER" \
+            --username=postgres \
             "$KG_DATABASE_NAME"
 
   frontend-build:

@@ -1,6 +1,8 @@
 import asyncio
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
@@ -48,6 +50,36 @@ def _get_test_database_target() -> tuple[str, DisposableDatabaseTarget]:
 
 def _get_test_database_url() -> str:
     database_url, _ = _get_test_database_target()
+    if not os.getenv("KG_TEST_MIGRATION_DATABASE_URL"):
+        return database_url
+    return _get_role_database_url("KG_TEST_MIGRATION_DATABASE_URL")
+
+
+def _get_application_database_url() -> str:
+    database_url, _ = _get_test_database_target()
+    return database_url
+
+
+def _get_readonly_database_url() -> str:
+    return _get_role_database_url("KG_TEST_READONLY_DATABASE_URL")
+
+
+def _get_role_database_url(environment_name: str) -> str:
+    primary_url, primary_target = _get_test_database_target()
+    database_url = os.getenv(environment_name)
+    if not database_url:
+        pytest.skip(f"{environment_name} is required for role separation tests")
+    target = validate_test_database_target(
+        database_url,
+        integration_enabled=os.getenv("KG_RUN_PG_INTEGRATION"),
+        destructive_enabled=os.getenv("KG_ALLOW_DESTRUCTIVE_TEST_DATABASE"),
+        environment=os.getenv("KG_TEST_ENVIRONMENT"),
+        run_id=os.getenv("KG_TEST_RUN_ID"),
+    )
+    primary = urlparse(primary_url)
+    candidate = urlparse(database_url)
+    if target != primary_target or (candidate.hostname, candidate.port) != (primary.hostname, primary.port):
+        raise RuntimeError(f"{environment_name} must target the same ephemeral database endpoint")
     return database_url
 
 
@@ -109,10 +141,33 @@ class PgDatabase:
         asyncio.run(self._execute(sql))
 
 
+def _validated_role_name(environment_name: str) -> str:
+    role_name = os.getenv(environment_name, "")
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", role_name):
+        raise RuntimeError(f"{environment_name} must contain a safe PostgreSQL role name")
+    return role_name
+
+
+def _grant_test_role_permissions(database: PgDatabase) -> None:
+    if os.getenv("KG_TEST_ROLE_SEPARATION") != "1":
+        return
+
+    application_role = _validated_role_name("KG_TEST_APPLICATION_ROLE")
+    readonly_role = _validated_role_name("KG_TEST_READONLY_ROLE")
+    database.execute(f'GRANT USAGE ON SCHEMA public TO "{application_role}"')
+    database.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{application_role}"')
+    database.execute(f'GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{application_role}"')
+    database.execute(f'REVOKE INSERT, UPDATE, DELETE ON TABLE alembic_version FROM "{application_role}"')
+    database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{application_role}"')
+    database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
+    database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
+    database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{readonly_role}"')
+
+
 @pytest.fixture(scope="module")
 def pg_database():
-    database_url, target = _get_test_database_target()
-    database = PgDatabase(database_url)
+    _, target = _get_test_database_target()
+    database = PgDatabase(_get_test_database_url())
 
     sentinel = database.fetch_value(
         "SELECT shobj_description(oid, 'pg_database') "
@@ -127,13 +182,14 @@ def pg_database():
     current_revision = database.fetch_value("SELECT version_num FROM alembic_version")
     if current_revision != REQUIRED_HEAD_REVISION:
         raise RuntimeError(f"expected Alembic head {REQUIRED_HEAD_REVISION}, got {current_revision}")
+    _grant_test_role_permissions(database)
 
     yield database
 
 
 @pytest.fixture
 def real_db_client(pg_database):
-    database_url = _get_test_database_url()
+    database_url = _get_application_database_url()
 
     from fastapi.testclient import TestClient
     from sqlalchemy.pool import NullPool

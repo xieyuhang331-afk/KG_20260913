@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
@@ -116,3 +117,40 @@ class IntegrationDatabaseSafetyTests(TestCase):
             "FROM pg_database WHERE datname = current_database()"
         )
         database.execute.assert_not_called()
+
+    def test_migration_role_url_must_pass_the_same_uat_guard(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KG_RUN_PG_INTEGRATION": "1",
+                "KG_ALLOW_DESTRUCTIVE_TEST_DATABASE": "1",
+                "KG_TEST_ENVIRONMENT": "local_ephemeral",
+                "KG_TEST_RUN_ID": self.run_id,
+                "KG_TEST_DATABASE_URL": self.database_url,
+                "KG_TEST_MIGRATION_DATABASE_URL": (
+                    "postgresql+asyncpg://migration:secret@localhost:15432/kg_f003_timescale_test"
+                ),
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "never a disposable test target"):
+                conftest._get_test_database_url()
+
+    def test_role_urls_must_use_the_primary_ephemeral_endpoint(self):
+        migration_url = (
+            f"postgresql+asyncpg://migration:secret@localhost:55433/kg_it_{self.run_id}"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "KG_RUN_PG_INTEGRATION": "1",
+                "KG_ALLOW_DESTRUCTIVE_TEST_DATABASE": "1",
+                "KG_TEST_ENVIRONMENT": "local_ephemeral",
+                "KG_TEST_RUN_ID": self.run_id,
+                "KG_TEST_DATABASE_URL": self.database_url,
+                "KG_TEST_MIGRATION_DATABASE_URL": migration_url,
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "same ephemeral database endpoint"):
+                conftest._get_test_database_url()
