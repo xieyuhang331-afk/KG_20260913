@@ -167,7 +167,8 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
 @pytest.fixture(scope="module")
 def pg_database():
     _, target = _get_test_database_target()
-    database = PgDatabase(_get_test_database_url())
+    migration_database_url = _get_test_database_url()
+    database = PgDatabase(migration_database_url)
 
     sentinel = database.fetch_value(
         "SELECT shobj_description(oid, 'pg_database') "
@@ -177,7 +178,7 @@ def pg_database():
 
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
     database.execute("CREATE SCHEMA public")
-    command.upgrade(_build_alembic_config(database_url), "head")
+    command.upgrade(_build_alembic_config(migration_database_url), "head")
 
     current_revision = database.fetch_value("SELECT version_num FROM alembic_version")
     if current_revision != REQUIRED_HEAD_REVISION:
