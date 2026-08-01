@@ -111,4 +111,8 @@ class IntegrationDatabaseSafetyTests(TestCase):
         ):
             next(fixture())
 
+        database.fetch_value.assert_called_once_with(
+            "SELECT shobj_description(oid, 'pg_database') "
+            "FROM pg_database WHERE datname = current_database()"
+        )
         database.execute.assert_not_called()

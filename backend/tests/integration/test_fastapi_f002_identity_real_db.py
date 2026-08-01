@@ -14,10 +14,10 @@ def _register(real_db_client, phone: str):
 
 
 def _member_headers(user_id: int) -> dict:
-    return {
-        "x-user-id": str(user_id),
-        "x-user-role": "member",
-    }
+    from app.core.security import create_access_token
+
+    token = create_access_token({"sub": str(user_id), "role": "member"})
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _identity_payload(real_name: str = "Zhang San", id_card: str = "110101199001011234") -> dict:
@@ -91,4 +91,3 @@ def test_f002_real_db_identity_user_not_found_returns_404(real_db_client):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
-
