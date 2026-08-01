@@ -97,6 +97,108 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  backend-integration:
+    name: Backend Integration
+    needs: repository-safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      KG_RUN_PG_INTEGRATION: '1'
+      KG_ALLOW_DESTRUCTIVE_TEST_DATABASE: '1'
+      KG_TEST_ENVIRONMENT: ci_ephemeral
+      KG_TEST_RUN_ID: gh_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_DATABASE_HOST: 127.0.0.1
+      KG_DATABASE_PORT: '5432'
+      KG_DATABASE_NAME: kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
+      KG_DATABASE_USER: postgres
+      KG_DATABASE_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      KG_JWT_SECRET_KEY: ci-jwt-${{ github.run_id }}-${{ github.run_attempt }}-ephemeral-only
+      KG_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          TIMESCALEDB_TELEMETRY: off
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install test dependencies
+        run: python -m pip install -e . pytest==9.1.1
+
+      - name: Create disposable test database
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGPASSWORD="$KG_DATABASE_PASSWORD"
+          expected_name="kg_it_${KG_TEST_RUN_ID}"
+          if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
+            echo 'Refusing to create a database outside the current ephemeral test run.'
+            exit 1
+          fi
+          createdb --host="$KG_DATABASE_HOST" --port="$KG_DATABASE_PORT" --username="$KG_DATABASE_USER" "$KG_DATABASE_NAME"
+          psql \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username="$KG_DATABASE_USER" \
+            --dbname=postgres \
+            --set=ON_ERROR_STOP=1 \
+            --set=database_name="$KG_DATABASE_NAME" \
+            --set=sentinel="kg-test-disposable:${KG_TEST_RUN_ID}" <<'SQL'
+          COMMENT ON DATABASE :"database_name" IS :'sentinel';
+          SQL
+
+      - name: Run PostgreSQL integration and migration tests
+        run: python -m pytest tests/integration -q --junitxml=pytest-integration-report.xml
+
+      - name: Upload integration test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/pytest-integration-report.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Drop disposable test database
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGPASSWORD="$KG_DATABASE_PASSWORD"
+          expected_name="kg_it_${KG_TEST_RUN_ID}"
+          if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
+            echo 'Refusing to drop a database outside the current ephemeral test run.'
+            exit 1
+          fi
+          dropdb \
+            --if-exists \
+            --force \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username="$KG_DATABASE_USER" \
+            "$KG_DATABASE_NAME"
+
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-latest

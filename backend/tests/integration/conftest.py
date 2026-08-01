@@ -109,13 +109,13 @@ class PgDatabase:
         asyncio.run(self._execute(sql))
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def pg_database():
     database_url, target = _get_test_database_target()
     database = PgDatabase(database_url)
 
     sentinel = database.fetch_value(
-        "SELECT obj_description(oid, 'pg_database') "
+        "SELECT shobj_description(oid, 'pg_database') "
         "FROM pg_database WHERE datname = current_database()"
     )
     validate_database_sentinel(sentinel, target)
@@ -136,12 +136,13 @@ def real_db_client(pg_database):
     database_url = _get_test_database_url()
 
     from fastapi.testclient import TestClient
+    from sqlalchemy.pool import NullPool
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.core.database import get_db_session
     from app.main import create_app
 
-    engine = create_async_engine(database_url, pool_pre_ping=True)
+    engine = create_async_engine(database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     app = create_app()
 

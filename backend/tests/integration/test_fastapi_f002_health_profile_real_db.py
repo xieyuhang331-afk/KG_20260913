@@ -16,10 +16,10 @@ def _register(real_db_client, phone: str):
 
 
 def _member_headers(user_id: int) -> dict:
-    return {
-        "x-user-id": str(user_id),
-        "x-user-role": "member",
-    }
+    from app.core.security import create_access_token
+
+    token = create_access_token({"sub": str(user_id), "role": "member"})
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _health_profile_payload() -> dict:

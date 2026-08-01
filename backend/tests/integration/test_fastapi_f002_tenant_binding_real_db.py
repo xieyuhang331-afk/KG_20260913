@@ -14,10 +14,10 @@ def _register(real_db_client, phone: str):
 
 
 def _headers(role: str = "member", *, user_id: int) -> dict:
-    return {
-        "x-user-id": str(user_id),
-        "x-user-role": role,
-    }
+    from app.core.security import create_access_token
+
+    token = create_access_token({"sub": str(user_id), "role": role})
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _seed_tenants(pg_database):
