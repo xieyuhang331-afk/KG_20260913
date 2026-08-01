@@ -86,7 +86,7 @@ jobs:
           PY
 
       - name: Run non-database regression
-        run: python -m pytest tests --ignore=tests/integration -q --junitxml=pytest-report.xml
+        run: python -m pytest tests --ignore=tests/integration --ignore=tests/uuid_validation -q --junitxml=pytest-report.xml
 
       - name: Upload backend test report
         if: always()
@@ -171,12 +171,25 @@ jobs:
       - name: Run PostgreSQL integration and migration tests
         run: python -m pytest tests/integration -q --junitxml=pytest-integration-report.xml
 
+      - name: Install pinned UUIDv7 validation candidate
+        run: >-
+          python -m pip install
+          --only-binary=:all:
+          --no-deps
+          --require-hashes
+          -r tests/uuid_validation/requirements-linux.txt
+
+      - name: Run UUIDv7 library validation
+        run: python -m pytest tests/uuid_validation -q --junitxml=pytest-uuid-validation-report.xml
+
       - name: Upload integration test report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}
-          path: backend/pytest-integration-report.xml
+          path: |
+            backend/pytest-integration-report.xml
+            backend/pytest-uuid-validation-report.xml
           if-no-files-found: warn
           retention-days: 14
 
