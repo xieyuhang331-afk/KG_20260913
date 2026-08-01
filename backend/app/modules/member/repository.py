@@ -1,0 +1,39 @@
+from typing import Protocol
+from uuid import UUID
+
+from .entities import Member
+from .value_objects import MemberNo
+
+
+class MemberRepositoryError(RuntimeError):
+    pass
+
+
+class MemberNotFoundError(MemberRepositoryError):
+    pass
+
+
+class MemberUniquenessConflictError(MemberRepositoryError):
+    pass
+
+
+class MemberVersionConflictError(MemberRepositoryError):
+    pass
+
+
+class MemberPersistenceUnavailableError(MemberRepositoryError):
+    pass
+
+
+class MemberRepository(Protocol):
+    def get_by_id(self, member_id: UUID) -> Member: ...
+
+    def get_by_member_no(self, member_no: MemberNo) -> Member: ...
+
+    def is_member_no_available(self, member_no: MemberNo) -> bool: ...
+
+    def add(self, member: Member) -> None: ...
+
+    def _save_existing(self, member: Member, expected_version: object) -> None: ...
+
+    save = _save_existing

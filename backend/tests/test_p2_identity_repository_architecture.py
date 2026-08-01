@@ -13,7 +13,7 @@ def _member_trees():
     }
 
 
-def test_r0_contains_no_repository_or_infrastructure_production_files():
+def test_r1_repository_file_contains_only_abstract_contracts():
     forbidden_files = {
         "api.py",
         "database.py",
@@ -21,12 +21,56 @@ def test_r0_contains_no_repository_or_infrastructure_production_files():
         "migrations.py",
         "models.py",
         "orm.py",
-        "repository.py",
         "router.py",
         "schemas.py",
     }
 
     assert forbidden_files.isdisjoint(path.name for path in MEMBER_DIR.glob("*.py"))
+
+    repository_path = MEMBER_DIR / "repository.py"
+    if not repository_path.exists():
+        return
+
+    tree = ast.parse(repository_path.read_text(encoding="utf-8"))
+    assert all(
+        isinstance(node, (ast.ClassDef, ast.Import, ast.ImportFrom))
+        for node in tree.body
+    )
+
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert set(classes) == {
+        "MemberNotFoundError",
+        "MemberPersistenceUnavailableError",
+        "MemberRepository",
+        "MemberRepositoryError",
+        "MemberUniquenessConflictError",
+        "MemberVersionConflictError",
+    }
+
+    repository = classes["MemberRepository"]
+    assert any(
+        isinstance(base, ast.Name) and base.id == "Protocol"
+        for base in repository.bases
+    )
+    for method in (
+        node for node in repository.body if isinstance(node, ast.FunctionDef)
+    ):
+        assert len(method.body) == 1
+        assert isinstance(method.body[0], ast.Expr)
+        assert isinstance(method.body[0].value, ast.Constant)
+        assert method.body[0].value.value is Ellipsis
+
+    assignments = [
+        node for node in repository.body if isinstance(node, ast.Assign)
+    ]
+    assert len(assignments) == 1
+    assert len(assignments[0].targets) == 1
+    assert isinstance(assignments[0].targets[0], ast.Name)
+    assert assignments[0].targets[0].id == "save"
+    assert isinstance(assignments[0].value, ast.Name)
+    assert assignments[0].value.id == "_save_existing"
 
 
 def test_member_module_has_no_persistence_or_api_dependencies():
