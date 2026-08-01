@@ -44,7 +44,7 @@ async def _assert_restricted_role(database_url: str, expected_role: str, *, read
         try:
             statement = (
                 'INSERT INTO "user" (id, phone, password_hash, role) '
-                "VALUES (-900001, 'role-separation-denied', 'denied', 'member')"
+                "VALUES (-900001, '13900009999', 'denied', 'member')"
                 if readonly
                 else "UPDATE alembic_version SET version_num = version_num"
             )
