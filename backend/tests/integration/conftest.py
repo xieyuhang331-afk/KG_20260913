@@ -1,17 +1,21 @@
 import asyncio
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
 
+from tests.integration.database_safety import (
+    DisposableDatabaseTarget,
+    validate_database_sentinel,
+    validate_test_database_target,
+)
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-PRODUCTION_DATABASE_NAMES = {"postgres", "template0", "template1", "kg", "kg_prod", "kg_production"}
 REQUIRED_HEAD_REVISION = "20260728_0006"
 
 
@@ -28,24 +32,23 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_pg)
 
 
-def _get_test_database_url() -> str:
+def _get_test_database_target() -> tuple[str, DisposableDatabaseTarget]:
     database_url = os.getenv("KG_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("KG_TEST_DATABASE_URL is required for PostgreSQL integration tests")
-    _assert_safe_test_database_url(database_url)
+    target = validate_test_database_target(
+        database_url,
+        integration_enabled=os.getenv("KG_RUN_PG_INTEGRATION"),
+        destructive_enabled=os.getenv("KG_ALLOW_DESTRUCTIVE_TEST_DATABASE"),
+        environment=os.getenv("KG_TEST_ENVIRONMENT"),
+        run_id=os.getenv("KG_TEST_RUN_ID"),
+    )
+    return database_url, target
+
+
+def _get_test_database_url() -> str:
+    database_url, _ = _get_test_database_target()
     return database_url
-
-
-def _assert_safe_test_database_url(database_url: str) -> None:
-    parsed = urlparse(database_url)
-    if parsed.scheme not in {"postgresql", "postgresql+psycopg", "postgresql+psycopg2", "postgresql+asyncpg"}:
-        raise RuntimeError("KG_TEST_DATABASE_URL must use a PostgreSQL driver")
-
-    database_name = parsed.path.lstrip("/")
-    if not database_name:
-        raise RuntimeError("KG_TEST_DATABASE_URL must include a database name")
-    if database_name in PRODUCTION_DATABASE_NAMES or "test" not in database_name.lower():
-        raise RuntimeError("KG_TEST_DATABASE_URL must point to a dedicated test database")
 
 
 def _build_alembic_config(database_url: str) -> Config:
@@ -108,8 +111,14 @@ class PgDatabase:
 
 @pytest.fixture(scope="session")
 def pg_database():
-    database_url = _get_test_database_url()
+    database_url, target = _get_test_database_target()
     database = PgDatabase(database_url)
+
+    sentinel = database.fetch_value(
+        "SELECT obj_description(oid, 'pg_database') "
+        "FROM pg_database WHERE datname = current_database()"
+    )
+    validate_database_sentinel(sentinel, target)
 
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
     database.execute("CREATE SCHEMA public")
