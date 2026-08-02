@@ -54,8 +54,27 @@ def test_r1_repository_file_contains_only_abstract_contracts():
         isinstance(base, ast.Name) and base.id == "Protocol"
         for base in repository.bases
     )
+    async_methods = {
+        node.name: node
+        for node in repository.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert set(async_methods) == {
+        "_save_existing",
+        "add",
+        "get_by_id",
+        "get_by_member_no",
+        "is_member_no_available",
+    }
+    assert not {
+        node.name
+        for node in repository.body
+        if isinstance(node, ast.FunctionDef)
+    } & set(async_methods)
     for method in (
-        node for node in repository.body if isinstance(node, ast.FunctionDef)
+        node
+        for node in repository.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ):
         assert len(method.body) == 1
         assert isinstance(method.body[0], ast.Expr)
