@@ -139,4 +139,3 @@ def test_orm_at0_tests_have_no_bypass_or_dynamic_model():
         assert "sys" not in _imported_roots(tree)
         assert "__import__" not in _called_names(tree)
         assert forbidden_classes.isdisjoint(declared_classes)
-

@@ -141,4 +141,3 @@ class TestMemberOrmContract(TestCase):
         with self.subTest(scenario="UUID-001/python-boundary"):
             member_id_type = columns.member_id.type.python_type
             self.assertIs(member_id_type, uuid.UUID)
-
