@@ -60,11 +60,11 @@ def test_r1_repository_file_contains_only_abstract_contracts():
         if isinstance(node, ast.AsyncFunctionDef)
     }
     assert set(async_methods) == {
-        "_save_existing",
         "add",
         "get_by_id",
         "get_by_member_no",
         "is_member_no_available",
+        "save",
     }
     assert not {
         node.name
@@ -84,12 +84,7 @@ def test_r1_repository_file_contains_only_abstract_contracts():
     assignments = [
         node for node in repository.body if isinstance(node, ast.Assign)
     ]
-    assert len(assignments) == 1
-    assert len(assignments[0].targets) == 1
-    assert isinstance(assignments[0].targets[0], ast.Name)
-    assert assignments[0].targets[0].id == "save"
-    assert isinstance(assignments[0].value, ast.Name)
-    assert assignments[0].value.id == "_save_existing"
+    assert not assignments
 
 
 def test_member_module_has_no_persistence_or_api_dependencies():

@@ -117,4 +117,10 @@ def test_member_domain_contains_no_persistence_logic():
             elif isinstance(node, ast.ImportFrom):
                 assert (node.module or "").split(".", 1)[0] not in forbidden_modules
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                assert node.name not in forbidden_methods
+                if node.name not in forbidden_methods:
+                    continue
+                assert path.name == "repository.py"
+                assert len(node.body) == 1
+                assert isinstance(node.body[0], ast.Expr)
+                assert isinstance(node.body[0].value, ast.Constant)
+                assert node.body[0].value.value is Ellipsis

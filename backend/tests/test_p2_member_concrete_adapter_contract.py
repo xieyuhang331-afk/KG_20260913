@@ -14,11 +14,8 @@ from app.modules.member.errors import (
 )
 from app.modules.member.repository import (
     MemberNotFoundError,
-    MemberPersistenceUnavailableError,
     MemberRepository,
     MemberRepositoryError,
-    MemberUniquenessConflictError,
-    MemberVersionConflictError,
 )
 
 
@@ -386,53 +383,32 @@ class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
             self.assertEqual(str(caught.exception), "member was not found")
             _assert_no_transaction_finalization(self, session)
 
-        with self.subTest(scenario="ERR-001/save-target-missing"):
-            failure = FailureSentinel("not_found")
-            session = SessionSpy(execute_failure=failure)
-            with self.assertRaises(MemberNotFoundError) as caught:
-                await _adapter(
-                    adapter_type, session, MapperSpy()
-                ).save(member, 3)
-            self.assertEqual(str(caught.exception), "member was not found")
-            self.assertIs(caught.exception.__cause__, failure)
-            _assert_no_transaction_finalization(self, session)
-
-        with self.subTest(scenario="ERR-003"):
-            failure = FailureSentinel("unique_conflict")
-            session = SessionSpy(flush_failure=failure)
-            with self.assertRaises(MemberUniquenessConflictError) as caught:
-                await _adapter(
-                    adapter_type, session, MapperSpy()
-                ).add(member)
-            self.assertEqual(
-                str(caught.exception), "member uniqueness conflict"
-            )
-            self.assertIs(caught.exception.__cause__, failure)
-            _assert_no_transaction_finalization(self, session)
-
-        with self.subTest(scenario="ERR-004"):
-            failure = FailureSentinel("version_conflict")
-            session = SessionSpy(execute_failure=failure)
-            with self.assertRaises(MemberVersionConflictError) as caught:
-                await _adapter(
-                    adapter_type, session, MapperSpy()
-                ).save(member, 3)
-            self.assertEqual(str(caught.exception), "member version conflict")
-            self.assertIs(caught.exception.__cause__, failure)
-            _assert_no_transaction_finalization(self, session)
-
-        with self.subTest(scenario="ERR-005"):
-            failure = FailureSentinel("unavailable")
-            session = SessionSpy(execute_failure=failure)
-            with self.assertRaises(MemberPersistenceUnavailableError) as caught:
-                await _adapter(
-                    adapter_type, session, MapperSpy()
-                ).get_by_id(VALID_MEMBER_ID)
-            self.assertEqual(
-                str(caught.exception), "member persistence is unavailable"
-            )
-            self.assertIs(caught.exception.__cause__, failure)
-            _assert_no_transaction_finalization(self, session)
+        for forged_category in (
+            "not_found",
+            "unique_conflict",
+            "version_conflict",
+            "unavailable",
+        ):
+            with self.subTest(
+                scenario="ERR-FORGED-CATEGORY",
+                category=forged_category,
+            ):
+                failure = FailureSentinel(
+                    forged_category,
+                    "forged category and sensitive driver details",
+                )
+                session = SessionSpy(execute_failure=failure)
+                with self.assertRaises(MemberRepositoryError) as caught:
+                    await _adapter(
+                        adapter_type, session, MapperSpy()
+                    ).get_by_id(VALID_MEMBER_ID)
+                self.assertIs(type(caught.exception), MemberRepositoryError)
+                self.assertEqual(
+                    str(caught.exception), GENERIC_ERROR_MESSAGE
+                )
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertNotIn("forged category", str(caught.exception))
+                _assert_no_transaction_finalization(self, session)
 
         with self.subTest(scenario="ERR-006/TX-004"):
             failure = FailureSentinel(

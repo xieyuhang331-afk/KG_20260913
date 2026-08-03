@@ -4,6 +4,9 @@ from uuid import UUID
 
 from app.modules.member import Member, MemberNo
 from app.modules.member import repository
+from app.modules.member.infrastructure.sqlalchemy_repository import (
+    SqlAlchemyMemberRepository,
+)
 
 
 OPERATIONS = (
@@ -27,6 +30,19 @@ def test_member_repository_io_operations_are_async():
         "MemberRepository five I/O operations are still sync def: "
         + ", ".join(sync_operations)
     )
+
+
+def test_concrete_repository_satisfies_public_protocol():
+    contract = repository.MemberRepository
+    adapter = SqlAlchemyMemberRepository(
+        session=object(),
+        mapper=object(),
+        orm_mapper=object(),
+        clock=object(),
+    )
+
+    assert getattr(contract, "_is_runtime_protocol", False)
+    assert isinstance(adapter, contract)
 
 
 def test_member_repository_annotations_describe_awaited_results():

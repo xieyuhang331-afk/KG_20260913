@@ -179,24 +179,11 @@ class SqlAlchemyMemberRepository:
 
     @staticmethod
     def _raise_translated(exc: Exception) -> NoReturn:
-        category = getattr(exc, "category", None)
         if SqlAlchemyMemberRepository._is_member_no_unique_conflict(exc):
             error = MemberUniquenessConflictError(
                 "member uniqueness conflict"
             )
         elif SqlAlchemyMemberRepository._is_persistence_unavailable(exc):
-            error = MemberPersistenceUnavailableError(
-                "member persistence is unavailable"
-            )
-        elif category == "not_found":
-            error = MemberNotFoundError("member was not found")
-        elif category == "unique_conflict":
-            error = MemberUniquenessConflictError(
-                "member uniqueness conflict"
-            )
-        elif category == "version_conflict":
-            error = MemberVersionConflictError("member version conflict")
-        elif category == "unavailable":
             error = MemberPersistenceUnavailableError(
                 "member persistence is unavailable"
             )

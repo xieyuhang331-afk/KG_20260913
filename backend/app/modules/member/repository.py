@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from .entities import Member
@@ -25,6 +25,7 @@ class MemberPersistenceUnavailableError(MemberRepositoryError):
     pass
 
 
+@runtime_checkable
 class MemberRepository(Protocol):
     async def get_by_id(self, member_id: UUID) -> Member: ...
 
@@ -34,8 +35,6 @@ class MemberRepository(Protocol):
 
     async def add(self, member: Member) -> None: ...
 
-    async def _save_existing(
+    async def save(
         self, member: Member, expected_version: object
     ) -> None: ...
-
-    save = _save_existing

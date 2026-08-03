@@ -11,11 +11,8 @@ from app.modules.member import CreationSource, Member, MemberNo, MemberStatus
 from app.modules.member.errors import InvalidMemberIdError
 from app.modules.member.repository import (
     MemberNotFoundError,
-    MemberPersistenceUnavailableError,
     MemberRepository,
     MemberRepositoryError,
-    MemberUniquenessConflictError,
-    MemberVersionConflictError,
 )
 
 
@@ -394,68 +391,32 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
                 ).get_by_member_no(member.member_no)
             self.assertNoTransactionFinalization(session)
 
-        with self.subTest(scenario="ERR-NOT-FOUND/save"):
-            failure = FailureSentinel("not_found")
-            session = AsyncSessionSpy(execute_failure=failure)
-            mapper = MapperSpy(persistence_state=_state())
-            with self.assertRaises(MemberNotFoundError) as caught:
-                await _adapter(adapter_type, session, mapper).save(
-                    member, 3
+        for forged_category in (
+            "not_found",
+            "unique_conflict",
+            "version_conflict",
+            "unavailable",
+        ):
+            with self.subTest(
+                scenario="ERR-FORGED-CATEGORY",
+                category=forged_category,
+            ):
+                failure = FailureSentinel(
+                    forged_category,
+                    "forged category and sensitive driver details",
                 )
-            self.assertEqual(str(caught.exception), "member was not found")
-            self.assertIs(caught.exception.__cause__, failure)
-            self.assertNoTransactionFinalization(session)
-
-        with self.subTest(scenario="ERR-UNIQUE"):
-            failure = FailureSentinel("unique_conflict")
-            session = AsyncSessionSpy(flush_failure=failure)
-            mapper = MapperSpy(persistence_state=_state())
-            with self.assertRaises(MemberUniquenessConflictError) as caught:
-                await _adapter(adapter_type, session, mapper).add(member)
-            self.assertEqual(
-                str(caught.exception), "member uniqueness conflict"
-            )
-            self.assertIs(caught.exception.__cause__, failure)
-            self.assertNoTransactionFinalization(session)
-
-        with self.subTest(scenario="ERR-UNIQUE/save"):
-            failure = FailureSentinel("unique_conflict")
-            session = AsyncSessionSpy(execute_failure=failure)
-            mapper = MapperSpy(persistence_state=_state())
-            with self.assertRaises(MemberUniquenessConflictError) as caught:
-                await _adapter(adapter_type, session, mapper).save(
-                    member, 3
+                session = AsyncSessionSpy(execute_failure=failure)
+                with self.assertRaises(MemberRepositoryError) as caught:
+                    await _adapter(
+                        adapter_type, session, MapperSpy()
+                    ).get_by_id(VALID_MEMBER_ID)
+                self.assertIs(type(caught.exception), MemberRepositoryError)
+                self.assertEqual(
+                    str(caught.exception), GENERIC_ERROR_MESSAGE
                 )
-            self.assertEqual(
-                str(caught.exception), "member uniqueness conflict"
-            )
-            self.assertIs(caught.exception.__cause__, failure)
-            self.assertNoTransactionFinalization(session)
-
-        with self.subTest(scenario="ERR-VERSION"):
-            failure = FailureSentinel("version_conflict")
-            session = AsyncSessionSpy(execute_failure=failure)
-            mapper = MapperSpy(persistence_state=_state())
-            with self.assertRaises(MemberVersionConflictError) as caught:
-                await _adapter(adapter_type, session, mapper).save(
-                    member, 3
-                )
-            self.assertEqual(str(caught.exception), "member version conflict")
-            self.assertIs(caught.exception.__cause__, failure)
-            self.assertNoTransactionFinalization(session)
-
-        with self.subTest(scenario="ERR-UNAVAILABLE"):
-            failure = FailureSentinel("unavailable")
-            session = AsyncSessionSpy(execute_failure=failure)
-            with self.assertRaises(MemberPersistenceUnavailableError) as caught:
-                await _adapter(
-                    adapter_type, session, MapperSpy()
-                ).get_by_id(VALID_MEMBER_ID)
-            self.assertEqual(
-                str(caught.exception), "member persistence is unavailable"
-            )
-            self.assertIs(caught.exception.__cause__, failure)
-            self.assertNoTransactionFinalization(session)
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertNotIn("forged category", str(caught.exception))
+                self.assertNoTransactionFinalization(session)
 
         with self.subTest(scenario="ERR-GENERIC"):
             failure = FailureSentinel(
