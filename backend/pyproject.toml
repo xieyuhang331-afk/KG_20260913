@@ -13,6 +13,7 @@ dependencies = [
   "celery>=5.4.0",
   "redis>=6.0.0",
   "python-multipart>=0.0.20",
+  "uuid-utils==0.17.0",
 ]
 
 [tool.kg_20260727]
