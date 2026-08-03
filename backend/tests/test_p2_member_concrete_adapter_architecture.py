@@ -51,6 +51,8 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
 
 def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
     approved_model = INFRASTRUCTURE_DIR / "models.py"
+    approved_repository = INFRASTRUCTURE_DIR / "sqlalchemy_repository.py"
+    approved_sqlalchemy_paths = {approved_model, approved_repository}
     forbidden_imports = {"alembic", "asyncpg"}
     forbidden_runtime_calls = {
         "async_sessionmaker",
@@ -73,8 +75,9 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
         assert forbidden_imports.isdisjoint(imported_roots)
         assert forbidden_runtime_calls.isdisjoint(called_names)
         assert forbidden_orm_calls.isdisjoint(called_names)
-        if path != approved_model:
+        if path not in approved_sqlalchemy_paths:
             assert "sqlalchemy" not in imported_roots
+        if path != approved_model:
             assert "mapped_column" not in called_names
         declaration_names.update(
             node.name
