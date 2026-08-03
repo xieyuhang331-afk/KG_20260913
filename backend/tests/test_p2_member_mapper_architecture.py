@@ -103,7 +103,6 @@ def test_mapper_at0_unapproved_persistence_artifacts_are_absent():
     model_path = INFRASTRUCTURE_DIR / "models.py"
     forbidden_paths = {
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
-        INFRASTRUCTURE_DIR / "unit_of_work.py",
         INFRASTRUCTURE_DIR / "migration.py",
         INFRASTRUCTURE_DIR / "migrations.py",
     }

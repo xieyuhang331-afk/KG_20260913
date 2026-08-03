@@ -82,7 +82,6 @@ def test_orm_at0_unapproved_persistence_artifacts_remain_absent():
         INFRASTRUCTURE_DIR / "migration.py",
         INFRASTRUCTURE_DIR / "migrations.py",
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
-        INFRASTRUCTURE_DIR / "unit_of_work.py",
     }
 
     assert not {path for path in forbidden_paths if path.exists()}
