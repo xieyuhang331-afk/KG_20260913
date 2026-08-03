@@ -4,6 +4,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 MEMBER_DIR = BACKEND_ROOT / "app" / "modules" / "member"
+INFRASTRUCTURE_DIR = MEMBER_DIR / "infrastructure"
 TEST_DIR = BACKEND_ROOT / "tests"
 
 
@@ -11,15 +12,93 @@ def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
-def test_ct0_persistence_production_artifacts_are_absent():
+def _called_names(tree: ast.AST) -> set[str]:
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            names.add(node.func.attr)
+    return names
+
+
+def _imported_roots(tree: ast.AST) -> set[str]:
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            roots.add((node.module or "").split(".", 1)[0])
+    return roots
+
+
+def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
+    approved_adapter = INFRASTRUCTURE_DIR / "sqlalchemy_repository.py"
     forbidden_paths = {
-        MEMBER_DIR / "infrastructure" / "mapper.py",
-        MEMBER_DIR / "infrastructure" / "models.py",
-        MEMBER_DIR / "infrastructure" / "sqlalchemy_repository.py",
-        MEMBER_DIR / "infrastructure" / "unit_of_work.py",
+        INFRASTRUCTURE_DIR / "migration.py",
+        INFRASTRUCTURE_DIR / "migrations.py",
+        INFRASTRUCTURE_DIR / "mapper.py",
+        INFRASTRUCTURE_DIR / "models.py",
+        INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
+        INFRASTRUCTURE_DIR / "unit_of_work.py",
     }
 
+    assert approved_adapter.is_file()
     assert not {path for path in forbidden_paths if path.exists()}
+
+
+def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
+    forbidden_imports = {"alembic", "asyncpg", "sqlalchemy"}
+    forbidden_runtime_calls = {
+        "async_sessionmaker",
+        "connect",
+        "create_async_engine",
+        "create_engine",
+        "declarative_base",
+        "downgrade",
+        "run_migrations",
+        "sessionmaker",
+        "upgrade",
+    }
+    forbidden_orm_calls = {"mapped_column", "relationship", "registry"}
+    imported_roots = set()
+    called_names = set()
+    declaration_names = set()
+
+    for path in INFRASTRUCTURE_DIR.glob("*.py"):
+        tree = _parse(path)
+        imported_roots.update(_imported_roots(tree))
+        called_names.update(_called_names(tree))
+        declaration_names.update(
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
+    assert forbidden_imports.isdisjoint(imported_roots)
+    assert forbidden_runtime_calls.isdisjoint(called_names)
+    assert forbidden_orm_calls.isdisjoint(called_names)
+    assert not {
+        name
+        for name in declaration_names
+        if "UnitOfWork" in name or name.endswith("UoW")
+    }
+
+
+def test_ct0_phase_transition_uses_no_skip_or_xfail():
+    tree = _parse(Path(__file__))
+    forbidden_marks = {"skip", "skipif", "xfail"}
+    used_marks = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in forbidden_marks
+    }
+
+    assert not used_marks
 
 
 def test_ct0_member_domain_has_no_persistence_runtime_dependencies():
