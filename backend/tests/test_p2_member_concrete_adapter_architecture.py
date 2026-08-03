@@ -40,7 +40,6 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
     forbidden_paths = {
         INFRASTRUCTURE_DIR / "migration.py",
         INFRASTRUCTURE_DIR / "migrations.py",
-        INFRASTRUCTURE_DIR / "models.py",
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
         INFRASTRUCTURE_DIR / "unit_of_work.py",
     }
@@ -51,7 +50,8 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
 
 
 def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
-    forbidden_imports = {"alembic", "asyncpg", "sqlalchemy"}
+    approved_model = INFRASTRUCTURE_DIR / "models.py"
+    forbidden_imports = {"alembic", "asyncpg"}
     forbidden_runtime_calls = {
         "async_sessionmaker",
         "connect",
@@ -63,24 +63,25 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
         "sessionmaker",
         "upgrade",
     }
-    forbidden_orm_calls = {"mapped_column", "relationship", "registry"}
-    imported_roots = set()
-    called_names = set()
+    forbidden_orm_calls = {"declarative_base", "relationship", "registry"}
     declaration_names = set()
 
     for path in INFRASTRUCTURE_DIR.glob("*.py"):
         tree = _parse(path)
-        imported_roots.update(_imported_roots(tree))
-        called_names.update(_called_names(tree))
+        imported_roots = _imported_roots(tree)
+        called_names = _called_names(tree)
+        assert forbidden_imports.isdisjoint(imported_roots)
+        assert forbidden_runtime_calls.isdisjoint(called_names)
+        assert forbidden_orm_calls.isdisjoint(called_names)
+        if path != approved_model:
+            assert "sqlalchemy" not in imported_roots
+            assert "mapped_column" not in called_names
         declaration_names.update(
             node.name
             for node in ast.walk(tree)
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
         )
 
-    assert forbidden_imports.isdisjoint(imported_roots)
-    assert forbidden_runtime_calls.isdisjoint(called_names)
-    assert forbidden_orm_calls.isdisjoint(called_names)
     assert not {
         name
         for name in declaration_names

@@ -100,8 +100,8 @@ def test_mapper_at0_mapper_has_no_runtime_dependencies_when_present():
 
 
 def test_mapper_at0_unapproved_persistence_artifacts_are_absent():
+    model_path = INFRASTRUCTURE_DIR / "models.py"
     forbidden_paths = {
-        INFRASTRUCTURE_DIR / "models.py",
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
         INFRASTRUCTURE_DIR / "unit_of_work.py",
         INFRASTRUCTURE_DIR / "migration.py",
@@ -109,6 +109,42 @@ def test_mapper_at0_unapproved_persistence_artifacts_are_absent():
     }
 
     assert not {path for path in forbidden_paths if path.exists()}
+    if not model_path.exists():
+        return
+
+    tree = _parse(model_path)
+    forbidden_calls = {
+        "async_sessionmaker",
+        "close",
+        "commit",
+        "connect",
+        "create_async_engine",
+        "create_engine",
+        "declarative_base",
+        "execute",
+        "flush",
+        "registry",
+        "relationship",
+        "rollback",
+        "sessionmaker",
+    }
+    forbidden_member_modules = {
+        "app.modules.member.entities",
+        "app.modules.member.infrastructure.mapper",
+        "app.modules.member.repository",
+        "app.modules.member.value_objects",
+    }
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+
+    assert {"alembic", "asyncpg", "fastapi", "os"}.isdisjoint(
+        _imported_roots(tree)
+    )
+    assert forbidden_calls.isdisjoint(_called_names(tree))
+    assert forbidden_member_modules.isdisjoint(imported_modules)
 
 
 def test_mapper_at0_contract_inventory_is_complete():
