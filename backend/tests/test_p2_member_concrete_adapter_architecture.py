@@ -36,16 +36,17 @@ def _imported_roots(tree: ast.AST) -> set[str]:
 
 def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
     approved_adapter = INFRASTRUCTURE_DIR / "sqlalchemy_repository.py"
+    approved_mapper = INFRASTRUCTURE_DIR / "mapper.py"
     forbidden_paths = {
         INFRASTRUCTURE_DIR / "migration.py",
         INFRASTRUCTURE_DIR / "migrations.py",
-        INFRASTRUCTURE_DIR / "mapper.py",
         INFRASTRUCTURE_DIR / "models.py",
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
         INFRASTRUCTURE_DIR / "unit_of_work.py",
     }
 
     assert approved_adapter.is_file()
+    assert approved_mapper.is_file()
     assert not {path for path in forbidden_paths if path.exists()}
 
 
