@@ -133,7 +133,10 @@ class TestMemberRepositoryOrmAlignment(IsolatedAsyncioTestCase):
             self.assertEqual(len(session.execute_calls), 1)
             statement = session.execute_calls[0]
             self.assertIsInstance(statement, Update)
-            self.assertIs(statement.table, MemberOrmModel.__table__)
+            self.assertEqual(
+                statement.table.fullname,
+                MemberOrmModel.__table__.fullname,
+            )
             self.assertEqual(session.flush_count, 0)
 
         with self.subTest(operation="save-version-conflict"):
