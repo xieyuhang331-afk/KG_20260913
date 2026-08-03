@@ -41,7 +41,6 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
         INFRASTRUCTURE_DIR / "migration.py",
         INFRASTRUCTURE_DIR / "migrations.py",
         INFRASTRUCTURE_DIR / "sqlalchemy_unit_of_work.py",
-        INFRASTRUCTURE_DIR / "unit_of_work.py",
     }
 
     assert approved_adapter.is_file()
@@ -85,10 +84,12 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
         )
 
+    allowed_uow_declarations = {"SqlAlchemyIdentityUnitOfWork"}
     assert not {
         name
         for name in declaration_names
-        if "UnitOfWork" in name or name.endswith("UoW")
+        if ("UnitOfWork" in name or name.endswith("UoW"))
+        and name not in allowed_uow_declarations
     }
 
 

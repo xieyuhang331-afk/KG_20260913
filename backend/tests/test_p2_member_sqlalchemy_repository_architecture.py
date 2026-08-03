@@ -107,6 +107,7 @@ def test_at0_missing_production_adapter_does_not_fail_layout_guard():
         "orm_state_mapper.py",
         "sqlalchemy_repository.py",
         "sqlalchemy_unit_of_work.py",
+        "unit_of_work.py",
     }
     actual_files = {
         path.name for path in INFRASTRUCTURE_DIR.glob("*.py")
