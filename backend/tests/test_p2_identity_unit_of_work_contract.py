@@ -172,8 +172,13 @@ class TestIdentityUnitOfWorkContract(IsolatedAsyncioTestCase):
             self.assertEqual(
                 str(caught.exception), "identity transaction state is invalid"
             )
+            with self.assertRaises(state_error):
+                await uow.rollback()
 
             async with uow:
+                with self.assertRaises(state_error):
+                    async with uow:
+                        pass
                 await uow.commit()
                 with self.assertRaises(state_error):
                     await uow.commit()
