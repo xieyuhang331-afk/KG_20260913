@@ -160,4 +160,3 @@ def test_integration_at0_tests_have_no_bypass_or_dynamic_mapper():
         assert "sys" not in _imported_roots(tree)
         assert "__import__" not in _called_names(tree)
         assert forbidden_classes.isdisjoint(class_names)
-
