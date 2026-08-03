@@ -121,7 +121,11 @@ class TestIdentityUnitOfWorkContract(IsolatedAsyncioTestCase):
                 inspect.iscoroutinefunction(getattr(adapter_type, operation))
             )
 
-        def new_uow(session=None, session_failure=None):
+        def new_uow(
+            session=None,
+            session_failure=None,
+            unavailable_classifier=None,
+        ):
             session_factory = AsyncSessionFactorySpy(
                 session=session, failure=session_failure
             )
@@ -129,6 +133,13 @@ class TestIdentityUnitOfWorkContract(IsolatedAsyncioTestCase):
             uow = adapter_type(
                 session_factory=session_factory,
                 repository_factory=repository_factory,
+                unavailable_classifier=(
+                    unavailable_classifier
+                    or (
+                        lambda exc: getattr(exc, "category", None)
+                        == "unavailable"
+                    )
+                ),
             )
             return uow, session_factory, repository_factory
 
@@ -198,6 +209,25 @@ class TestIdentityUnitOfWorkContract(IsolatedAsyncioTestCase):
             self.assertIs(caught.exception.__cause__, failure)
             self.assertNotIn("credential", str(caught.exception))
 
+        with self.subTest(scenario="ERROR-001/injected-classifier"):
+            failure = FailureSentinel("generic", "connection down")
+            session = AsyncSessionSpy(begin_failure=failure)
+            uow, _, _ = new_uow(
+                session,
+                unavailable_classifier=lambda exc: exc is failure,
+            )
+            with self.assertRaises(unavailable_error) as caught:
+                async with uow:
+                    pass
+            self.assertEqual(
+                str(caught.exception),
+                "identity persistence is unavailable",
+            )
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertNotIn("connection down", str(caught.exception))
+            self.assertEqual(session.calls["rollback"], 1)
+            self.assertEqual(session.calls["close"], 1)
+
         with self.subTest(scenario="ERROR-001/commit"):
             failure = FailureSentinel(details="driver and SQL details")
             session = AsyncSessionSpy(commit_failure=failure)
@@ -233,5 +263,42 @@ class TestIdentityUnitOfWorkContract(IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 async with uow:
                     raise asyncio.CancelledError()
+            self.assertEqual(session.calls["rollback"], 1)
+            self.assertEqual(session.calls["close"], 1)
+
+        with self.subTest(scenario="CANCEL-001/enter-cleanup"):
+            session = AsyncSessionSpy(
+                begin_failure=FailureSentinel(),
+                rollback_failure=asyncio.CancelledError(),
+            )
+            uow, _, _ = new_uow(session)
+            with self.assertRaises(asyncio.CancelledError):
+                async with uow:
+                    pass
+            self.assertEqual(session.calls["rollback"], 1)
+            self.assertEqual(session.calls["close"], 1)
+
+        with self.subTest(scenario="CANCEL-001/enter-close"):
+            session = AsyncSessionSpy(
+                begin_failure=FailureSentinel(),
+                rollback_failure=FailureSentinel(),
+                close_failure=asyncio.CancelledError(),
+            )
+            uow, _, _ = new_uow(session)
+            with self.assertRaises(asyncio.CancelledError):
+                async with uow:
+                    pass
+            self.assertEqual(session.calls["rollback"], 1)
+            self.assertEqual(session.calls["close"], 1)
+
+        with self.subTest(scenario="CANCEL-001/exit-close"):
+            session = AsyncSessionSpy(
+                rollback_failure=FailureSentinel(),
+                close_failure=asyncio.CancelledError(),
+            )
+            uow, _, _ = new_uow(session)
+            with self.assertRaises(asyncio.CancelledError):
+                async with uow:
+                    pass
             self.assertEqual(session.calls["rollback"], 1)
             self.assertEqual(session.calls["close"], 1)

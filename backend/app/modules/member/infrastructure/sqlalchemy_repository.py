@@ -3,6 +3,14 @@ from typing import NoReturn
 from uuid import RFC_4122, UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SqlAlchemyTimeoutError,
+)
 
 from ..entities import Member
 from ..errors import InvalidMemberIdError, MemberDomainError
@@ -15,6 +23,16 @@ from ..repository import (
 )
 from ..value_objects import MemberNo
 from .models import MemberOrmModel
+
+
+_MEMBER_NO_UNIQUE_CONSTRAINT = "uq_member_member_no"
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+_UNAVAILABLE_ERRORS = (
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    SqlAlchemyTimeoutError,
+)
 
 
 class SqlAlchemyMemberRepository:
@@ -32,7 +50,7 @@ class SqlAlchemyMemberRepository:
             MemberOrmModel.member_id == member_id
         )
         result = await self._execute(statement)
-        model = result.scalar_one_or_none()
+        model = self._scalar_one_or_none(result)
         if model is None:
             raise MemberNotFoundError("member was not found")
         return self._restore_member(model)
@@ -42,7 +60,7 @@ class SqlAlchemyMemberRepository:
             MemberOrmModel.member_no == member_no.value
         )
         result = await self._execute(statement)
-        model = result.scalar_one_or_none()
+        model = self._scalar_one_or_none(result)
         if model is None:
             raise MemberNotFoundError("member was not found")
         return self._restore_member(model)
@@ -52,7 +70,7 @@ class SqlAlchemyMemberRepository:
             MemberOrmModel.member_no == member_no.value
         )
         result = await self._execute(statement)
-        return result.scalar_one_or_none() is None
+        return self._scalar_one_or_none(result) is None
 
     async def add(self, member: Member) -> None:
         self._validate_member_id(member.member_id)
@@ -111,6 +129,14 @@ class SqlAlchemyMemberRepository:
         except Exception as exc:
             self._raise_translated(exc)
 
+    def _scalar_one_or_none(self, result):
+        try:
+            return result.scalar_one_or_none()
+        except MemberRepositoryError:
+            raise
+        except Exception as exc:
+            self._raise_translated(exc)
+
     def _restore_member(self, model) -> Member:
         try:
             state = self._orm_mapper.to_state(model)
@@ -154,7 +180,15 @@ class SqlAlchemyMemberRepository:
     @staticmethod
     def _raise_translated(exc: Exception) -> NoReturn:
         category = getattr(exc, "category", None)
-        if category == "not_found":
+        if SqlAlchemyMemberRepository._is_member_no_unique_conflict(exc):
+            error = MemberUniquenessConflictError(
+                "member uniqueness conflict"
+            )
+        elif SqlAlchemyMemberRepository._is_persistence_unavailable(exc):
+            error = MemberPersistenceUnavailableError(
+                "member persistence is unavailable"
+            )
+        elif category == "not_found":
             error = MemberNotFoundError("member was not found")
         elif category == "unique_conflict":
             error = MemberUniquenessConflictError(
@@ -171,3 +205,28 @@ class SqlAlchemyMemberRepository:
                 "member persistence operation failed"
             )
         raise error from exc
+
+    @staticmethod
+    def _is_member_no_unique_conflict(exc: Exception) -> bool:
+        if not isinstance(exc, IntegrityError):
+            return False
+
+        original = exc.orig
+        driver_error = getattr(original, "__cause__", None)
+        sqlstate = getattr(original, "sqlstate", None) or getattr(
+            driver_error, "sqlstate", None
+        )
+        constraint_name = getattr(
+            original, "constraint_name", None
+        ) or getattr(driver_error, "constraint_name", None)
+
+        return (
+            sqlstate == _UNIQUE_VIOLATION_SQLSTATE
+            and constraint_name == _MEMBER_NO_UNIQUE_CONSTRAINT
+        )
+
+    @staticmethod
+    def _is_persistence_unavailable(exc: Exception) -> bool:
+        return isinstance(exc, _UNAVAILABLE_ERRORS) or (
+            isinstance(exc, DBAPIError) and exc.connection_invalidated
+        )

@@ -4,7 +4,17 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SqlAlchemyTimeoutError,
+)
 
+from app.modules.member.application.unit_of_work import (
+    IdentityUnitOfWorkUnavailableError,
+)
 from app.modules.member.infrastructure.mapper import MemberMapper
 from app.modules.member.infrastructure.orm_state_mapper import MemberOrmStateMapper
 from app.modules.member.infrastructure.sqlalchemy_repository import (
@@ -37,12 +47,19 @@ class SessionFactoryBuilderSpy:
         return self.product
 
 
+class PostgreSqlFailureSentinel(RuntimeError):
+    pass
+
+
 class AsyncSessionSpy:
-    def __init__(self):
+    def __init__(self, *, begin_failure=None):
+        self.begin_failure = begin_failure
         self.calls = {"begin": 0, "commit": 0, "rollback": 0, "close": 0}
 
     async def begin(self):
         self.calls["begin"] += 1
+        if self.begin_failure is not None:
+            raise self.begin_failure
 
     async def commit(self):
         self.calls["commit"] += 1
@@ -55,11 +72,12 @@ class AsyncSessionSpy:
 
 
 class AsyncSessionFactorySpy:
-    def __init__(self):
+    def __init__(self, *, begin_failure=None):
+        self.begin_failure = begin_failure
         self.sessions = []
 
     def __call__(self):
-        session = AsyncSessionSpy()
+        session = AsyncSessionSpy(begin_failure=self.begin_failure)
         self.sessions.append(session)
         return session
 
@@ -143,6 +161,52 @@ class TestIdentityPersistenceCompositionContract(IsolatedAsyncioTestCase):
             self.assertEqual(len(session_factory.sessions), 2)
             self.assertIsNot(session_factory.sessions[0], session_factory.sessions[1])
             self.assertIsNot(first_repository, second_repository)
+
+        unavailable_failures = (
+            OperationalError(
+                "BEGIN", {}, PostgreSqlFailureSentinel("connection down")
+            ),
+            InterfaceError(
+                "BEGIN", {}, PostgreSqlFailureSentinel("connection down")
+            ),
+            SqlAlchemyTimeoutError("connection pool timed out"),
+            DisconnectionError("connection was disconnected"),
+            DBAPIError(
+                "BEGIN",
+                {},
+                PostgreSqlFailureSentinel("connection down"),
+                connection_invalidated=True,
+            ),
+        )
+        for failure in unavailable_failures:
+            with self.subTest(
+                scenario="UOW-001/unavailable-sqlalchemy",
+                failure_type=type(failure),
+            ):
+                session_factory = AsyncSessionFactorySpy(
+                    begin_failure=failure
+                )
+                composition = composition_type(
+                    session_factory=session_factory,
+                    clock=lambda: NOW,
+                )
+                with self.assertRaises(
+                    IdentityUnitOfWorkUnavailableError
+                ) as caught:
+                    async with composition.unit_of_work():
+                        pass
+                self.assertEqual(
+                    str(caught.exception),
+                    "identity persistence is unavailable",
+                )
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertNotIn("BEGIN", str(caught.exception))
+                self.assertEqual(
+                    session_factory.sessions[0].calls["rollback"], 1
+                )
+                self.assertEqual(
+                    session_factory.sessions[0].calls["close"], 1
+                )
 
         with self.subTest(scenario="LEAK-001"):
             public_names = set(vars(composition_type))

@@ -8,9 +8,15 @@ from ..application.unit_of_work import (
 
 
 class SqlAlchemyIdentityUnitOfWork:
-    def __init__(self, session_factory, repository_factory) -> None:
+    def __init__(
+        self,
+        session_factory,
+        repository_factory,
+        unavailable_classifier,
+    ) -> None:
         self._session_factory = session_factory
         self._repository_factory = repository_factory
+        self._unavailable_classifier = unavailable_classifier
         self._session = None
         self._members = None
         self._entered = False
@@ -53,7 +59,10 @@ class SqlAlchemyIdentityUnitOfWork:
         try:
             await self._session.close()
         except BaseException as close_failure:
-            if cleanup_failure is None:
+            if cleanup_failure is None or (
+                isinstance(cleanup_failure, Exception)
+                and not isinstance(close_failure, Exception)
+            ):
                 cleanup_failure = close_failure
         finally:
             self._finalized = True
@@ -62,6 +71,12 @@ class SqlAlchemyIdentityUnitOfWork:
             self._members = None
 
         if exc is not None:
+            if (
+                isinstance(exc, Exception)
+                and cleanup_failure is not None
+                and not isinstance(cleanup_failure, Exception)
+            ):
+                raise cleanup_failure
             return False
         if cleanup_failure is not None:
             if not isinstance(cleanup_failure, Exception):
@@ -88,17 +103,26 @@ class SqlAlchemyIdentityUnitOfWork:
     async def _cleanup_enter_failure(self) -> None:
         if self._session is None:
             return
+        cleanup_failure = None
         try:
             await self._session.rollback()
-        except BaseException:
-            pass
+        except BaseException as rollback_failure:
+            cleanup_failure = rollback_failure
         try:
             await self._session.close()
-        except BaseException:
-            pass
+        except BaseException as close_failure:
+            if cleanup_failure is None or (
+                isinstance(cleanup_failure, Exception)
+                and not isinstance(close_failure, Exception)
+            ):
+                cleanup_failure = close_failure
         finally:
             self._session = None
             self._members = None
+        if cleanup_failure is not None and not isinstance(
+            cleanup_failure, Exception
+        ):
+            raise cleanup_failure
 
     def _require_active(self) -> None:
         if not self._entered or self._exited or self._session is None:
@@ -115,9 +139,8 @@ class SqlAlchemyIdentityUnitOfWork:
             "identity transaction state is invalid"
         )
 
-    @staticmethod
-    def _raise_translated(exc: Exception) -> NoReturn:
-        if getattr(exc, "category", None) == "unavailable":
+    def _raise_translated(self, exc: Exception) -> NoReturn:
+        if self._unavailable_classifier(exc):
             error = IdentityUnitOfWorkUnavailableError(
                 "identity persistence is unavailable"
             )

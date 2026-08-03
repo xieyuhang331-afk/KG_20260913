@@ -72,11 +72,14 @@ class PersistenceStateStub:
 
 
 class ResultStub:
-    def __init__(self, *, value=None, rowcount=1):
+    def __init__(self, *, value=None, rowcount=1, scalar_failure=None):
         self.value = value
         self.rowcount = rowcount
+        self.scalar_failure = scalar_failure
 
     def scalar_one_or_none(self):
+        if self.scalar_failure is not None:
+            raise self.scalar_failure
         return self.value
 
 
@@ -331,6 +334,48 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
 
     async def _assert_error_translation(self, adapter_type):
         member = _member()
+
+        result_operations = (
+            (
+                "by-id",
+                lambda adapter: adapter.get_by_id(VALID_MEMBER_ID),
+            ),
+            (
+                "by-member-no",
+                lambda adapter: adapter.get_by_member_no(member.member_no),
+            ),
+            (
+                "member-no-available",
+                lambda adapter: adapter.is_member_no_available(
+                    member.member_no
+                ),
+            ),
+        )
+        for operation_name, operation in result_operations:
+            with self.subTest(
+                scenario="ERR-RESULT",
+                operation=operation_name,
+            ):
+                failure = FailureSentinel(
+                    "generic",
+                    "sensitive driver/result details",
+                )
+                session = AsyncSessionSpy(
+                    ResultStub(scalar_failure=failure)
+                )
+                with self.assertRaises(MemberRepositoryError) as caught:
+                    await operation(
+                        _adapter(adapter_type, session, MapperSpy())
+                    )
+                self.assertIs(type(caught.exception), MemberRepositoryError)
+                self.assertEqual(
+                    str(caught.exception), GENERIC_ERROR_MESSAGE
+                )
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertNotIn(
+                    "sensitive", str(caught.exception)
+                )
+                self.assertNoTransactionFinalization(session)
 
         with self.subTest(scenario="ERR-NOT-FOUND/by-id"):
             session = AsyncSessionSpy(ResultStub(value=None))

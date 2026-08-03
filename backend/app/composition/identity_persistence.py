@@ -1,3 +1,10 @@
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SqlAlchemyTimeoutError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.modules.member.infrastructure.mapper import MemberMapper
@@ -8,6 +15,20 @@ from app.modules.member.infrastructure.sqlalchemy_repository import (
 from app.modules.member.infrastructure.unit_of_work import (
     SqlAlchemyIdentityUnitOfWork,
 )
+
+
+_UNAVAILABLE_ERRORS = (
+    OperationalError,
+    InterfaceError,
+    SqlAlchemyTimeoutError,
+    DisconnectionError,
+)
+
+
+def _is_identity_persistence_unavailable(exc: Exception) -> bool:
+    return isinstance(exc, _UNAVAILABLE_ERRORS) or (
+        isinstance(exc, DBAPIError) and exc.connection_invalidated
+    )
 
 
 def create_identity_session_factory(engine):
@@ -33,6 +54,7 @@ class IdentityPersistenceComposition:
         return SqlAlchemyIdentityUnitOfWork(
             session_factory=self._session_factory,
             repository_factory=self._member_repository,
+            unavailable_classifier=_is_identity_persistence_unavailable,
         )
 
     def _member_repository(self, session) -> SqlAlchemyMemberRepository:
