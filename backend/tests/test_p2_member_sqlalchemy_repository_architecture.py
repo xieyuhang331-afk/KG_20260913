@@ -104,6 +104,7 @@ def test_at0_missing_production_adapter_does_not_fail_layout_guard():
         "__init__.py",
         "mapper.py",
         "models.py",
+        "orm_state_mapper.py",
         "sqlalchemy_repository.py",
         "sqlalchemy_unit_of_work.py",
     }
