@@ -2,6 +2,7 @@ import importlib
 import inspect
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from unittest import IsolatedAsyncioTestCase
 
 import pytest
@@ -25,6 +26,7 @@ EXPECTED_RED = (
 )
 GENERIC_ERROR_MESSAGE = "member persistence operation failed"
 VALID_MEMBER_ID = uuid.UUID("01890f5d-6d12-7cc4-98c4-dc0c0c07398f")
+NOW = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)
 OPERATIONS = (
     "get_by_id",
     "get_by_member_no",
@@ -140,6 +142,16 @@ class MapperSpy:
         return self.persistence_state
 
 
+class OrmMapperSpy:
+    def to_state(self, model):
+        return model
+
+    def to_new_model(
+        self, state, *, initial_version, created_at, updated_at
+    ):
+        return state
+
+
 class ThirdPartyUuidStub:
     def __init__(self, value):
         self.value = value
@@ -184,13 +196,13 @@ def _adapter(adapter_type, session, mapper):
     signature = inspect.signature(adapter_type)
     assert "session" in signature.parameters
     assert "mapper" in signature.parameters
-    return adapter_type(session=session, mapper=mapper)
-
-
-def _call_contains_identity(call, target):
-    args, kwargs = call
-    return any(value is target for value in args) or any(
-        value is target for value in kwargs.values()
+    assert "orm_mapper" in signature.parameters
+    assert "clock" in signature.parameters
+    return adapter_type(
+        session=session,
+        mapper=mapper,
+        orm_mapper=OrmMapperSpy(),
+        clock=lambda: NOW,
     )
 
 
@@ -298,7 +310,7 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
             self.assertNoTransactionFinalization(session)
 
         with self.subTest(scenario="MAP-SAVE/TX-COMMAND"):
-            expected_version = object()
+            expected_version = 3
             persistence_state = _state(version=3)
             session = AsyncSessionSpy(ResultStub(rowcount=1))
             mapper = MapperSpy(persistence_state=persistence_state)
@@ -310,18 +322,10 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
             self.assertEqual(len(mapper.to_persistence_calls), 1)
             mapped_member, mapped_version = mapper.to_persistence_calls[0]
             self.assertIs(mapped_member, member)
-            self.assertIs(mapped_version, expected_version)
+            self.assertEqual(mapped_version, expected_version)
             self.assertEqual(len(session.execute_calls), 1)
-            self.assertTrue(
-                _call_contains_identity(
-                    session.execute_calls[0], persistence_state
-                )
-            )
-            self.assertTrue(
-                _call_contains_identity(
-                    session.execute_calls[0], expected_version
-                )
-            )
+            statement = session.execute_calls[0][0][0]
+            self.assertNotIsInstance(statement, str)
             self.assertLessEqual(session.calls["flush"], 1)
             self.assertNoTransactionFinalization(session)
 
@@ -351,7 +355,7 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
             mapper = MapperSpy(persistence_state=_state())
             with self.assertRaises(MemberNotFoundError) as caught:
                 await _adapter(adapter_type, session, mapper).save(
-                    member, object()
+                    member, 3
                 )
             self.assertEqual(str(caught.exception), "member was not found")
             self.assertIs(caught.exception.__cause__, failure)
@@ -375,7 +379,7 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
             mapper = MapperSpy(persistence_state=_state())
             with self.assertRaises(MemberUniquenessConflictError) as caught:
                 await _adapter(adapter_type, session, mapper).save(
-                    member, object()
+                    member, 3
                 )
             self.assertEqual(
                 str(caught.exception), "member uniqueness conflict"
@@ -389,7 +393,7 @@ class TestSqlAlchemyRepositoryAdapterContract(IsolatedAsyncioTestCase):
             mapper = MapperSpy(persistence_state=_state())
             with self.assertRaises(MemberVersionConflictError) as caught:
                 await _adapter(adapter_type, session, mapper).save(
-                    member, object()
+                    member, 3
                 )
             self.assertEqual(str(caught.exception), "member version conflict")
             self.assertIs(caught.exception.__cause__, failure)

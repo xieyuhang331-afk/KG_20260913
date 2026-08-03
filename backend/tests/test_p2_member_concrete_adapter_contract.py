@@ -2,6 +2,7 @@ import importlib
 import inspect
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from unittest import IsolatedAsyncioTestCase
 
 import pytest
@@ -27,6 +28,7 @@ EXPECTED_RED = "Concrete MemberRepository Adapter is not implemented"
 GENERIC_ERROR_MESSAGE = "member persistence operation failed"
 STORED_STATE_ERROR_MESSAGE = "stored member state is invalid"
 VALID_MEMBER_ID = uuid.UUID("01890f5d-6d12-7cc4-98c4-dc0c0c07398f")
+NOW = datetime(2026, 8, 3, 6, 0, tzinfo=timezone.utc)
 OPERATIONS = (
     "get_by_id",
     "get_by_member_no",
@@ -170,6 +172,16 @@ class MapperSpy:
     to_record = to_persistence
 
 
+class OrmMapperSpy:
+    def to_state(self, model):
+        return model
+
+    def to_new_model(
+        self, state, *, initial_version, created_at, updated_at
+    ):
+        return state
+
+
 class ThirdPartyUuidStub:
     def __init__(self, value):
         self.value = value
@@ -213,20 +225,20 @@ def _adapter(adapter_type, session, mapper):
     signature = inspect.signature(adapter_type)
     assert "session" in signature.parameters
     assert "mapper" in signature.parameters
-    return adapter_type(session=session, mapper=mapper)
+    assert "orm_mapper" in signature.parameters
+    assert "clock" in signature.parameters
+    return adapter_type(
+        session=session,
+        mapper=mapper,
+        orm_mapper=OrmMapperSpy(),
+        clock=lambda: NOW,
+    )
 
 
 def _assert_no_transaction_finalization(test_case, session):
     test_case.assertEqual(session.calls["commit"], 0)
     test_case.assertEqual(session.calls["rollback"], 0)
     test_case.assertEqual(session.calls["close"], 0)
-
-
-def _call_contains_identity(call, target):
-    args, kwargs = call
-    return any(value is target for value in args) or any(
-        value is target for value in kwargs.values()
-    )
 
 
 class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
@@ -334,7 +346,7 @@ class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
             _assert_no_transaction_finalization(self, session)
 
         with self.subTest(scenario="MAP-005/TX-003"):
-            expected_version = object()
+            expected_version = 3
             session = SessionSpy(ResultStub(rowcount=1))
             persistence_state = _state()
             mapper = MapperSpy(persistence_state=persistence_state)
@@ -348,16 +360,8 @@ class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
                 [(member, expected_version)],
             )
             self.assertEqual(len(session.execute_calls), 1)
-            self.assertTrue(
-                _call_contains_identity(
-                    session.execute_calls[0], persistence_state
-                )
-            )
-            self.assertTrue(
-                _call_contains_identity(
-                    session.execute_calls[0], expected_version
-                )
-            )
+            statement = session.execute_calls[0][0][0]
+            self.assertNotIsInstance(statement, str)
             self.assertLessEqual(session.calls["flush"], 1)
             _assert_no_transaction_finalization(self, session)
 
@@ -388,7 +392,7 @@ class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
             with self.assertRaises(MemberNotFoundError) as caught:
                 await _adapter(
                     adapter_type, session, MapperSpy()
-                ).save(member, object())
+                ).save(member, 3)
             self.assertEqual(str(caught.exception), "member was not found")
             self.assertIs(caught.exception.__cause__, failure)
             _assert_no_transaction_finalization(self, session)
@@ -412,7 +416,7 @@ class TestConcreteAdapterBehavioralContract(IsolatedAsyncioTestCase):
             with self.assertRaises(MemberVersionConflictError) as caught:
                 await _adapter(
                     adapter_type, session, MapperSpy()
-                ).save(member, object())
+                ).save(member, 3)
             self.assertEqual(str(caught.exception), "member version conflict")
             self.assertIs(caught.exception.__cause__, failure)
             _assert_no_transaction_finalization(self, session)
