@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260728_0006"
+REQUIRED_HEAD_REVISION = "20260803_0007"
 
 
 def pytest_configure(config):
@@ -176,6 +176,7 @@ def pg_database():
     )
     validate_database_sentinel(sentinel, target)
 
+    database.execute("DROP SCHEMA IF EXISTS identity CASCADE")
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
     database.execute("CREATE SCHEMA public")
     command.upgrade(_build_alembic_config(migration_database_url), "head")

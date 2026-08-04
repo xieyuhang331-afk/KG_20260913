@@ -4,6 +4,7 @@ import asyncio
 
 from alembic import context
 from app.core.database import Base, is_sqlalchemy_available
+from app.modules.member.infrastructure.models import MemberOrmModel  # noqa: F401
 from app.modules.models import import_core_models
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
