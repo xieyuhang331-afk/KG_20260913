@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.core.uuid_generator import Uuid7Generator
+from app.modules.member.errors import InvalidMemberNoError
 
 
 def _member_contract():
@@ -69,6 +70,20 @@ def test_member_number_value_object_is_non_blank_and_value_based():
         MemberNo("")
     with pytest.raises(ValueError):
         MemberNo("   ")
+
+
+def test_member_number_enforces_persistence_length_without_normalizing():
+    _, _, MemberNo, _ = _member_contract()
+    exact_64 = " " + ("M" * 62) + " "
+
+    assert len(exact_64) == 64
+    assert MemberNo(exact_64).value == exact_64
+
+    with pytest.raises(
+        InvalidMemberNoError,
+        match="member number must be at most 64 characters",
+    ):
+        MemberNo("M" * 65)
 
 
 def test_member_status_rejects_unknown_values():
