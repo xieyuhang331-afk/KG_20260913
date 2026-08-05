@@ -1,6 +1,10 @@
 import ast
 from pathlib import Path
 
+import pytest
+
+from tests.integration import conftest as integration_conftest
+
 
 EXPECTED_HEAD = "20260803_0007"
 STALE_HEAD = "20260728_0006"
@@ -12,7 +16,15 @@ SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
     "and Alembic upgrade"
 )
+DROP_SENTINEL_FAILURE = "dropdb 前缺少 Sentinel 复核"
+MIGRATION_ROLE_FAILURE = "特权操作前缺少 Migration current_user 校验"
 INTEGRATION_ROOT = Path(__file__).resolve().parent / "integration"
+WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[2]
+    / ".github"
+    / "workflows"
+    / "p2-foundation-ci.yml"
+)
 REVISION_CONTRACT_FILES = (
     INTEGRATION_ROOT / "conftest.py",
     INTEGRATION_ROOT / "test_fastapi_f002_e2e_real_db.py",
@@ -475,3 +487,332 @@ def test_pg_database_resets_identity_schema_before_upgrade():
         "create_public",
         "upgrade_head",
     ], SCHEMA_FAILURE
+
+
+def _workflow_step_block(step_name):
+    lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+    marker = f"      - name: {step_name}"
+    start = lines.index(marker)
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("      - name: ")
+            or (
+                lines[index].startswith("  ")
+                and not lines[index].startswith("    ")
+            )
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def _workflow_job_block(job_name):
+    lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+    job_start = lines.index(f"  {job_name}:")
+    job_end = next(
+        (
+            index
+            for index in range(job_start + 1, len(lines))
+            if lines[index].startswith("  ")
+            and not lines[index].startswith("    ")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[job_start:job_end])
+
+
+def _workflow_shell_lines(step_name):
+    block = _workflow_step_block(step_name).splitlines()
+    run_start = block.index("        run: |")
+    return [
+        line.strip()
+        for line in block[run_start + 1 :]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def test_disposable_database_drop_revalidates_current_run_sentinel():
+    step_block = _workflow_step_block("Drop disposable test database")
+    step_block_lines = step_block.splitlines()
+    run_start = step_block_lines.index("        run: |")
+    step_metadata = [
+        line
+        for line in step_block_lines[: run_start + 1]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    expected_metadata = [
+        "      - name: Drop disposable test database",
+        "        if: always()",
+        "        shell: bash",
+        "        run: |",
+    ]
+    shell_lines = _workflow_shell_lines("Drop disposable test database")
+    expected_shell_lines = [
+        "set -euo pipefail",
+        'export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+        'expected_name="kg_it_${KG_TEST_RUN_ID}"',
+        'if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" '
+        '|| "$KG_DATABASE_NAME" != "$expected_name" ]]; then',
+        "echo 'Refusing to drop a database outside the current ephemeral test run.'",
+        "exit 1",
+        "fi",
+        'expected_sentinel="kg-test-disposable:${KG_TEST_RUN_ID}"',
+        'sentinel_matches="$(',
+        "psql \\",
+        '--host="$KG_DATABASE_HOST" \\',
+        '--port="$KG_DATABASE_PORT" \\',
+        "--username=postgres \\",
+        "--dbname=postgres \\",
+        "--tuples-only \\",
+        "--no-align \\",
+        "--set=ON_ERROR_STOP=1 \\",
+        '--set=database_name="$KG_DATABASE_NAME" \\',
+        '--set=expected_sentinel="$expected_sentinel" <<\'SQL\'',
+        "SELECT CASE",
+        "WHEN shobj_description(oid, 'pg_database') = :'expected_sentinel'",
+        "THEN 'true'",
+        "ELSE 'false'",
+        "END",
+        "FROM pg_database",
+        "WHERE datname = :'database_name';",
+        "SQL",
+        ')"',
+        'if [[ "$sentinel_matches" != "true" ]]; then',
+        "echo 'Refusing to drop a database without the current disposable sentinel.'",
+        "exit 1",
+        "fi",
+        "dropdb \\",
+        "--if-exists \\",
+        "--force \\",
+        '--host="$KG_DATABASE_HOST" \\',
+        '--port="$KG_DATABASE_PORT" \\',
+        "--username=postgres \\",
+        '"$KG_DATABASE_NAME"',
+    ]
+
+    contract_holds = (
+        step_metadata == expected_metadata
+        and shell_lines == expected_shell_lines
+    )
+    if not contract_holds:
+        pytest.fail(DROP_SENTINEL_FAILURE, pytrace=False)
+
+
+def test_migration_fixture_verifies_connected_role_before_privileged_actions(
+    monkeypatch,
+):
+    events = []
+    connected_role = {"value": ""}
+
+    class FakeMigrationDatabase:
+        def fetch_value(self, sql):
+            if "shobj_description" in sql:
+                events.append("fetch_sentinel")
+                return "kg-test-disposable:gh_test_run"
+            if "current_user" in sql:
+                events.append("fetch_current_user")
+                return connected_role["value"]
+            if "version_num" in sql:
+                events.append("fetch_revision")
+                return EXPECTED_HEAD
+            raise AssertionError(f"unexpected query: {sql}")
+
+        def execute(self, sql):
+            events.append(f"privileged:{sql}")
+
+    monkeypatch.setenv("KG_TEST_ROLE_SEPARATION", "1")
+    monkeypatch.delenv("KG_TEST_LIFECYCLE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("KG_TEST_LIFECYCLE_PASSWORD", raising=False)
+    monkeypatch.setattr(
+        integration_conftest,
+        "_get_test_database_target",
+        lambda: ("postgresql+asyncpg://test.invalid/kg_it_gh_test_run", object()),
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_get_test_database_url",
+        lambda: "postgresql+asyncpg://test.invalid/kg_it_gh_test_run",
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "PgDatabase",
+        lambda _database_url: FakeMigrationDatabase(),
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "validate_database_sentinel",
+        lambda _actual, _target: events.append("validate_sentinel"),
+    )
+    monkeypatch.setattr(
+        integration_conftest.command,
+        "upgrade",
+        lambda *_args: events.append("privileged:upgrade"),
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_grant_test_role_permissions",
+        lambda _database: events.append("privileged:grant"),
+    )
+
+    def exercise(*, application_role, migration_role, readonly_role, connected):
+        events.clear()
+        connected_role["value"] = connected
+        monkeypatch.setenv("KG_TEST_APPLICATION_ROLE", application_role)
+        monkeypatch.setenv("KG_TEST_MIGRATION_ROLE", migration_role)
+        monkeypatch.setenv("KG_TEST_READONLY_ROLE", readonly_role)
+        fixture = integration_conftest.pg_database.__wrapped__()
+        failure = None
+        try:
+            next(fixture)
+        except RuntimeError as exc:
+            failure = exc
+        finally:
+            fixture.close()
+        return failure, tuple(events)
+
+    mismatched_failure, mismatched_events = exercise(
+        application_role="kg_ci_app_test_run",
+        migration_role="kg_ci_migration_test_run",
+        readonly_role="kg_ci_readonly_test_run",
+        connected="unexpected_privileged_role",
+    )
+    role_guard_cases = (
+        (
+            "application equals migration",
+            "kg_ci_migration_test_run",
+            "kg_ci_migration_test_run",
+            "kg_ci_readonly_test_run",
+            "database validation roles must be distinct",
+        ),
+        (
+            "application equals readonly",
+            "kg_ci_readonly_test_run",
+            "kg_ci_migration_test_run",
+            "kg_ci_readonly_test_run",
+            "database validation roles must be distinct",
+        ),
+        (
+            "migration equals readonly",
+            "kg_ci_app_test_run",
+            "kg_ci_readonly_test_run",
+            "kg_ci_readonly_test_run",
+            "database validation roles must be distinct",
+        ),
+        (
+            "application is postgres",
+            "postgres",
+            "kg_ci_migration_test_run",
+            "kg_ci_readonly_test_run",
+            "database validation roles must not use postgres",
+        ),
+        (
+            "migration is postgres",
+            "kg_ci_app_test_run",
+            "postgres",
+            "kg_ci_readonly_test_run",
+            "database validation roles must not use postgres",
+        ),
+        (
+            "readonly is postgres",
+            "kg_ci_app_test_run",
+            "kg_ci_migration_test_run",
+            "postgres",
+            "database validation roles must not use postgres",
+        ),
+        (
+            "application role name is unsafe",
+            "Unsafe-Application-Role",
+            "kg_ci_migration_test_run",
+            "kg_ci_readonly_test_run",
+            "KG_TEST_APPLICATION_ROLE must contain a safe PostgreSQL role name",
+        ),
+        (
+            "migration role name is unsafe",
+            "kg_ci_app_test_run",
+            "Unsafe-Migration-Role",
+            "kg_ci_readonly_test_run",
+            "KG_TEST_MIGRATION_ROLE must contain a safe PostgreSQL role name",
+        ),
+        (
+            "readonly role name is unsafe",
+            "kg_ci_app_test_run",
+            "kg_ci_migration_test_run",
+            "Unsafe-Readonly-Role",
+            "KG_TEST_READONLY_ROLE must contain a safe PostgreSQL role name",
+        ),
+    )
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    integration_step = _workflow_step_block(
+        "Run PostgreSQL integration and migration tests"
+    )
+    backend_integration_job = _workflow_job_block("backend-integration")
+    lifecycle_steps = tuple(
+        _workflow_step_block(step_name)
+        for step_name in (
+            "Create disposable test database",
+            "Provision isolated validation roles",
+            "Drop disposable test database",
+        )
+    )
+    lifecycle_export = (
+        'export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-'
+        '${GITHUB_RUN_ATTEMPT}"'
+    )
+
+    violations = []
+    if not (
+        mismatched_failure is not None
+        and str(mismatched_failure)
+        == "migration database URL role does not match KG_TEST_MIGRATION_ROLE"
+        and mismatched_events[:3]
+        == ("fetch_sentinel", "validate_sentinel", "fetch_current_user")
+        and not any(
+            event.startswith("privileged:") for event in mismatched_events
+        )
+    ):
+        violations.append("connected migration role mismatch")
+    for (
+        case_name,
+        application_role,
+        migration_role,
+        readonly_role,
+        expected_error,
+    ) in role_guard_cases:
+        failure, case_events = exercise(
+            application_role=application_role,
+            migration_role=migration_role,
+            readonly_role=readonly_role,
+            connected=migration_role,
+        )
+        if not (
+            failure is not None
+            and str(failure) == expected_error
+            and not any(
+                event.startswith("privileged:") for event in case_events
+            )
+        ):
+            violations.append(case_name)
+    if any(
+        forbidden in workflow
+        for forbidden in (
+            "KG_TEST_LIFECYCLE_DATABASE_URL",
+            "KG_TEST_LIFECYCLE_PASSWORD",
+        )
+    ):
+        violations.append("lifecycle URL or password environment")
+    if (
+        "GITHUB_ENV" in backend_integration_job
+        or backend_integration_job.count("PGPASSWORD") != 3
+        or backend_integration_job.count(lifecycle_export) != 3
+        or any(step.count(lifecycle_export) != 1 for step in lifecycle_steps)
+        or any(
+            forbidden in integration_step
+            for forbidden in ("PGPASSWORD", "GITHUB_ENV", "ci-lifecycle-")
+        )
+    ):
+        violations.append("lifecycle credential reaches pytest")
+
+    if violations:
+        pytest.fail(MIGRATION_ROLE_FAILURE, pytrace=False)
