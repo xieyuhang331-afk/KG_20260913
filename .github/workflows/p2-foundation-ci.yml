@@ -237,6 +237,31 @@ jobs:
             echo 'Refusing to drop a database outside the current ephemeral test run.'
             exit 1
           fi
+          expected_sentinel="kg-test-disposable:${KG_TEST_RUN_ID}"
+          sentinel_matches="$(
+            psql \
+              --host="$KG_DATABASE_HOST" \
+              --port="$KG_DATABASE_PORT" \
+              --username=postgres \
+              --dbname=postgres \
+              --tuples-only \
+              --no-align \
+              --set=ON_ERROR_STOP=1 \
+              --set=database_name="$KG_DATABASE_NAME" \
+              --set=expected_sentinel="$expected_sentinel" <<'SQL'
+          SELECT CASE
+          WHEN shobj_description(oid, 'pg_database') = :'expected_sentinel'
+          THEN 'true'
+          ELSE 'false'
+          END
+          FROM pg_database
+          WHERE datname = :'database_name';
+          SQL
+          )"
+          if [[ "$sentinel_matches" != "true" ]]; then
+            echo 'Refusing to drop a database without the current disposable sentinel.'
+            exit 1
+          fi
           dropdb \
             --if-exists \
             --force \

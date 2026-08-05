@@ -170,11 +170,29 @@ def pg_database():
     migration_database_url = _get_test_database_url()
     database = PgDatabase(migration_database_url)
 
+    migration_role = None
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        application_role = _validated_role_name("KG_TEST_APPLICATION_ROLE")
+        migration_role = _validated_role_name("KG_TEST_MIGRATION_ROLE")
+        readonly_role = _validated_role_name("KG_TEST_READONLY_ROLE")
+        roles = (application_role, migration_role, readonly_role)
+        if len(set(roles)) != len(roles):
+            raise RuntimeError("database validation roles must be distinct")
+        if "postgres" in roles:
+            raise RuntimeError("database validation roles must not use postgres")
+
     sentinel = database.fetch_value(
         "SELECT shobj_description(oid, 'pg_database') "
         "FROM pg_database WHERE datname = current_database()"
     )
     validate_database_sentinel(sentinel, target)
+
+    if migration_role is not None:
+        connected_role = database.fetch_value("SELECT current_user")
+        if connected_role != migration_role:
+            raise RuntimeError(
+                "migration database URL role does not match KG_TEST_MIGRATION_ROLE"
+            )
 
     database.execute("DROP SCHEMA IF EXISTS identity CASCADE")
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
