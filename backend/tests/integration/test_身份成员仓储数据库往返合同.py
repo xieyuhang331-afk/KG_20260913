@@ -260,7 +260,8 @@ async def _exercise_repository_round_trip(
 
     created_at = datetime(2026, 8, 5, 2, 30, tzinfo=timezone.utc)
     updated_at = datetime(2026, 8, 5, 2, 31, tzinfo=timezone.utc)
-    clock_values = iter((created_at, updated_at))
+    stale_attempt_at = datetime(2026, 8, 5, 2, 32, tzinfo=timezone.utc)
+    clock_values = iter((created_at, updated_at, stale_attempt_at))
     engine = create_async_engine(application_database_url, poolclass=NullPool)
     composition = IdentityPersistenceComposition(
         session_factory=create_identity_session_factory(engine),
@@ -282,13 +283,19 @@ async def _exercise_repository_round_trip(
         member_committed = True
 
         async with composition.unit_of_work() as uow:
-            assert await uow.members.get_by_id(MEMBER_ID) == member
-            assert await uow.members.get_by_member_no(MemberNo(initial_member_no)) == member
+            restored_by_id = await uow.members.get_by_id(MEMBER_ID)
+            restored_by_member_no = await uow.members.get_by_member_no(
+                MemberNo(initial_member_no)
+            )
+            assert type(restored_by_id.member_id) is UUID
+            assert type(restored_by_member_no.member_id) is UUID
+            assert restored_by_id == member
+            assert restored_by_member_no == member
             assert await uow.members.is_member_no_available(MemberNo(initial_member_no)) is False
 
         initial_row = await _fetch_member_row(readonly_database_url, MEMBER_ID)
         stored_member_id = initial_row["member_id"]
-        assert type(stored_member_id) is UUID
+        assert isinstance(stored_member_id, UUID)
         assert stored_member_id == MEMBER_ID
         assert stored_member_id.bytes == MEMBER_ID.bytes
         assert stored_member_id.int == MEMBER_ID.int
