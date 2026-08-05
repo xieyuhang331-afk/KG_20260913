@@ -5,6 +5,7 @@ from unittest import TestCase
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.types import TypeDecorator
 
 from app.modules.member import Member
 from app.modules.member.infrastructure.mapper import MemberPersistenceState
@@ -75,8 +76,10 @@ class TestMemberOrmContract(TestCase):
             member_id = columns.member_id
             self.assertTrue(member_id.primary_key)
             self.assertFalse(member_id.nullable)
-            self.assertIsInstance(member_id.type, postgresql.UUID)
-            self.assertTrue(member_id.type.as_uuid)
+            self.assertIsInstance(member_id.type, TypeDecorator)
+            dialect_type = member_id.type.load_dialect_impl(postgresql.dialect())
+            self.assertIsInstance(dialect_type, postgresql.UUID)
+            self.assertTrue(dialect_type.as_uuid)
             self.assertIsNone(member_id.default)
             self.assertIsNone(member_id.server_default)
 
@@ -139,5 +142,14 @@ class TestMemberOrmContract(TestCase):
                 self.assertFalse(callable(column.default))
 
         with self.subTest(scenario="UUID-001/python-boundary"):
-            member_id_type = columns.member_id.type.python_type
-            self.assertIs(member_id_type, uuid.UUID)
+            member_id_type = columns.member_id.type
+            self.assertIs(member_id_type.python_type, uuid.UUID)
+            processor = member_id_type.result_processor(postgresql.dialect(), None)
+            self.assertIsNotNone(processor)
+            standard_uuid = uuid.UUID("01890f5d-6d12-7cc4-98c4-dc0c0c07398f")
+            self.assertIs(processor(standard_uuid), standard_uuid)
+            self.assertIsNone(processor(None))
+            with self.assertRaisesRegex(
+                ValueError, "^member id database value is invalid$"
+            ):
+                processor(str(standard_uuid))

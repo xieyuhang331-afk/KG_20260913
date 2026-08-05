@@ -162,6 +162,19 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
     database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{readonly_role}"')
+    database.execute("REVOKE ALL ON SCHEMA identity FROM PUBLIC")
+    database.execute(f'GRANT USAGE ON SCHEMA identity TO "{application_role}"')
+    database.execute(f'REVOKE CREATE ON SCHEMA identity FROM "{application_role}"')
+    database.execute(f'GRANT SELECT, INSERT, UPDATE ON TABLE identity.member TO "{application_role}"')
+    database.execute(
+        f'REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member FROM "{application_role}"'
+    )
+    database.execute(f'GRANT USAGE ON SCHEMA identity TO "{readonly_role}"')
+    database.execute(f'REVOKE CREATE ON SCHEMA identity FROM "{readonly_role}"')
+    database.execute(f'GRANT SELECT ON TABLE identity.member TO "{readonly_role}"')
+    database.execute(
+        f'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member FROM "{readonly_role}"'
+    )
 
 
 @pytest.fixture(scope="module")
