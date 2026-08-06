@@ -15,11 +15,13 @@ CORE_TABLES = {
     "tenant_review_log",
     "user",
 }
-MEMBER_TABLE = "identity.member"
-MEMBER_NO_ALLOCATION_TABLE = "identity.member_no_allocation"
+IDENTITY_TABLES = {
+    "identity.member",
+    "identity.member_no_allocation",
+}
 
 
-def test_alembic_target_metadata_registers_identity_member():
+def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
     env_path = (
         Path(__file__).resolve().parents[1]
         / "app"
@@ -27,7 +29,7 @@ def test_alembic_target_metadata_registers_identity_member():
         / "env.py"
     )
     spec = importlib.util.spec_from_file_location(
-        "p2_identity_member_alembic_env",
+        "p2_member_no_allocation_alembic_env",
         env_path,
     )
     module = importlib.util.module_from_spec(spec)
@@ -39,15 +41,7 @@ def test_alembic_target_metadata_registers_identity_member():
     assert CORE_TABLES <= registered_tables, (
         "Alembic target_metadata changed the frozen P1 core table set"
     )
-    assert MEMBER_TABLE in registered_tables, (
-        "Alembic target_metadata is missing approved table: "
-        "identity.member"
+    assert IDENTITY_TABLES <= registered_tables, (
+        "Alembic target_metadata is missing an approved identity table"
     )
-    assert MEMBER_NO_ALLOCATION_TABLE in registered_tables, (
-        "Alembic target_metadata is missing approved table: "
-        "identity.member_no_allocation"
-    )
-    assert registered_tables == CORE_TABLES | {
-        MEMBER_TABLE,
-        MEMBER_NO_ALLOCATION_TABLE,
-    }
+    assert registered_tables == CORE_TABLES | IDENTITY_TABLES

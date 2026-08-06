@@ -36,6 +36,12 @@ def _imported_roots(tree: ast.AST) -> set[str]:
 
 def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
     approved_adapter = INFRASTRUCTURE_DIR / "sqlalchemy_repository.py"
+    approved_allocation_ledger = (
+        INFRASTRUCTURE_DIR / "sqlalchemy_member_no_allocation_ledger.py"
+    )
+    approved_allocation_uow = (
+        INFRASTRUCTURE_DIR / "member_no_allocation_unit_of_work.py"
+    )
     approved_mapper = INFRASTRUCTURE_DIR / "mapper.py"
     forbidden_paths = {
         INFRASTRUCTURE_DIR / "migration.py",
@@ -44,6 +50,8 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
     }
 
     assert approved_adapter.is_file()
+    assert approved_allocation_ledger.is_file()
+    assert approved_allocation_uow.is_file()
     assert approved_mapper.is_file()
     assert not {path for path in forbidden_paths if path.exists()}
 
@@ -51,7 +59,18 @@ def test_ct0_post_implementation_persistence_file_boundary_is_enforced():
 def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
     approved_model = INFRASTRUCTURE_DIR / "models.py"
     approved_repository = INFRASTRUCTURE_DIR / "sqlalchemy_repository.py"
-    approved_sqlalchemy_paths = {approved_model, approved_repository}
+    approved_allocation_ledger = (
+        INFRASTRUCTURE_DIR / "sqlalchemy_member_no_allocation_ledger.py"
+    )
+    approved_allocation_uow = (
+        INFRASTRUCTURE_DIR / "member_no_allocation_unit_of_work.py"
+    )
+    approved_sqlalchemy_paths = {
+        approved_model,
+        approved_repository,
+        approved_allocation_ledger,
+        approved_allocation_uow,
+    }
     forbidden_imports = {"alembic", "asyncpg"}
     forbidden_runtime_calls = {
         "async_sessionmaker",
@@ -84,7 +103,10 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
         )
 
-    allowed_uow_declarations = {"SqlAlchemyIdentityUnitOfWork"}
+    allowed_uow_declarations = {
+        "SqlAlchemyIdentityUnitOfWork",
+        "SqlAlchemyMemberNoAllocationUnitOfWork",
+    }
     assert not {
         name
         for name in declaration_names
