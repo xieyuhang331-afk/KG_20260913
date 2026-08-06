@@ -169,11 +169,25 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(
         f'REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member FROM "{application_role}"'
     )
+    database.execute(
+        f'GRANT SELECT, INSERT ON TABLE identity.member_no_allocation TO "{application_role}"'
+    )
+    database.execute(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE identity.member_no_allocation FROM "{application_role}"'
+    )
     database.execute(f'GRANT USAGE ON SCHEMA identity TO "{readonly_role}"')
     database.execute(f'REVOKE CREATE ON SCHEMA identity FROM "{readonly_role}"')
     database.execute(f'GRANT SELECT ON TABLE identity.member TO "{readonly_role}"')
     database.execute(
         f'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member FROM "{readonly_role}"'
+    )
+    database.execute(
+        f'GRANT SELECT ON TABLE identity.member_no_allocation TO "{readonly_role}"'
+    )
+    database.execute(
+        'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE identity.member_no_allocation FROM "{readonly_role}"'
     )
 
 
