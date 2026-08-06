@@ -16,6 +16,7 @@ CORE_TABLES = {
     "user",
 }
 MEMBER_TABLE = "identity.member"
+MEMBER_NO_ALLOCATION_TABLE = "identity.member_no_allocation"
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -42,4 +43,11 @@ def test_alembic_target_metadata_registers_identity_member():
         "Alembic target_metadata is missing approved table: "
         "identity.member"
     )
-    assert registered_tables == CORE_TABLES | {MEMBER_TABLE}
+    assert MEMBER_NO_ALLOCATION_TABLE in registered_tables, (
+        "Alembic target_metadata is missing approved table: "
+        "identity.member_no_allocation"
+    )
+    assert registered_tables == CORE_TABLES | {
+        MEMBER_TABLE,
+        MEMBER_NO_ALLOCATION_TABLE,
+    }

@@ -103,8 +103,10 @@ def test_at0_missing_production_adapter_does_not_fail_layout_guard():
     allowed_files = {
         "__init__.py",
         "mapper.py",
+        "member_no_allocation_unit_of_work.py",
         "models.py",
         "orm_state_mapper.py",
+        "sqlalchemy_member_no_allocation_ledger.py",
         "sqlalchemy_repository.py",
         "sqlalchemy_unit_of_work.py",
         "unit_of_work.py",
