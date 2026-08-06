@@ -7,6 +7,10 @@ from sqlalchemy.exc import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.uuid_generator import UuidGenerator
+from app.modules.member.application.create_registration_member import (
+    CreateRegistrationMemberService,
+)
 from app.modules.member.infrastructure.mapper import MemberMapper
 from app.modules.member.infrastructure.orm_state_mapper import MemberOrmStateMapper
 from app.modules.member.infrastructure.sqlalchemy_repository import (
@@ -64,3 +68,14 @@ class IdentityPersistenceComposition:
             orm_mapper=self._orm_mapper,
             clock=self._clock,
         )
+
+
+def create_registration_member_service(
+    *,
+    identity_persistence: IdentityPersistenceComposition,
+    uuid_generator: UuidGenerator,
+) -> CreateRegistrationMemberService:
+    return CreateRegistrationMemberService(
+        unit_of_work_factory=identity_persistence.unit_of_work,
+        uuid_generator=uuid_generator,
+    )
