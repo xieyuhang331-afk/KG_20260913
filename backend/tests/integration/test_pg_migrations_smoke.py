@@ -26,6 +26,6 @@ def test_alembic_upgrade_head_creates_expected_database_baseline(pg_database):
         )
     )
 
-    assert revision == "20260806_0008"
+    assert revision == "20260807_0009"
     assert enum_names == {"user_role", "tenant_status", "user_status"}
     assert table_names == {"platform_org", "tenant", "user", "health_profile", "health_indicator"}

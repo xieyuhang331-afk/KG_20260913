@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260806_0008"
+REQUIRED_HEAD_REVISION = "20260807_0009"
 
 
 def pytest_configure(config):
@@ -189,6 +189,28 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
         'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
         f'ON TABLE identity.member_no_allocation FROM "{readonly_role}"'
     )
+    evidence_tables = (
+        "identity_verification_decision",
+        "user_account_classification_decision",
+        "registration_eligibility_decision",
+    )
+    for table_name in evidence_tables:
+        database.execute(
+            f'GRANT SELECT, INSERT ON TABLE public."{table_name}" '
+            f'TO "{application_role}"'
+        )
+        database.execute(
+            'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+            f'ON TABLE public."{table_name}" FROM "{application_role}"'
+        )
+        database.execute(
+            f'GRANT SELECT ON TABLE public."{table_name}" '
+            f'TO "{readonly_role}"'
+        )
+        database.execute(
+            'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+            f'ON TABLE public."{table_name}" FROM "{readonly_role}"'
+        )
 
 
 @pytest.fixture(scope="module")
