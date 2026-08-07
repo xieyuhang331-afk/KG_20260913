@@ -389,6 +389,9 @@ jobs:
           python -m pytest \
             tests/integration/test_身份注册持久发件箱数据库合同.py::test_注册持久发件箱权限矩阵与真实往返 \
             -q --junitxml=pytest-outbox-steady-state-report.xml
+          python -m pytest \
+            tests/integration/test_身份注册持久发件箱数据库合同.py::test_注册持久发件箱R2权限并发恢复与对账真实往返 \
+            -q --junitxml=pytest-outbox-r2-report.xml
 
       - name: Install pinned UUIDv7 validation candidate
         run: >-
@@ -409,6 +412,7 @@ jobs:
           path: |
             backend/pytest-integration-report.xml
             backend/pytest-outbox-steady-state-report.xml
+            backend/pytest-outbox-r2-report.xml
             backend/pytest-uuid-validation-report.xml
           if-no-files-found: warn
           retention-days: 14
