@@ -17,6 +17,7 @@ CORE_TABLES = {
 }
 MEMBER_TABLE = "identity.member"
 MEMBER_NO_ALLOCATION_TABLE = "identity.member_no_allocation"
+REGISTRATION_OUTBOX_TABLE = "public.registration_verified_outbox"
 ELIGIBILITY_EVIDENCE_TABLES = {
     "public.identity_verification_decision",
     "public.user_account_classification_decision",
@@ -59,4 +60,5 @@ def test_alembic_target_metadata_registers_identity_member():
     assert registered_tables == CORE_TABLES | {
         MEMBER_TABLE,
         MEMBER_NO_ALLOCATION_TABLE,
+        REGISTRATION_OUTBOX_TABLE,
     } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES

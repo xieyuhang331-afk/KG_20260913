@@ -9,6 +9,9 @@ from app.modules.auth.eligibility_evidence_models import (  # noqa: F401
     RegistrationEligibilityDecisionEvidenceOrmModel,
     UserAccountClassificationEvidenceOrmModel,
 )
+from app.modules.auth.registration_outbox_models import (  # noqa: F401
+    RegistrationVerifiedOutboxOrmModel,
+)
 from app.modules.member.infrastructure.models import MemberOrmModel  # noqa: F401
 from app.modules.models import import_core_models
 from sqlalchemy import pool
