@@ -865,3 +865,15 @@ def test_backend_integration_runtime_secrets_and_database_targets_are_masked():
         violations.append("backend-unit secrets must be masked before export")
 
     assert violations == []
+
+
+def test_CI严格执行注册持久发件箱R2数据库合同并上传独立JUnit():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    node = (
+        "tests/integration/test_身份注册持久发件箱数据库合同.py::"
+        "test_注册持久发件箱R2权限并发恢复与对账真实往返"
+    )
+    assert workflow.count(node) == 1
+    assert workflow.count("pytest-outbox-r2-report.xml") == 2
+    assert "echo $KG_TEST_DELIVERY_WORKER_DATABASE_URL" not in workflow
+    assert "set -x" not in workflow
