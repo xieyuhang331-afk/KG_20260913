@@ -22,6 +22,10 @@ ELIGIBILITY_EVIDENCE_TABLES = {
     "public.user_account_classification_decision",
     "public.registration_eligibility_decision",
 }
+IDENTITY_BOOTSTRAP_TABLES = {
+    "identity.user_member_self_link",
+    "identity.registration_bootstrap_record",
+}
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -55,4 +59,4 @@ def test_alembic_target_metadata_registers_identity_member():
     assert registered_tables == CORE_TABLES | {
         MEMBER_TABLE,
         MEMBER_NO_ALLOCATION_TABLE,
-    } | ELIGIBILITY_EVIDENCE_TABLES
+    } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES
