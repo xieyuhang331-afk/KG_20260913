@@ -65,11 +65,20 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
     approved_allocation_uow = (
         INFRASTRUCTURE_DIR / "member_no_allocation_unit_of_work.py"
     )
+    approved_bootstrap_repository = (
+        INFRASTRUCTURE_DIR
+        / "sqlalchemy_registration_bootstrap_repository.py"
+    )
+    approved_bootstrap_uow = (
+        INFRASTRUCTURE_DIR / "registration_bootstrap_unit_of_work.py"
+    )
     approved_sqlalchemy_paths = {
         approved_model,
         approved_repository,
         approved_allocation_ledger,
         approved_allocation_uow,
+        approved_bootstrap_repository,
+        approved_bootstrap_uow,
     }
     forbidden_imports = {"alembic", "asyncpg"}
     forbidden_runtime_calls = {
@@ -106,6 +115,7 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
     allowed_uow_declarations = {
         "SqlAlchemyIdentityUnitOfWork",
         "SqlAlchemyMemberNoAllocationUnitOfWork",
+        "SqlAlchemyRegistrationBootstrapUnitOfWork",
     }
     assert not {
         name

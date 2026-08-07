@@ -90,7 +90,7 @@ def _get_ai_health_input(real_db_client, user_id: int):
 
 
 def _assert_database_ready(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260806_0008"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260807_0010"
     assert pg_database.fetch_value(
         """
         SELECT hypertable_name

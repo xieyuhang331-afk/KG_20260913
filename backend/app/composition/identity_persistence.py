@@ -11,6 +11,9 @@ from app.core.uuid_generator import UuidGenerator
 from app.modules.member.application.create_registration_member import (
     CreateRegistrationMemberService,
 )
+from app.modules.member.application.registration_bootstrap import (
+    RegistrationIdentityBootstrapService,
+)
 from app.modules.member.infrastructure.mapper import MemberMapper
 from app.modules.member.infrastructure.orm_state_mapper import MemberOrmStateMapper
 from app.modules.member.infrastructure.sqlalchemy_repository import (
@@ -18,6 +21,13 @@ from app.modules.member.infrastructure.sqlalchemy_repository import (
 )
 from app.modules.member.infrastructure.unit_of_work import (
     SqlAlchemyIdentityUnitOfWork,
+)
+from app.modules.member.infrastructure.registration_bootstrap_unit_of_work import (
+    SqlAlchemyRegistrationBootstrapUnitOfWork,
+)
+from app.modules.member.infrastructure.sqlalchemy_registration_bootstrap_repository import (
+    SqlAlchemyRegistrationEligibilityProofReader,
+    SqlAlchemyRegistrationMemberNoAllocationProofReader,
 )
 
 
@@ -69,6 +79,27 @@ class IdentityPersistenceComposition:
             clock=self._clock,
         )
 
+    def registration_bootstrap_unit_of_work(
+        self,
+    ) -> SqlAlchemyRegistrationBootstrapUnitOfWork:
+        return SqlAlchemyRegistrationBootstrapUnitOfWork(
+            self._session_factory, self._clock
+        )
+
+    def registration_eligibility_proof_reader(
+        self,
+    ) -> SqlAlchemyRegistrationEligibilityProofReader:
+        return SqlAlchemyRegistrationEligibilityProofReader(
+            self._session_factory
+        )
+
+    def registration_member_no_allocation_proof_reader(
+        self,
+    ) -> SqlAlchemyRegistrationMemberNoAllocationProofReader:
+        return SqlAlchemyRegistrationMemberNoAllocationProofReader(
+            self._session_factory, self._clock
+        )
+
 
 def create_registration_member_service(
     *,
@@ -77,5 +108,24 @@ def create_registration_member_service(
 ) -> CreateRegistrationMemberService:
     return CreateRegistrationMemberService(
         unit_of_work_factory=identity_persistence.unit_of_work,
+        uuid_generator=uuid_generator,
+    )
+
+
+def create_registration_identity_bootstrap_service(
+    *,
+    identity_persistence: IdentityPersistenceComposition,
+    uuid_generator: UuidGenerator,
+) -> RegistrationIdentityBootstrapService:
+    return RegistrationIdentityBootstrapService(
+        eligibility_reader=(
+            identity_persistence.registration_eligibility_proof_reader()
+        ),
+        allocation_reader=(
+            identity_persistence.registration_member_no_allocation_proof_reader()
+        ),
+        unit_of_work_factory=(
+            identity_persistence.registration_bootstrap_unit_of_work
+        ),
         uuid_generator=uuid_generator,
     )

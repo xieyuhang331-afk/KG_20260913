@@ -18,6 +18,11 @@ CORE_TABLES = {
 IDENTITY_TABLES = {
     "identity.member",
     "identity.member_no_allocation",
+    "identity.registration_bootstrap_record",
+    "identity.user_member_self_link",
+    "public.identity_verification_decision",
+    "public.registration_eligibility_decision",
+    "public.user_account_classification_decision",
 }
 
 

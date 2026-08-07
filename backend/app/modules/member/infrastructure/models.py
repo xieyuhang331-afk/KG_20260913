@@ -127,3 +127,115 @@ class MemberNoAllocationOrmModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class UserMemberSelfLinkOrmModel(Base):
+    __tablename__ = "user_member_self_link"
+    __table_args__ = (
+        UniqueConstraint("user_ref", name="uq_user_member_self_link_user"),
+        UniqueConstraint("member_id", name="uq_user_member_self_link_member"),
+        CheckConstraint(
+            "source = 'REGISTRATION_VERIFIED'",
+            name="source_registration_verified",
+        ),
+        CheckConstraint(
+            "establishment_basis = 'REGISTRATION_VERIFIED_BOOTSTRAP'",
+            name="establishment_basis_registration_verified_bootstrap",
+        ),
+        CheckConstraint("user_ref > 0", name="user_ref_positive"),
+        {"schema": "identity"},
+    )
+
+    link_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), primary_key=True, nullable=False
+    )
+    user_ref: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    member_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    eligibility_decision_ref: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    establishment_basis: Mapped[str] = mapped_column(
+        String(48), nullable=False
+    )
+    establishment_record_ref: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class RegistrationBootstrapRecordOrmModel(Base):
+    __tablename__ = "registration_bootstrap_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "bootstrap_scope",
+            "source_system",
+            "source_ref",
+            name="uq_registration_bootstrap_canonical_source",
+        ),
+        UniqueConstraint(
+            "member_id", name="uq_registration_bootstrap_member"
+        ),
+        UniqueConstraint(
+            "self_link_id", name="uq_registration_bootstrap_self_link"
+        ),
+        UniqueConstraint(
+            "member_no_allocation_ref",
+            name="uq_registration_bootstrap_allocation",
+        ),
+        CheckConstraint(
+            "source = 'REGISTRATION_VERIFIED'",
+            name="source_registration_verified",
+        ),
+        CheckConstraint("user_ref > 0", name="user_ref_positive"),
+        CheckConstraint(
+            "bootstrap_scope = 'REGISTRATION_VERIFIED'",
+            name="bootstrap_scope_registration_verified",
+        ),
+        CheckConstraint(
+            "source_system = 'P1_USER'",
+            name="source_system_p1_user",
+        ),
+        CheckConstraint(
+            "source_ref = user_ref AND source_ref > 0",
+            name="source_ref_matches_user",
+        ),
+        CheckConstraint(
+            "decision = 'APPROVED'", name="decision_approved"
+        ),
+        {"schema": "identity"},
+    )
+
+    record_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), primary_key=True, nullable=False
+    )
+    user_ref: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    member_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    self_link_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    registration_event_id: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    eligibility_decision_ref: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    member_no_allocation_ref: Mapped[UUID] = mapped_column(
+        _StandardLibraryUuid(), nullable=False
+    )
+    member_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    bootstrap_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_ref: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
