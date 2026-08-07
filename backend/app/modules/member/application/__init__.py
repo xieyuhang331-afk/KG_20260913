@@ -41,6 +41,7 @@ from .member_no_allocator import (
     MemberNoValueConflictError,
     RegistrationMemberNoAllocator,
 )
+from .registration_orchestrator import RegistrationOrchestrator
 
 __all__ = [
     "CreateRegistrationMemberCommand",
@@ -80,4 +81,5 @@ __all__ = [
     "MemberNoAllocationUnavailable",
     "MemberNoValueConflictError",
     "RegistrationMemberNoAllocator",
+    "RegistrationOrchestrator",
 ]
