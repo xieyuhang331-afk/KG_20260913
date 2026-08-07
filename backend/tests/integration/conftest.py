@@ -64,6 +64,18 @@ def _get_readonly_database_url() -> str:
     return _get_role_database_url("KG_TEST_READONLY_DATABASE_URL")
 
 
+def _get_verification_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_VERIFICATION_WRITER_DATABASE_URL")
+
+
+def _get_delivery_worker_database_url() -> str:
+    return _get_role_database_url("KG_TEST_DELIVERY_WORKER_DATABASE_URL")
+
+
+def _get_outbox_audit_database_url() -> str:
+    return _get_role_database_url("KG_TEST_OUTBOX_AUDIT_DATABASE_URL")
+
+
 def _get_role_database_url(environment_name: str) -> str:
     primary_url, primary_target = _get_test_database_target()
     database_url = os.getenv(environment_name)
@@ -233,6 +245,52 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
             f'ON TABLE public."{table_name}" FROM "{readonly_role}"'
         )
 
+    writer_role = _validated_role_name("KG_TEST_VERIFICATION_WRITER_ROLE")
+    worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
+    audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
+    runtime_roles = (writer_role, worker_role, audit_role)
+    for role in runtime_roles:
+        database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+        database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{role}"')
+        database.execute(
+            'GRANT SELECT (id, role, status, verify_status, updated_at) '
+            f'ON TABLE public."user" TO "{role}"'
+        )
+        database.execute(
+            f'GRANT SELECT ON TABLE public.identity_verification_decision, '
+            'public.user_account_classification_decision, '
+            f'public.registration_eligibility_decision TO "{role}"'
+        )
+        database.execute(
+            f'GRANT SELECT ON TABLE public.registration_verified_outbox TO "{role}"'
+        )
+        database.execute(
+            f'REVOKE ALL ON TABLE public.alembic_version FROM "{role}"'
+        )
+    database.execute(
+        'GRANT UPDATE (verify_status, updated_at) ON TABLE public."user" '
+        f'TO "{writer_role}"'
+    )
+    database.execute(
+        'GRANT INSERT ON TABLE public.identity_verification_decision, '
+        'public.registration_eligibility_decision, '
+        f'public.registration_verified_outbox TO "{writer_role}"'
+    )
+    database.execute(
+        f'GRANT INSERT ON TABLE public.registration_verified_outbox TO "{worker_role}"'
+    )
+    database.execute(
+        'GRANT UPDATE (status, available_at, attempt_count, lease_owner, '
+        'locked_until, lease_generation, last_error_category, last_error_code, '
+        'last_error_digest, delivered_at, updated_at) '
+        f'ON TABLE public.registration_verified_outbox TO "{worker_role}"'
+    )
+    for role in (application_role, readonly_role):
+        database.execute(
+            'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+            f'ON TABLE public.registration_verified_outbox FROM "{role}"'
+        )
+
 
 @pytest.fixture(scope="module")
 def pg_database():
@@ -245,7 +303,19 @@ def pg_database():
         application_role = _validated_role_name("KG_TEST_APPLICATION_ROLE")
         migration_role = _validated_role_name("KG_TEST_MIGRATION_ROLE")
         readonly_role = _validated_role_name("KG_TEST_READONLY_ROLE")
-        roles = (application_role, migration_role, readonly_role)
+        ddl_owner_role = _validated_role_name("KG_TEST_DDL_OWNER_ROLE")
+        writer_role = _validated_role_name("KG_TEST_VERIFICATION_WRITER_ROLE")
+        worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
+        audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
+        roles = (
+            application_role,
+            migration_role,
+            readonly_role,
+            ddl_owner_role,
+            writer_role,
+            worker_role,
+            audit_role,
+        )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
         if "postgres" in roles:
@@ -263,6 +333,47 @@ def pg_database():
             raise RuntimeError(
                 "migration database URL role does not match KG_TEST_MIGRATION_ROLE"
             )
+
+    if os.getenv("KG_TEST_SCHEMA_PREPARED") == "1":
+        database_owner = database.fetch_value(
+            "SELECT pg_get_userbyid(datdba) FROM pg_database "
+            "WHERE datname = current_database()"
+        )
+        schema_owner = database.fetch_value(
+            "SELECT schema_owner FROM information_schema.schemata "
+            "WHERE schema_name = 'public'"
+        )
+        has_owner_membership = database.fetch_value(
+            f"SELECT pg_has_role(current_user, '{ddl_owner_role}', 'MEMBER')"
+        )
+        has_business_privilege = database.fetch_value(
+            "SELECT has_table_privilege(current_user, "
+            "'public.registration_verified_outbox', 'SELECT') OR "
+            "has_table_privilege(current_user, "
+            "'public.registration_verified_outbox', 'INSERT') OR "
+            "has_table_privilege(current_user, "
+            "'public.registration_verified_outbox', 'UPDATE') OR "
+            "has_table_privilege(current_user, "
+            "'public.registration_verified_outbox', 'DELETE')"
+        )
+        if (
+            database_owner != ddl_owner_role
+            or schema_owner != ddl_owner_role
+            or has_owner_membership
+            or has_business_privilege
+        ):
+            raise RuntimeError(
+                "migration steady-state privileges are not isolated"
+            )
+        current_revision = database.fetch_value(
+            "SELECT version_num FROM alembic_version"
+        )
+        if current_revision != REQUIRED_HEAD_REVISION:
+            raise RuntimeError(
+                f"expected Alembic head {REQUIRED_HEAD_REVISION}, got {current_revision}"
+            )
+        yield database
+        return
 
     database.execute("DROP SCHEMA IF EXISTS identity CASCADE")
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")

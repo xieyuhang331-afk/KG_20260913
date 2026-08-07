@@ -79,9 +79,15 @@ jobs:
           import os
           import secrets
 
+          values = {
+              "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
+              "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+          }
+          for value in values.values():
+              print(f"::add-mask::{value}")
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env_file:
-              env_file.write(f"KG_DATABASE_PASSWORD={secrets.token_urlsafe(32)}\n")
-              env_file.write(f"KG_JWT_SECRET_KEY={secrets.token_urlsafe(64)}\n")
+              for name, value in values.items():
+                  env_file.write(f"{name}={value}\n")
               env_file.write("KG_RUN_PG_INTEGRATION=0\n")
           PY
 
@@ -109,27 +115,14 @@ jobs:
       KG_RUN_PG_INTEGRATION: '1'
       KG_ALLOW_DESTRUCTIVE_TEST_DATABASE: '1'
       KG_TEST_ENVIRONMENT: ci_ephemeral
-      KG_TEST_RUN_ID: gh_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_DATABASE_HOST: 127.0.0.1
-      KG_DATABASE_PORT: '5432'
-      KG_DATABASE_NAME: kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_DATABASE_USER: kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_DATABASE_PASSWORD: ci-app-${{ github.run_id }}-${{ github.run_attempt }}
-      KG_JWT_SECRET_KEY: ci-jwt-${{ github.run_id }}-${{ github.run_attempt }}-ephemeral-only
       KG_TEST_ROLE_SEPARATION: '1'
-      KG_TEST_APPLICATION_ROLE: kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_TEST_MIGRATION_ROLE: kg_ci_migration_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_TEST_READONLY_ROLE: kg_ci_readonly_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_TEST_DATABASE_URL: postgresql+asyncpg://kg_ci_app_${{ github.run_id }}_${{ github.run_attempt }}:ci-app-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_TEST_MIGRATION_DATABASE_URL: postgresql+asyncpg://kg_ci_migration_${{ github.run_id }}_${{ github.run_attempt }}:ci-migration-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
-      KG_TEST_READONLY_DATABASE_URL: postgresql+asyncpg://kg_ci_readonly_${{ github.run_id }}_${{ github.run_attempt }}:ci-readonly-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5432/kg_it_gh_${{ github.run_id }}_${{ github.run_attempt }}
     services:
       timescaledb:
         image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: ci-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          POSTGRES_PASSWORD: ${{ github.token }}
           TIMESCALEDB_TELEMETRY: off
         ports:
           - 5432:5432
@@ -152,11 +145,86 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -e . pytest==9.1.1
 
-      - name: Create disposable test database
+      - name: Prepare masked ephemeral integration configuration
         shell: bash
         run: |
           set -euo pipefail
-          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python - <<'PY'
+          import os
+          import secrets
+          from urllib.parse import quote
+
+          suffix = (
+              f"{os.environ['GITHUB_RUN_ID']}_"
+              f"{os.environ['GITHUB_RUN_ATTEMPT']}_"
+              f"{secrets.token_hex(8)}"
+          )
+          host = "127.0.0.1"
+          port = "5432"
+          run_id = f"gh_{suffix}"
+          database = f"kg_it_{run_id}"
+          outbox_run_id = f"{run_id}_outbox"
+          outbox_database = f"kg_it_{outbox_run_id}"
+          roles = {
+              "KG_TEST_DDL_OWNER_ROLE": f"kg_ci_ddl_owner_{suffix}",
+              "KG_TEST_APPLICATION_ROLE": f"kg_ci_app_{suffix}",
+              "KG_TEST_MIGRATION_ROLE": f"kg_ci_migration_{suffix}",
+              "KG_TEST_READONLY_ROLE": f"kg_ci_readonly_{suffix}",
+              "KG_TEST_VERIFICATION_WRITER_ROLE": f"kg_ci_writer_{suffix}",
+              "KG_TEST_DELIVERY_WORKER_ROLE": f"kg_ci_worker_{suffix}",
+              "KG_TEST_OUTBOX_AUDIT_ROLE": f"kg_ci_audit_{suffix}",
+          }
+          passwords = {
+              name: secrets.token_urlsafe(48)
+              for name in roles
+              if name != "KG_TEST_DDL_OWNER_ROLE"
+          }
+          values = {
+              "KG_TEST_RUN_ID": run_id,
+              "KG_DATABASE_HOST": host,
+              "KG_DATABASE_PORT": port,
+              "KG_DATABASE_NAME": database,
+              "KG_OUTBOX_TEST_RUN_ID": outbox_run_id,
+              "KG_OUTBOX_DATABASE_NAME": outbox_database,
+              "KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"],
+              "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
+              "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              **roles,
+          }
+          url_names = {
+              "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
+              "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
+              "KG_TEST_READONLY_DATABASE_URL": "KG_TEST_READONLY_ROLE",
+              "KG_TEST_VERIFICATION_WRITER_DATABASE_URL": "KG_TEST_VERIFICATION_WRITER_ROLE",
+              "KG_TEST_DELIVERY_WORKER_DATABASE_URL": "KG_TEST_DELIVERY_WORKER_ROLE",
+              "KG_TEST_OUTBOX_AUDIT_DATABASE_URL": "KG_TEST_OUTBOX_AUDIT_ROLE",
+          }
+          for environment_name, role_name in url_names.items():
+              role = roles[role_name]
+              password = passwords[role_name]
+              values[environment_name] = (
+                  f"postgresql+asyncpg://{role}:{quote(password)}@"
+                  f"{host}:{port}/{database}"
+              )
+              values[f"KG_OUTBOX_{environment_name}"] = (
+                  f"postgresql+asyncpg://{role}:{quote(password)}@"
+                  f"{host}:{port}/{outbox_database}"
+              )
+          for value in (*values.values(), *passwords.values()):
+              print(f"::add-mask::{value}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              for name, value in values.items():
+                  env_file.write(f"{name}={value}\n")
+              for role_name, password in passwords.items():
+                  env_file.write(f"{role_name}_PASSWORD={password}\n")
+          PY
+
+      - name: Create disposable test database
+        shell: bash
+        env:
+          PGPASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
           expected_name="kg_it_${KG_TEST_RUN_ID}"
           if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
             echo 'Refusing to create a database outside the current ephemeral test run.'
@@ -176,9 +244,10 @@ jobs:
 
       - name: Provision isolated validation roles
         shell: bash
+        env:
+          PGPASSWORD: ${{ github.token }}
         run: |
           set -euo pipefail
-          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           psql \
             --host="$KG_DATABASE_HOST" \
             --port="$KG_DATABASE_PORT" \
@@ -186,23 +255,140 @@ jobs:
             --dbname="$KG_DATABASE_NAME" \
             --set=ON_ERROR_STOP=1 \
             --set=database_name="$KG_DATABASE_NAME" \
+            --set=outbox_database_name="$KG_OUTBOX_DATABASE_NAME" \
+            --set=outbox_sentinel="kg-test-disposable:${KG_OUTBOX_TEST_RUN_ID}" \
+            --set=ddl_owner_role="$KG_TEST_DDL_OWNER_ROLE" \
             --set=migration_role="$KG_TEST_MIGRATION_ROLE" \
-            --set=migration_password="ci-migration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --set=application_role="$KG_TEST_APPLICATION_ROLE" \
             --set=application_password="$KG_DATABASE_PASSWORD" \
             --set=readonly_role="$KG_TEST_READONLY_ROLE" \
-            --set=readonly_password="ci-readonly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" <<'SQL'
+            --set=readonly_password="$KG_TEST_READONLY_ROLE_PASSWORD" \
+            --set=writer_role="$KG_TEST_VERIFICATION_WRITER_ROLE" \
+            --set=writer_password="$KG_TEST_VERIFICATION_WRITER_ROLE_PASSWORD" \
+            --set=worker_role="$KG_TEST_DELIVERY_WORKER_ROLE" \
+            --set=worker_password="$KG_TEST_DELIVERY_WORKER_ROLE_PASSWORD" \
+            --set=audit_role="$KG_TEST_OUTBOX_AUDIT_ROLE" \
+            --set=audit_password="$KG_TEST_OUTBOX_AUDIT_ROLE_PASSWORD" \
+            --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
+          CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"application_role" LOGIN PASSWORD :'application_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"readonly_role" LOGIN PASSWORD :'readonly_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"writer_role" LOGIN PASSWORD :'writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"worker_role" LOGIN PASSWORD :'worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"audit_role" LOGIN PASSWORD :'audit_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";
           REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+          CREATE DATABASE :"outbox_database_name" OWNER :"ddl_owner_role";
+          COMMENT ON DATABASE :"outbox_database_name" IS :'outbox_sentinel';
+          GRANT :"ddl_owner_role" TO :"migration_role";
+          ALTER ROLE :"migration_role" IN DATABASE :"outbox_database_name" SET role TO :"ddl_owner_role";
+          SQL
+          psql \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username=postgres \
+            --dbname="$KG_OUTBOX_DATABASE_NAME" \
+            --set=ON_ERROR_STOP=1 \
+            --set=ddl_owner_role="$KG_TEST_DDL_OWNER_ROLE" <<'SQL'
+          CREATE EXTENSION IF NOT EXISTS timescaledb;
+          ALTER SCHEMA public OWNER TO :"ddl_owner_role";
+          REVOKE CREATE ON SCHEMA public FROM PUBLIC;
           SQL
 
       - name: Run PostgreSQL integration and migration tests
-        run: python -m pytest tests/integration -q --junitxml=pytest-integration-report.xml
+        run: >-
+          python -m pytest tests/integration
+          --ignore=tests/integration/test_身份注册持久发件箱数据库合同.py
+          -q --junitxml=pytest-integration-report.xml
+
+      - name: Apply Outbox Alembic head in controlled DDL-owner window
+        run: |
+          python - <<'PY'
+          import os
+          from alembic import command
+          from tests.integration.conftest import _build_alembic_config
+
+          command.upgrade(
+              _build_alembic_config(
+                  os.environ["KG_OUTBOX_KG_TEST_MIGRATION_DATABASE_URL"]
+              ),
+              "head",
+          )
+          PY
+
+      - name: Close DDL-owner window and grant runtime permissions
+        shell: bash
+        env:
+          PGPASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          psql \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username=postgres \
+            --dbname="$KG_OUTBOX_DATABASE_NAME" \
+            --set=ON_ERROR_STOP=1 \
+            --set=database_name="$KG_OUTBOX_DATABASE_NAME" \
+            --set=ddl_owner_role="$KG_TEST_DDL_OWNER_ROLE" \
+            --set=migration_role="$KG_TEST_MIGRATION_ROLE" \
+            --set=application_role="$KG_TEST_APPLICATION_ROLE" \
+            --set=readonly_role="$KG_TEST_READONLY_ROLE" \
+            --set=writer_role="$KG_TEST_VERIFICATION_WRITER_ROLE" \
+            --set=worker_role="$KG_TEST_DELIVERY_WORKER_ROLE" \
+            --set=audit_role="$KG_TEST_OUTBOX_AUDIT_ROLE" <<'SQL'
+          ALTER ROLE :"migration_role" IN DATABASE :"database_name" RESET role;
+          REVOKE :"ddl_owner_role" FROM :"migration_role";
+          GRANT SELECT ON TABLE public.alembic_version TO :"migration_role";
+
+          GRANT USAGE ON SCHEMA public TO :"application_role", :"readonly_role", :"writer_role", :"worker_role", :"audit_role";
+          REVOKE CREATE ON SCHEMA public FROM :"application_role", :"readonly_role", :"writer_role", :"worker_role", :"audit_role";
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"application_role";
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"application_role";
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO :"readonly_role";
+          REVOKE INSERT, UPDATE, DELETE ON TABLE public.alembic_version FROM :"application_role";
+
+          REVOKE ALL ON SCHEMA identity FROM PUBLIC;
+          GRANT USAGE ON SCHEMA identity TO :"application_role", :"readonly_role";
+          REVOKE CREATE ON SCHEMA identity FROM :"application_role", :"readonly_role";
+          GRANT SELECT, INSERT, UPDATE ON TABLE identity.member TO :"application_role";
+          REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member FROM :"application_role";
+          GRANT SELECT, INSERT ON TABLE identity.member_no_allocation, identity.user_member_self_link, identity.registration_bootstrap_record TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member_no_allocation, identity.user_member_self_link, identity.registration_bootstrap_record FROM :"application_role";
+          GRANT SELECT ON TABLE identity.member, identity.member_no_allocation, identity.user_member_self_link, identity.registration_bootstrap_record TO :"readonly_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE identity.member, identity.member_no_allocation, identity.user_member_self_link, identity.registration_bootstrap_record FROM :"readonly_role";
+
+          GRANT SELECT, INSERT ON TABLE public.identity_verification_decision, public.user_account_classification_decision, public.registration_eligibility_decision TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_decision, public.user_account_classification_decision, public.registration_eligibility_decision FROM :"application_role";
+          GRANT SELECT ON TABLE public.identity_verification_decision, public.user_account_classification_decision, public.registration_eligibility_decision TO :"readonly_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_decision, public.user_account_classification_decision, public.registration_eligibility_decision FROM :"readonly_role";
+
+          GRANT SELECT (id, role, status, verify_status, updated_at) ON TABLE public."user" TO :"writer_role", :"worker_role", :"audit_role";
+          GRANT SELECT ON TABLE public.identity_verification_decision, public.user_account_classification_decision, public.registration_eligibility_decision, public.registration_verified_outbox TO :"writer_role", :"worker_role", :"audit_role";
+          GRANT UPDATE (verify_status, updated_at) ON TABLE public."user" TO :"writer_role";
+          GRANT INSERT ON TABLE public.identity_verification_decision, public.registration_eligibility_decision, public.registration_verified_outbox TO :"writer_role";
+          GRANT INSERT ON TABLE public.registration_verified_outbox TO :"worker_role";
+          GRANT UPDATE (status, available_at, attempt_count, lease_owner, locked_until, lease_generation, last_error_category, last_error_code, last_error_digest, delivered_at, updated_at) ON TABLE public.registration_verified_outbox TO :"worker_role";
+          REVOKE ALL ON TABLE public.alembic_version FROM :"writer_role", :"worker_role", :"audit_role";
+          REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.registration_verified_outbox FROM :"application_role", :"readonly_role";
+          SQL
+
+      - name: Run Outbox steady-state PostgreSQL contract
+        run: |
+          export KG_TEST_SCHEMA_PREPARED=1
+          export KG_TEST_RUN_ID="$KG_OUTBOX_TEST_RUN_ID"
+          export KG_DATABASE_NAME="$KG_OUTBOX_DATABASE_NAME"
+          export KG_TEST_DATABASE_URL="$KG_OUTBOX_KG_TEST_DATABASE_URL"
+          export KG_TEST_MIGRATION_DATABASE_URL="$KG_OUTBOX_KG_TEST_MIGRATION_DATABASE_URL"
+          export KG_TEST_READONLY_DATABASE_URL="$KG_OUTBOX_KG_TEST_READONLY_DATABASE_URL"
+          export KG_TEST_VERIFICATION_WRITER_DATABASE_URL="$KG_OUTBOX_KG_TEST_VERIFICATION_WRITER_DATABASE_URL"
+          export KG_TEST_DELIVERY_WORKER_DATABASE_URL="$KG_OUTBOX_KG_TEST_DELIVERY_WORKER_DATABASE_URL"
+          export KG_TEST_OUTBOX_AUDIT_DATABASE_URL="$KG_OUTBOX_KG_TEST_OUTBOX_AUDIT_DATABASE_URL"
+          python -m pytest \
+            tests/integration/test_身份注册持久发件箱数据库合同.py::test_注册持久发件箱权限矩阵与真实往返 \
+            -q --junitxml=pytest-outbox-steady-state-report.xml
 
       - name: Install pinned UUIDv7 validation candidate
         run: >-
@@ -222,16 +408,63 @@ jobs:
           name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             backend/pytest-integration-report.xml
+            backend/pytest-outbox-steady-state-report.xml
             backend/pytest-uuid-validation-report.xml
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Drop disposable Outbox test database
+        if: always()
+        shell: bash
+        env:
+          PGPASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected_name="kg_it_${KG_OUTBOX_TEST_RUN_ID}"
+          if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_OUTBOX_DATABASE_NAME" != "$expected_name" ]]; then
+            echo 'Refusing to drop an Outbox database outside the current ephemeral test run.'
+            exit 1
+          fi
+          expected_sentinel="kg-test-disposable:${KG_OUTBOX_TEST_RUN_ID}"
+          sentinel_matches="$(
+            psql \
+              --host="$KG_DATABASE_HOST" \
+              --port="$KG_DATABASE_PORT" \
+              --username=postgres \
+              --dbname=postgres \
+              --tuples-only \
+              --no-align \
+              --set=ON_ERROR_STOP=1 \
+              --set=database_name="$KG_OUTBOX_DATABASE_NAME" \
+              --set=expected_sentinel="$expected_sentinel" <<'SQL'
+          SELECT CASE
+          WHEN shobj_description(oid, 'pg_database') = :'expected_sentinel'
+          THEN 'true'
+          ELSE 'false'
+          END
+          FROM pg_database
+          WHERE datname = :'database_name';
+          SQL
+          )"
+          if [[ "$sentinel_matches" != "true" ]]; then
+            echo 'Refusing to drop an Outbox database without the current disposable sentinel.'
+            exit 1
+          fi
+          dropdb \
+            --if-exists \
+            --force \
+            --host="$KG_DATABASE_HOST" \
+            --port="$KG_DATABASE_PORT" \
+            --username=postgres \
+            "$KG_OUTBOX_DATABASE_NAME"
+
       - name: Drop disposable test database
         if: always()
         shell: bash
+        env:
+          PGPASSWORD: ${{ github.token }}
         run: |
           set -euo pipefail
-          export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           expected_name="kg_it_${KG_TEST_RUN_ID}"
           if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" || "$KG_DATABASE_NAME" != "$expected_name" ]]; then
             echo 'Refusing to drop a database outside the current ephemeral test run.'

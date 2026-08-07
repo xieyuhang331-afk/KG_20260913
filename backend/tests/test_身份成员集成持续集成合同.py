@@ -546,12 +546,13 @@ def test_disposable_database_drop_revalidates_current_run_sentinel():
         "      - name: Drop disposable test database",
         "        if: always()",
         "        shell: bash",
+        "        env:",
+        "          PGPASSWORD: ${{ github.token }}",
         "        run: |",
     ]
     shell_lines = _workflow_shell_lines("Drop disposable test database")
     expected_shell_lines = [
         "set -euo pipefail",
-        'export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
         'expected_name="kg_it_${KG_TEST_RUN_ID}"',
         'if [[ "$KG_TEST_ENVIRONMENT" != "ci_ephemeral" '
         '|| "$KG_DATABASE_NAME" != "$expected_name" ]]; then',
@@ -662,6 +663,18 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_APPLICATION_ROLE", application_role)
         monkeypatch.setenv("KG_TEST_MIGRATION_ROLE", migration_role)
         monkeypatch.setenv("KG_TEST_READONLY_ROLE", readonly_role)
+        monkeypatch.setenv(
+            "KG_TEST_VERIFICATION_WRITER_ROLE", "kg_ci_writer_test_run"
+        )
+        monkeypatch.setenv(
+            "KG_TEST_DELIVERY_WORKER_ROLE", "kg_ci_worker_test_run"
+        )
+        monkeypatch.setenv(
+            "KG_TEST_OUTBOX_AUDIT_ROLE", "kg_ci_audit_test_run"
+        )
+        monkeypatch.setenv(
+            "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
+        )
         fixture = integration_conftest.pg_database.__wrapped__()
         failure = None
         try:
@@ -756,11 +769,6 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
             "Drop disposable test database",
         )
     )
-    lifecycle_export = (
-        'export PGPASSWORD="ci-lifecycle-${GITHUB_RUN_ID}-'
-        '${GITHUB_RUN_ATTEMPT}"'
-    )
-
     violations = []
     if not (
         mismatched_failure is not None
@@ -803,10 +811,11 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
     ):
         violations.append("lifecycle URL or password environment")
     if (
-        "GITHUB_ENV" in backend_integration_job
-        or backend_integration_job.count("PGPASSWORD") != 3
-        or backend_integration_job.count(lifecycle_export) != 3
-        or any(step.count(lifecycle_export) != 1 for step in lifecycle_steps)
+        "POSTGRES_PASSWORD: ${{ github.token }}" not in backend_integration_job
+        or any(
+            step.count("PGPASSWORD: ${{ github.token }}") != 1
+            for step in lifecycle_steps
+        )
         or any(
             forbidden in integration_step
             for forbidden in ("PGPASSWORD", "GITHUB_ENV", "ci-lifecycle-")
@@ -816,3 +825,43 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
 
     if violations:
         pytest.fail(MIGRATION_ROLE_FAILURE, pytrace=False)
+
+
+def test_backend_integration_runtime_secrets_and_database_targets_are_masked():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    backend_unit_job = _workflow_job_block("backend-unit")
+    backend_integration_job = _workflow_job_block("backend-integration")
+    violations = []
+
+    for forbidden in (
+        "ci-app-${{ github.run_id }}",
+        "ci-migration-${GITHUB_RUN_ID}",
+        "ci-readonly-${GITHUB_RUN_ID}",
+        "ci-jwt-${{ github.run_id }}",
+        "KG_TEST_DATABASE_URL: postgresql+asyncpg://",
+        "KG_TEST_MIGRATION_DATABASE_URL: postgresql+asyncpg://",
+        "KG_TEST_READONLY_DATABASE_URL: postgresql+asyncpg://",
+    ):
+        if forbidden in backend_integration_job:
+            violations.append(forbidden)
+    for required in (
+        "Prepare masked ephemeral integration configuration",
+        "secrets.token_urlsafe",
+        "::add-mask::",
+        "GITHUB_ENV",
+        "KG_TEST_VERIFICATION_WRITER_DATABASE_URL",
+        "KG_TEST_DELIVERY_WORKER_DATABASE_URL",
+        "KG_TEST_OUTBOX_AUDIT_DATABASE_URL",
+        "KG_TEST_DDL_OWNER_ROLE",
+        "Close DDL-owner window and grant runtime permissions",
+        "REVOKE :\"ddl_owner_role\" FROM :\"migration_role\"",
+        "Run Outbox steady-state PostgreSQL contract",
+    ):
+        if required not in backend_integration_job:
+            violations.append(required)
+    unit_mask = backend_unit_job.find("::add-mask::")
+    unit_export = backend_unit_job.find("GITHUB_ENV")
+    if unit_mask < 0 or unit_export < 0 or unit_mask > unit_export:
+        violations.append("backend-unit secrets must be masked before export")
+
+    assert violations == []

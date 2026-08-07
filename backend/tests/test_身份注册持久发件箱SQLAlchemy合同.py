@@ -556,7 +556,13 @@ def test_Repository锁定User并读取CurrentClassification与Verification():
     _, repository_type, _ = _persistence_api()
 
     async def scenario():
-        user = SimpleNamespace(id=USER_REF)
+        user = SimpleNamespace(
+            id=USER_REF,
+            role="member",
+            status="active",
+            verify_status="pending",
+            updated_at=DECIDED_AT,
+        )
         session = RepositorySessionSpy(
             user,
             _stored_classification(),
@@ -569,11 +575,80 @@ def test_Repository锁定User并读取CurrentClassification与Verification():
         )
         verification = await repository.get_current_verification(USER_REF)
 
-        assert restored_user is user
+        assert restored_user.id == user.id
+        assert restored_user.role == user.role
+        assert restored_user.status == user.status
+        assert restored_user.verify_status == user.verify_status
+        assert restored_user.updated_at == user.updated_at
         assert classification.decision_ref == CLASSIFICATION_REF
         assert verification.decision_ref == VERIFICATION_REF
         user_statement = session.execute_calls[0]
         assert user_statement._for_update_arg is not None
+
+    asyncio.run(scenario())
+
+
+def test_Repository首次写入与重放只读取User五列且首次写入保留锁():
+    _, repository_type, _ = _persistence_api()
+    approved_columns = (
+        "id",
+        "role",
+        "status",
+        "verify_status",
+        "updated_at",
+    )
+
+    async def scenario():
+        locked_user = SimpleNamespace(
+            id=USER_REF,
+            role="member",
+            status="active",
+            verify_status="pending",
+            updated_at=DECIDED_AT,
+        )
+        first_write = RepositorySessionSpy(locked_user, None)
+        first_repository = repository_type(first_write)
+        restored = await first_repository.get_user_for_update(USER_REF)
+        restored.verify_status = "verified"
+        await first_repository.flush_locked_user_projection()
+        first_statement = first_write.execute_calls[0]
+        update_statement = first_write.execute_calls[1]
+
+        replay_user = SimpleNamespace(
+            id=USER_REF,
+            role="member",
+            status="active",
+            verify_status="verified",
+            updated_at=DECIDED_AT,
+        )
+        replay = RepositorySessionSpy(
+            (_stored_verification(), _stored_outbox()),
+            _stored_eligibility(),
+            _stored_classification(),
+            replay_user,
+        )
+        await repository_type(replay).find_by_authority_decision_key(
+            AUTHORITY_KEY
+        )
+        replay_statement = replay.execute_calls[3]
+
+        assert tuple(
+            column.name for column in first_statement.selected_columns
+        ) == approved_columns
+        assert tuple(
+            column.name for column in replay_statement.selected_columns
+        ) == approved_columns
+        assert first_statement._for_update_arg is not None
+        assert replay_statement._for_update_arg is None
+        assert {
+            column.name for column in update_statement._values
+        } == {"verify_status", "updated_at"}
+        for statement in (first_statement, replay_statement):
+            rendered = str(
+                statement.compile(dialect=postgresql.dialect())
+            ).lower()
+            assert "phone" not in rendered
+            assert "password" not in rendered
 
     asyncio.run(scenario())
 

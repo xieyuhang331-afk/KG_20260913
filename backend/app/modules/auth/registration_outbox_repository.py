@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import (
     DBAPIError,
     DisconnectionError,
@@ -63,6 +63,7 @@ _COMMIT_UNAVAILABLE_ERRORS = (
 class SqlAlchemyP1VerificationTransitionRepository:
     def __init__(self, session) -> None:
         self._session = session
+        self._locked_user_projection = None
 
     async def find_by_authority_decision_key(
         self, authority_decision_key: str
@@ -140,8 +141,10 @@ class SqlAlchemyP1VerificationTransitionRepository:
             "user_ref",
             getattr(outbox, "source_ref", None),
         )
-        user = await self._scalar(
-            select(User).where(User.id == source_ref).limit(1)
+        user = _restore_user_projection(
+            await self._one_or_none(
+                _user_projection_statement(source_ref)
+            )
         )
 
         restored_verification = (
@@ -187,12 +190,32 @@ class SqlAlchemyP1VerificationTransitionRepository:
 
     async def get_user_for_update(self, user_ref: int):
         map_core_model_classes()
-        return await self._scalar(
-            select(User)
-            .where(User.id == user_ref)
-            .limit(1)
-            .with_for_update()
+        projection = _restore_user_projection(
+            await self._one_or_none(
+                _user_projection_statement(user_ref).with_for_update()
+            )
         )
+        self._locked_user_projection = projection
+        return projection
+
+    async def flush_locked_user_projection(self) -> None:
+        projection = self._locked_user_projection
+        if projection is None:
+            return
+        failed = False
+        try:
+            await self._session.execute(
+                update(User)
+                .where(User.id == projection.id)
+                .values(
+                    verify_status=projection.verify_status,
+                    updated_at=projection.updated_at,
+                )
+            )
+        except Exception:
+            failed = True
+        if failed:
+            _raise_unavailable()
 
     async def get_current_classification(self, user_ref: int):
         row = await self._scalar(
@@ -400,6 +423,7 @@ class SqlAlchemyP1VerificationTransitionUnitOfWork:
         commit_unknown = False
         unavailable = False
         try:
+            await self._repository.flush_locked_user_projection()
             await self._session.commit()
         except Exception as exc:
             if _commit_outcome_requires_confirmation(exc):
@@ -472,6 +496,32 @@ class SqlAlchemyP1VerificationTransitionUnitOfWork:
         self._repository = None
         self._finalized = True
         self._exited = True
+
+
+def _user_projection_statement(user_ref: int):
+    return (
+        select(
+            User.id,
+            User.role,
+            User.status,
+            User.verify_status,
+            User.updated_at,
+        )
+        .where(User.id == user_ref)
+        .limit(1)
+    )
+
+
+def _restore_user_projection(row):
+    if row is None:
+        return None
+    return SimpleNamespace(
+        id=row.id,
+        role=row.role,
+        status=row.status,
+        verify_status=row.verify_status,
+        updated_at=row.updated_at,
+    )
 
 
 def _payload_digest(outbox: P1RegistrationOutboxRecord) -> str:
