@@ -167,13 +167,13 @@ class RegistrationIdentityBootstrapService:
                 return self._result(existing, replayed=True)
 
             if await self._optional_get(unit_of_work.members, member_no.value):
-                raise RegistrationIdentityBootstrapConflict(
+                raise RegistrationBootstrapConflict(
                     "member number already belongs to another member"
                 )
             if await self._optional_get(
                 unit_of_work.self_links, command.user_ref
             ):
-                raise RegistrationIdentityBootstrapConflict(
+                raise RegistrationBootstrapConflict(
                     "registration user already has a self link"
                 )
 

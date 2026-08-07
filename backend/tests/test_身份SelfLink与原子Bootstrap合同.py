@@ -543,6 +543,43 @@ def test_唯一约束竞争后使用新UoW确认完整赢家且不二次写入()
     assert confirmation.commit_calls == 0
 
 
+@pytest.mark.parametrize("late_visible", ["member", "self_link"])
+def test_并发赢家在同一事务后续查询可见时使用新UoW确认稳定重放(late_visible):
+    module, ports, eligibility, allocation = _fixtures()
+    failed = UnitOfWorkStub(ports)
+    winner = _seed_complete(failed, ports)
+    failed.bootstrap_records.values.clear()
+    if late_visible == "member":
+        failed.self_links.values.clear()
+    else:
+        failed.members.values.clear()
+    confirmation = UnitOfWorkStub(ports)
+    _seed_complete(confirmation, ports)
+    factory = UnitOfWorkFactoryStub(failed, confirmation)
+    generator = UuidGeneratorStub()
+    service = module.RegistrationIdentityBootstrapService(
+        eligibility_reader=EligibilityReaderStub(eligibility),
+        allocation_reader=AllocationReaderStub(allocation),
+        unit_of_work_factory=factory,
+        uuid_generator=generator,
+    )
+
+    result = _execute(service, _command(module))
+
+    assert result.replayed is True
+    assert result.member_id == winner.member_id
+    assert factory.calls == 2
+    assert generator.calls == 0
+    assert failed.members.add_calls == []
+    assert failed.self_links.add_calls == []
+    assert failed.bootstrap_records.add_calls == []
+    assert failed.commit_calls == 0
+    assert confirmation.members.add_calls == []
+    assert confirmation.self_links.add_calls == []
+    assert confirmation.bootstrap_records.add_calls == []
+    assert confirmation.commit_calls == 0
+
+
 @pytest.mark.parametrize("failure_mode", ["member_missing", "link_missing"])
 def test_唯一约束竞争后新UoW找不到完整赢家仍为冲突(failure_mode):
     module, ports, eligibility, allocation = _fixtures()

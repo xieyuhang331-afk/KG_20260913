@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CHAR,
+    CheckConstraint,
+    DateTime,
+    Index,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column
@@ -40,10 +49,39 @@ class IdentityVerificationEvidenceOrmModel(Base):
             "supersedes_ref",
             name="uq_identity_verification_single_successor",
         ),
+        UniqueConstraint(
+            "decision_ref",
+            "authority_decision_key",
+            "registration_event_id",
+            "facts_version",
+            name="uq_identity_verification_event_identity",
+        ),
+        Index(
+            "uq_identity_verification_authority_key_present",
+            "authority_decision_key",
+            unique=True,
+            postgresql_where=text("authority_decision_key IS NOT NULL"),
+        ),
+        Index(
+            "uq_identity_verification_registration_event_present",
+            "registration_event_id",
+            unique=True,
+            postgresql_where=text("registration_event_id IS NOT NULL"),
+        ),
         CheckConstraint("user_ref > 0", name="identity_verification_user_positive"),
         CheckConstraint("facts_version > 0", name="identity_verification_facts_positive"),
         CheckConstraint("verification_epoch > 0", name="identity_verification_epoch_positive"),
         CheckConstraint("outcome IN ('verified', 'failed')", name="identity_verification_outcome_closed"),
+        CheckConstraint(
+            "(authority_decision_key IS NULL AND registration_event_id IS NULL) "
+            "OR (authority_decision_key IS NOT NULL AND registration_event_id IS NOT NULL)",
+            name="identity_verification_event_identity_complete",
+        ),
+        CheckConstraint(
+            "authority_decision_key IS NULL OR "
+            "authority_decision_key ~ '^[0-9a-f]{64}$'",
+            name="identity_verification_authority_key_sha256",
+        ),
         {"schema": "public"},
     )
 
@@ -57,6 +95,10 @@ class IdentityVerificationEvidenceOrmModel(Base):
     actor_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     supersedes_ref: Mapped[UUID | None] = mapped_column(_StandardLibraryUuid())
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    authority_decision_key: Mapped[str | None] = mapped_column(CHAR(64))
+    registration_event_id: Mapped[UUID | None] = mapped_column(
+        _StandardLibraryUuid()
+    )
 
 
 class UserAccountClassificationEvidenceOrmModel(Base):

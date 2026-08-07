@@ -22,6 +22,7 @@ IDENTITY_TABLES = {
     "identity.user_member_self_link",
     "public.identity_verification_decision",
     "public.registration_eligibility_decision",
+    "public.registration_verified_outbox",
     "public.user_account_classification_decision",
 }
 
@@ -45,6 +46,10 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
     registered_tables = set(module.target_metadata.tables)
     assert CORE_TABLES <= registered_tables, (
         "Alembic target_metadata changed the frozen P1 core table set"
+    )
+    assert "public.registration_verified_outbox" in registered_tables, (
+        "Alembic target_metadata is missing approved table:\n"
+        "public.registration_verified_outbox"
     )
     assert IDENTITY_TABLES <= registered_tables, (
         "Alembic target_metadata is missing an approved identity table"
