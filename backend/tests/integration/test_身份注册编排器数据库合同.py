@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -405,3 +406,308 @@ def test_Cancellation退出BootstrapUoW时rollback且新鲜Session不可见(pg_d
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_并发相同事件只有一个完整winner且loser稳定重放(pg_database):
+    async def scenario():
+        engine = create_async_engine(
+            _get_application_database_url(), poolclass=NullPool
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            user_ref, verification_ref, event_ref = await _seed(
+                session_factory,
+                phone="13910003601",
+                member_no="M00000000000000003601",
+                base=3600,
+            )
+            item = _item(user_ref, verification_ref, event_ref)
+            results = await asyncio.gather(
+                _orchestrator(
+                    session_factory, (_uuid(3610), _uuid(3611), _uuid(3612))
+                ).deliver(item),
+                _orchestrator(
+                    session_factory, (_uuid(3620), _uuid(3621), _uuid(3622))
+                ).deliver(item),
+            )
+            assert {result.status for result in results} == {
+                DeliveryStatus.COMPLETED,
+                DeliveryStatus.REPLAYED,
+            }
+            async with session_factory() as session:
+                counts = (
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.member_no_allocation "
+                            "WHERE source_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.member "
+                            "WHERE member_no = 'M00000000000000003601'"
+                        )
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.user_member_self_link "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.registration_bootstrap_record "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                )
+            assert counts == (1, 1, 1, 1)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("include_allocation", [False, True])
+def test_Identity全无时结果确认安全返回ABSENT(pg_database, include_allocation):
+    async def scenario():
+        engine = create_async_engine(
+            _get_application_database_url(), poolclass=NullPool
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            base = 3700 if include_allocation else 3750
+            user_ref, verification_ref, event_ref = await _seed(
+                session_factory,
+                phone=(
+                    "13910003701" if include_allocation else "13910003702"
+                ),
+                member_no=(
+                    "M00000000000000003701"
+                    if include_allocation
+                    else "M00000000000000003702"
+                ),
+                base=base,
+                include_allocation=include_allocation,
+            )
+            result = await _orchestrator(
+                session_factory, (_uuid(base + 10),)
+            ).confirm(_item(user_ref, verification_ref, event_ref))
+            assert result is ConfirmationStatus.ABSENT
+            async with session_factory() as session:
+                identity_count = await session.scalar(
+                    text(
+                        "SELECT "
+                        "(SELECT count(*) FROM identity.member "
+                        " WHERE member_no = :member_no) + "
+                        "(SELECT count(*) FROM identity.user_member_self_link "
+                        " WHERE user_ref = :user_ref) + "
+                        "(SELECT count(*) FROM identity.registration_bootstrap_record "
+                        " WHERE user_ref = :user_ref)"
+                    ),
+                    {
+                        "member_no": (
+                            "M00000000000000003701"
+                            if include_allocation
+                            else "M00000000000000003702"
+                        ),
+                        "user_ref": user_ref,
+                    },
+                )
+            assert identity_count == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_Identity部分存在时结果确认fail_closed且零二次写入(pg_database):
+    async def scenario():
+        engine = create_async_engine(
+            _get_application_database_url(), poolclass=NullPool
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            user_ref, verification_ref, event_ref = await _seed(
+                session_factory,
+                phone="13910003801",
+                member_no="M00000000000000003801",
+                base=3800,
+            )
+            async with session_factory() as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO identity.member "
+                        "(member_id, member_no, creation_source, status, version, "
+                        "created_at, updated_at) VALUES "
+                        "(:member_id, 'M00000000000000003801', "
+                        "'registration', 'created', 1, :now, :now)"
+                    ),
+                    {"member_id": _uuid(3810), "now": NOW},
+                )
+                await session.commit()
+            result = await _orchestrator(
+                session_factory, (_uuid(3820),)
+            ).confirm(_item(user_ref, verification_ref, event_ref))
+            assert result is ConfirmationStatus.PARTIAL_OR_UNKNOWN
+            async with session_factory() as session:
+                counts = (
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.member "
+                            "WHERE member_no = 'M00000000000000003801'"
+                        )
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.user_member_self_link "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.registration_bootstrap_record "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                )
+            assert counts == (1, 0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("drift", ["bootstrap_policy", "p1_currentness"])
+def test_结果确认绑定当前Eligibility策略与P1状态(pg_database, drift):
+    async def scenario():
+        application_engine = create_async_engine(
+            _get_application_database_url(), poolclass=NullPool
+        )
+        migration_engine = create_async_engine(
+            os.environ["KG_TEST_MIGRATION_DATABASE_URL"], poolclass=NullPool
+        )
+        session_factory = async_sessionmaker(
+            application_engine, expire_on_commit=False
+        )
+        try:
+            base = 3900 if drift == "bootstrap_policy" else 3950
+            user_ref, verification_ref, event_ref = await _seed(
+                session_factory,
+                phone=(
+                    "13910003901"
+                    if drift == "bootstrap_policy"
+                    else "13910003902"
+                ),
+                member_no=(
+                    "M00000000000000003901"
+                    if drift == "bootstrap_policy"
+                    else "M00000000000000003902"
+                ),
+                base=base,
+            )
+            item = _item(user_ref, verification_ref, event_ref)
+            delivered = await _orchestrator(
+                session_factory,
+                (_uuid(base + 10), _uuid(base + 11), _uuid(base + 12)),
+            ).deliver(item)
+            assert delivered.status is DeliveryStatus.COMPLETED
+
+            async with migration_engine.begin() as connection:
+                if drift == "bootstrap_policy":
+                    await connection.execute(
+                        text(
+                            "UPDATE identity.registration_bootstrap_record "
+                            "SET policy_version = 'registration-eligibility:v0' "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    )
+                else:
+                    await connection.execute(
+                        text(
+                            'UPDATE "user" SET updated_at = :updated_at '
+                            "WHERE id = :user_ref"
+                        ),
+                        {
+                            "updated_at": NOW + timedelta(seconds=1),
+                            "user_ref": user_ref,
+                        },
+                    )
+
+            confirmation = await _orchestrator(
+                session_factory, (_uuid(base + 20),)
+            ).confirm(item)
+            assert confirmation is ConfirmationStatus.PARTIAL_OR_UNKNOWN
+            async with session_factory() as session:
+                counts = (
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM identity.member "
+                            "WHERE member_no = :member_no"
+                        ),
+                        {
+                            "member_no": (
+                                "M00000000000000003901"
+                                if drift == "bootstrap_policy"
+                                else "M00000000000000003902"
+                            )
+                        },
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM "
+                            "identity.user_member_self_link "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM "
+                            "identity.registration_bootstrap_record "
+                            "WHERE user_ref = :user_ref"
+                        ),
+                        {"user_ref": user_ref},
+                    ),
+                )
+            assert counts == (1, 1, 1)
+        finally:
+            await application_engine.dispose()
+            await migration_engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_Orchestrator保持现有最小权限且不能写Outbox(pg_database):
+    application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
+    readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
+    checks = {
+        "application_identity_insert": pg_database.fetch_value(
+            "SELECT has_table_privilege("
+            f"'{application_role}', 'identity.registration_bootstrap_record', 'INSERT')"
+        ),
+        "application_outbox_insert": pg_database.fetch_value(
+            "SELECT has_table_privilege("
+            f"'{application_role}', 'public.registration_verified_outbox', 'INSERT')"
+        ),
+        "readonly_identity_select": pg_database.fetch_value(
+            "SELECT has_table_privilege("
+            f"'{readonly_role}', 'identity.registration_bootstrap_record', 'SELECT')"
+        ),
+        "readonly_identity_insert": pg_database.fetch_value(
+            "SELECT has_table_privilege("
+            f"'{readonly_role}', 'identity.registration_bootstrap_record', 'INSERT')"
+        ),
+    }
+    assert checks == {
+        "application_identity_insert": True,
+        "application_outbox_insert": False,
+        "readonly_identity_select": True,
+        "readonly_identity_insert": False,
+    }

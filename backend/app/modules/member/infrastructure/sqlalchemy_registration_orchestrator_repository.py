@@ -124,6 +124,12 @@ class SqlAlchemyRegistrationOrchestratorOutcomeReader:
                 member = None
                 if record is not None:
                     member = await session.get(MemberOrmModel, record.member_id)
+                elif allocation is not None:
+                    member = await session.scalar(
+                        select(MemberOrmModel).where(
+                            MemberOrmModel.member_no == allocation.member_no
+                        )
+                    )
                 eligibility_rows = (
                     await session.scalars(
                         select(
@@ -140,6 +146,22 @@ class SqlAlchemyRegistrationOrchestratorOutcomeReader:
                         )
                     )
                 ).all()
+                current_eligibility = None
+                if len(eligibility_rows) == 1:
+                    try:
+                        current_eligibility = (
+                            await SqlAlchemyEligibilityDecisionEvidenceReader(
+                                session
+                            ).get_current_eligible(
+                                decision_ref=eligibility_rows[0].decision_ref,
+                                user_ref=item.source_ref,
+                            )
+                        )
+                    except (
+                        RegistrationEligibilityEvidenceNotFound,
+                        RegistrationEligibilityEvidenceInconsistent,
+                    ):
+                        current_eligibility = None
 
             trio = (record, link, member)
             if all(value is None for value in trio):
@@ -150,13 +172,23 @@ class SqlAlchemyRegistrationOrchestratorOutcomeReader:
                 return ConfirmationStatus.PARTIAL_OR_UNKNOWN
             if any(value is None for value in trio):
                 return ConfirmationStatus.PARTIAL_OR_UNKNOWN
-            if len(eligibility_rows) != 1 or allocation is None:
+            if (
+                len(eligibility_rows) != 1
+                or current_eligibility is None
+                or allocation is None
+            ):
                 return ConfirmationStatus.PARTIAL_OR_UNKNOWN
             eligibility = eligibility_rows[0]
             return (
                 ConfirmationStatus.COMPLETE
                 if self._complete_matches(
-                    item, allocation, record, link, member, eligibility
+                    item,
+                    allocation,
+                    record,
+                    link,
+                    member,
+                    eligibility,
+                    current_eligibility,
                 )
                 else ConfirmationStatus.PARTIAL_OR_UNKNOWN
             )
@@ -176,13 +208,26 @@ class SqlAlchemyRegistrationOrchestratorOutcomeReader:
 
     @classmethod
     def _complete_matches(
-        cls, item, allocation, record, link, member, eligibility
+        cls,
+        item,
+        allocation,
+        record,
+        link,
+        member,
+        eligibility,
+        current_eligibility,
     ) -> bool:
         return (
             cls._allocation_matches(allocation, item)
+            and current_eligibility.decision_ref == eligibility.decision_ref
+            and current_eligibility.verification_decision_ref
+            == item.verification_decision_ref
+            and current_eligibility.facts_version == item.facts_version
             and record.user_ref == item.source_ref
             and record.registration_event_id == item.event_id
             and record.eligibility_decision_ref == eligibility.decision_ref
+            and record.policy_version == current_eligibility.policy_version
+            and record.decision == "APPROVED"
             and record.member_no_allocation_ref == allocation.allocation_id
             and record.member_no == allocation.member_no == member.member_no
             and record.member_id == member.member_id == link.member_id
@@ -193,4 +238,3 @@ class SqlAlchemyRegistrationOrchestratorOutcomeReader:
             and member.creation_source == "registration"
             and member.status == "created"
         )
-
