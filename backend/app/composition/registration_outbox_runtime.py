@@ -1,6 +1,7 @@
 import secrets
 
 from app.modules.auth.registration_outbox_worker import (
+    MAX_BATCH_SIZE,
     RegistrationOutboxDispatcher,
     RegistrationOutboxReconciler,
 )
@@ -58,3 +59,23 @@ class RegistrationOutboxRuntimeComposition:
         return RegistrationOutboxReconciler(
             unit_of_work_factory=self._worker_unit_of_work_factory
         )
+
+
+class RegistrationOutboxDeliveryRuntime:
+    """Run one bounded delivery or reconciliation operation."""
+
+    def __init__(self, composition: RegistrationOutboxRuntimeComposition):
+        self._composition = composition
+
+    async def dispatch_once(
+        self, *, lease_owner: str, limit: int = MAX_BATCH_SIZE
+    ):
+        dispatcher = self._composition.create_dispatcher()
+        return await dispatcher.run_once(
+            lease_owner=lease_owner,
+            limit=limit,
+        )
+
+    async def reconcile_once(self, *, limit: int = MAX_BATCH_SIZE) -> int:
+        reconciler = self._composition.create_reconciler()
+        return await reconciler.run_once(limit=limit)

@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import asyncio
+
+import pytest
 
 from app.core.uuid_generator import Uuid7Generator
 
@@ -73,3 +76,83 @@ def test_运行时组合每次创建新鲜工作单元而不打开会话():
     assert worker_opened == []
     assert first._session_factory is worker_session_factory
     assert second._session_factory is worker_session_factory
+
+
+def test_注册发件箱Dispatcher到编排器投递接线尚未实现():
+    asyncio.run(_assert_dispatcher_delivery_wiring())
+
+
+async def _assert_dispatcher_delivery_wiring():
+    try:
+        from app.composition.registration_outbox_runtime import (
+            RegistrationOutboxDeliveryRuntime,
+        )
+    except ImportError:
+        raise AssertionError(
+            "Registration outbox dispatcher delivery wiring is not implemented"
+        ) from None
+
+    calls = []
+
+    class Dispatcher:
+        async def run_once(self, *, lease_owner, limit):
+            calls.append(("dispatch", lease_owner, limit))
+            return object()
+
+    class Reconciler:
+        async def run_once(self, *, limit):
+            calls.append(("reconcile", limit))
+            return 3
+
+    class Composition:
+        def create_dispatcher(self):
+            calls.append(("create_dispatcher",))
+            return Dispatcher()
+
+        def create_reconciler(self):
+            calls.append(("create_reconciler",))
+            return Reconciler()
+
+    runtime = RegistrationOutboxDeliveryRuntime(Composition())
+    result = await runtime.dispatch_once(lease_owner="registration-worker-1")
+    reconciled = await runtime.reconcile_once()
+
+    assert result is not None
+    assert reconciled == 3
+    assert calls == [
+        ("create_dispatcher",),
+        ("dispatch", "registration-worker-1", 50),
+        ("create_reconciler",),
+        ("reconcile", 50),
+    ]
+
+
+def test_投递接线原样传播Cancellation且不复用Dispatcher():
+    asyncio.run(_assert_cancellation_and_fresh_dispatcher())
+
+
+async def _assert_cancellation_and_fresh_dispatcher():
+    created = []
+
+    class Dispatcher:
+        async def run_once(self, **_kwargs):
+            raise asyncio.CancelledError
+
+    class Composition:
+        def create_dispatcher(self):
+            dispatcher = Dispatcher()
+            created.append(dispatcher)
+            return dispatcher
+
+    from app.composition.registration_outbox_runtime import (
+        RegistrationOutboxDeliveryRuntime,
+    )
+
+    runtime = RegistrationOutboxDeliveryRuntime(Composition())
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.dispatch_once(lease_owner="registration-worker-1")
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.dispatch_once(lease_owner="registration-worker-1")
+
+    assert len(created) == 2
+    assert created[0] is not created[1]
