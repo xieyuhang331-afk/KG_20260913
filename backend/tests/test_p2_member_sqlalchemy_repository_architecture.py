@@ -109,6 +109,7 @@ def test_at0_missing_production_adapter_does_not_fail_layout_guard():
         "registration_bootstrap_unit_of_work.py",
         "sqlalchemy_member_no_allocation_ledger.py",
         "sqlalchemy_registration_bootstrap_repository.py",
+        "sqlalchemy_registration_orchestrator_repository.py",
         "sqlalchemy_repository.py",
         "sqlalchemy_unit_of_work.py",
         "unit_of_work.py",
