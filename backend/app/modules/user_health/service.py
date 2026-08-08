@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -18,10 +21,152 @@ from app.modules.user_health.schemas import (
     HealthIndicatorResponse,
     HealthProfileCreateRequest,
     HealthProfileResponse,
+    MemberSelfHealthProfileData,
+    MemberSelfHealthProfileResult,
+    MemberSelfHealthProfileWriteRequest,
 )
 
 
 ALLOWED_HEALTH_INDICATOR_SOURCES = {"APP", "STORE", "DEVICE", "REPORT"}
+
+
+def _member_profile_gender(value: str) -> str:
+    normalized = {"M": "male", "F": "female"}.get(value, value)
+    if normalized not in {"male", "female"}:
+        raise HTTPException(status_code=409, detail="Health profile is unavailable for current member")
+    return normalized
+
+
+def _member_profile_state(profile) -> str:
+    if profile is None:
+        return "NOT_CREATED"
+    if profile.height is None or profile.weight is None:
+        return "INCOMPLETE"
+    return "COMPLETE"
+
+
+def _member_profile_bmi(profile) -> Decimal | None:
+    if profile is None or profile.height is None or profile.weight is None:
+        return None
+    height_m = Decimal(profile.height) / Decimal("100")
+    if height_m <= 0:
+        return None
+    return (Decimal(profile.weight) / (height_m * height_m)).quantize(
+        Decimal("0.1"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _to_member_self_profile_result(profile, *, outcome=None) -> MemberSelfHealthProfileResult:
+    if profile is None:
+        return MemberSelfHealthProfileResult(
+            state="NOT_CREATED",
+            version=None,
+            profile=None,
+            bmi=None,
+            outcome=outcome,
+        )
+    return MemberSelfHealthProfileResult(
+        state=_member_profile_state(profile),
+        version=profile.updated_at,
+        profile=MemberSelfHealthProfileData(
+            gender=_member_profile_gender(profile.gender),
+            birth_date=profile.birth_date,
+            height=profile.height,
+            weight=profile.weight,
+            blood_type=profile.blood_type,
+        ),
+        bmi=_member_profile_bmi(profile),
+        outcome=outcome,
+    )
+
+
+def _ensure_current_verified_member(user) -> None:
+    if (
+        user is None
+        or user.role != "member"
+        or user.status != "active"
+        or user.verify_status != "verified"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Health profile is unavailable for current member",
+        )
+
+
+def _member_profile_matches(profile, payload: MemberSelfHealthProfileWriteRequest) -> bool:
+    return bool(
+        profile is not None
+        and _member_profile_gender(profile.gender) == payload.gender
+        and profile.birth_date == payload.birth_date
+        and Decimal(profile.height) == payload.height
+        and Decimal(profile.weight) == payload.weight
+        and profile.blood_type == payload.blood_type
+    )
+
+
+async def get_member_self_health_profile(
+    session,
+    *,
+    user_id: int,
+) -> MemberSelfHealthProfileResult:
+    user = await get_user_by_id(session, user_id)
+    _ensure_current_verified_member(user)
+    profile = await get_health_profile_by_user_id(session, user_id)
+    return _to_member_self_profile_result(profile)
+
+
+async def put_member_self_health_profile(
+    session,
+    *,
+    confirmation_session_factory_provider,
+    user_id: int,
+    payload: MemberSelfHealthProfileWriteRequest,
+) -> MemberSelfHealthProfileResult:
+    del confirmation_session_factory_provider  # Checkpoint B owns fresh-session confirmation.
+    user = await get_user_by_id(session, user_id)
+    _ensure_current_verified_member(user)
+    profile = await get_health_profile_by_user_id(session, user_id)
+
+    if profile is not None and _member_profile_matches(profile, payload):
+        return _to_member_self_profile_result(profile, outcome="REPLAYED")
+
+    if profile is not None:
+        if payload.expected_version is None or profile.updated_at != payload.expected_version:
+            raise HTTPException(status_code=409, detail="HEALTH_PROFILE_VERSION_CONFLICT")
+        profile.gender = payload.gender
+        profile.birth_date = payload.birth_date
+        profile.height = payload.height
+        profile.weight = payload.weight
+        profile.blood_type = payload.blood_type
+        profile.updated_at = datetime.now(timezone.utc)
+        outcome = "UPDATED"
+    else:
+        if payload.expected_version is not None:
+            raise HTTPException(status_code=409, detail="HEALTH_PROFILE_VERSION_CONFLICT")
+        profile = await create_health_profile_record(
+            session,
+            profile_data={
+                "user_id": user_id,
+                "gender": payload.gender,
+                "birth_date": payload.birth_date,
+                "height": payload.height,
+                "weight": payload.weight,
+                "blood_type": payload.blood_type,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        outcome = "CREATED"
+
+    try:
+        await session.commit()
+    except asyncio.CancelledError:
+        await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+    return _to_member_self_profile_result(profile, outcome=outcome)
 
 
 def _to_health_profile_response(profile) -> HealthProfileResponse:

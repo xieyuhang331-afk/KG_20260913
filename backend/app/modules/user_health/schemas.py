@@ -4,10 +4,48 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 JsonProfileValue = dict[str, Any] | list[Any] | None
+
+
+MemberProfileGender = Literal["male", "female"]
+MemberProfileBloodType = Literal["A", "B", "AB", "O", "UNKNOWN"]
+MemberProfileState = Literal["NOT_CREATED", "INCOMPLETE", "COMPLETE"]
+MemberProfileOutcome = Literal["CREATED", "UPDATED", "REPLAYED"]
+
+
+class MemberSelfHealthProfileWriteRequest(BaseModel):
+    gender: MemberProfileGender
+    birth_date: date
+    height: Decimal = Field(..., gt=0, max_digits=5, decimal_places=1)
+    weight: Decimal = Field(..., gt=0, max_digits=5, decimal_places=1)
+    blood_type: MemberProfileBloodType | None = None
+    expected_version: datetime | None = None
+
+    @field_validator("birth_date")
+    @classmethod
+    def birth_date_must_not_be_in_the_future(cls, value: date) -> date:
+        if value > date.today():
+            raise ValueError("birth_date must not be in the future")
+        return value
+
+
+class MemberSelfHealthProfileData(BaseModel):
+    gender: MemberProfileGender
+    birth_date: date
+    height: Decimal | None
+    weight: Decimal | None
+    blood_type: MemberProfileBloodType | None
+
+
+class MemberSelfHealthProfileResult(BaseModel):
+    state: MemberProfileState
+    version: datetime | None
+    profile: MemberSelfHealthProfileData | None
+    bmi: Decimal | None
+    outcome: MemberProfileOutcome | None = None
 
 
 class HealthProfileCreateRequest(BaseModel):

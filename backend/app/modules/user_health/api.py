@@ -4,21 +4,56 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.database import get_db_session
-from app.core.permissions import ensure_can_access_own_user_resource
+from app.core.database import get_db_session, get_session_factory
+from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_member
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user, get_current_user_from_jwt
-from app.modules.user_health.schemas import HealthIndicatorBatchCreateRequest, HealthProfileCreateRequest
+from app.modules.user_health.schemas import (
+    HealthIndicatorBatchCreateRequest,
+    HealthProfileCreateRequest,
+    MemberSelfHealthProfileWriteRequest,
+)
 from app.modules.user_health.service import (
     create_health_indicators,
     create_health_profile,
+    get_member_self_health_profile,
     get_health_profile,
     get_latest_health_indicators,
     list_health_indicators,
+    put_member_self_health_profile,
 )
 
 
 router = APIRouter(prefix="/api/v1/users", tags=["user_health"])
+
+
+@router.get("/me/health-profile")
+async def get_member_self_health_profile_api(
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    session=Depends(get_db_session),
+) -> dict:
+    ensure_is_member(current_user)
+    result = await get_member_self_health_profile(
+        session,
+        user_id=current_user.id,
+    )
+    return ok_response(result.model_dump(mode="json"))
+
+
+@router.put("/me/health-profile")
+async def put_member_self_health_profile_api(
+    payload: MemberSelfHealthProfileWriteRequest,
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    session=Depends(get_db_session),
+) -> dict:
+    ensure_is_member(current_user)
+    result = await put_member_self_health_profile(
+        session,
+        confirmation_session_factory_provider=get_session_factory,
+        user_id=current_user.id,
+        payload=payload,
+    )
+    return ok_response(result.model_dump(mode="json"))
 
 
 @router.post("/{user_id}/health-profile", status_code=201)
