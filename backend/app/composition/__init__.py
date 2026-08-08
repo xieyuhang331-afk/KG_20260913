@@ -5,6 +5,9 @@ from .identity_persistence import (
     create_registration_orchestrator,
 )
 from .registration_outbox_runtime import RegistrationOutboxRuntimeComposition
+from .p1_verified_transition import (
+    create_manual_identity_review_verified_transition_service,
+)
 
 __all__ = [
     "IdentityPersistenceComposition",
@@ -12,4 +15,5 @@ __all__ = [
     "create_registration_member_service",
     "create_registration_orchestrator",
     "RegistrationOutboxRuntimeComposition",
+    "create_manual_identity_review_verified_transition_service",
 ]
