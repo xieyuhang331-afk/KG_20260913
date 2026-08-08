@@ -895,6 +895,23 @@ def test_backend_integration_runtime_secrets_and_database_targets_are_masked():
     assert violations == []
 
 
+def test_VerificationWriterRuntimeURL只在DisposableIntegration注入且先脱敏():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    backend_unit_job = _workflow_job_block("backend-unit")
+    backend_integration_job = _workflow_job_block("backend-integration")
+    mapping = (
+        'values["KG_VERIFICATION_WRITER_DATABASE_URL"] = values['
+        '\n              "KG_TEST_VERIFICATION_WRITER_DATABASE_URL"\n          ]'
+    )
+
+    assert "KG_VERIFICATION_WRITER_DATABASE_URL" not in backend_unit_job
+    assert backend_integration_job.count(mapping) == 1
+    assert backend_integration_job.index(mapping) < backend_integration_job.index(
+        "for value in ("
+    )
+    assert "echo $KG_VERIFICATION_WRITER_DATABASE_URL" not in workflow
+
+
 def test_CI严格执行注册持久发件箱R2数据库合同并上传独立JUnit():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     node = (

@@ -45,11 +45,25 @@ def get_platform_admin_manual_identity_review_service(
     from app.composition.p1_verified_transition import (
         create_platform_admin_manual_identity_review_service,
     )
-    from app.core.database import get_session_factory
+    from app.core.database import (
+        get_session_factory,
+        get_verification_writer_session_factory,
+    )
     from app.core.uuid_generator import Uuid7Generator
 
+    try:
+        authority_session_factory = get_session_factory()
+        verification_session_factory = (
+            get_verification_writer_session_factory()
+        )
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Identity review service unavailable",
+        ) from None
     return create_platform_admin_manual_identity_review_service(
-        session_factory=get_session_factory(),
+        authority_session_factory=authority_session_factory,
+        verification_session_factory=verification_session_factory,
         uuid_generator=Uuid7Generator(),
     )
 

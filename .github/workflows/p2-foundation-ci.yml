@@ -223,6 +223,9 @@ jobs:
           values["KG_IDENTITY_APPLICATION_DATABASE_URL"] = values[
               "KG_TEST_DATABASE_URL"
           ]
+          values["KG_VERIFICATION_WRITER_DATABASE_URL"] = values[
+              "KG_TEST_VERIFICATION_WRITER_DATABASE_URL"
+          ]
           values["KG_DELIVERY_WORKER_DATABASE_URL"] = values[
               "KG_TEST_DELIVERY_WORKER_DATABASE_URL"
           ]

@@ -216,19 +216,31 @@ def test_SQLAlchemyAuthorityReader只读最小User投影且不读取PII():
         assert forbidden not in compact
 
 
-def test_RuntimeComposition复用传入SessionFactory且不创建Engine():
+def test_RuntimeComposition隔离Authority与Writer两个SessionFactory且不创建Engine():
     from app.composition.p1_verified_transition import (
         create_platform_admin_manual_identity_review_service,
     )
 
-    session_factory = object()
+    authority_session_factory = object()
+    writer_session_factory = object()
     uuid_generator = object()
     service = create_platform_admin_manual_identity_review_service(
-        session_factory=session_factory,
+        authority_session_factory=authority_session_factory,
+        verification_session_factory=writer_session_factory,
         uuid_generator=uuid_generator,
     )
-    assert service._session_factory is session_factory
+    assert service._session_factory is authority_session_factory
     assert service._uuid_generator is uuid_generator
+    authority_port = service._authority_port_factory(
+        reviewer_subject_id=17,
+        user_ref=1042,
+        request=_request(),
+        authority_decision_id="manual-review-" + "c" * 64,
+    )
+    assert authority_port._session_factory is authority_session_factory
+    transition = service._transition_service_factory(authority_port)
+    writer_uow = transition._transition_writer._unit_of_work_factory()
+    assert writer_uow._session_factory is writer_session_factory
 
 
 def _authority_port():

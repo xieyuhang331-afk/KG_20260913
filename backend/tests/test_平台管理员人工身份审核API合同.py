@@ -210,3 +210,20 @@ def test_人工身份审核响应不包含PII_JWT或数据库信息():
         "credential",
     ):
         assert forbidden not in public
+
+
+def test_WriterRuntime配置缺失固定映射503且不泄漏连接信息(monkeypatch):
+    from app.core import database
+    from app.main import create_app
+
+    monkeypatch.setattr(database, "get_session_factory", lambda: object())
+    monkeypatch.setattr(
+        database,
+        "get_verification_writer_session_factory",
+        lambda: (_ for _ in ()).throw(RuntimeError("secret-database-target")),
+    )
+    with TestClient(create_app(), raise_server_exceptions=False) as client:
+        response = client.post(ROUTE, json=_payload(), headers=_headers())
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Identity review service unavailable"}
+    assert "secret-database-target" not in response.text

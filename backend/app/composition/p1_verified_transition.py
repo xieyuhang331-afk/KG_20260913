@@ -36,24 +36,27 @@ def create_manual_identity_review_verified_transition_service(
 
 
 def create_platform_admin_manual_identity_review_service(
-    *, session_factory, uuid_generator
+    *,
+    authority_session_factory,
+    verification_session_factory,
+    uuid_generator,
 ) -> PlatformAdminManualIdentityReviewService:
     def authority_port_factory(**kwargs):
         return SqlAlchemyManualIdentityReviewAuthorityPort(
-            session_factory=session_factory,
+            session_factory=authority_session_factory,
             **kwargs,
         )
 
     def transition_service_factory(authority_port):
         return create_manual_identity_review_verified_transition_service(
             authority_port=authority_port,
-            verification_session_factory=session_factory,
+            verification_session_factory=verification_session_factory,
             uuid_generator=uuid_generator,
         )
 
     return PlatformAdminManualIdentityReviewService(
         authority_port_factory=authority_port_factory,
         transition_service_factory=transition_service_factory,
-        session_factory=session_factory,
+        session_factory=authority_session_factory,
         uuid_generator=uuid_generator,
     )
