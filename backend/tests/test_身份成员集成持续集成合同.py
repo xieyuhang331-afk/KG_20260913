@@ -533,6 +533,34 @@ def _workflow_shell_lines(step_name):
     ]
 
 
+def test_registration_runtime_ci_uses_disposable_rabbitmq_and_exact_cleanup():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    start = _workflow_step_block("Start disposable RabbitMQ")
+    cleanup = _workflow_step_block("Stop and remove disposable RabbitMQ")
+    worker = _workflow_step_block(
+        "Run registration Celery worker bootstrap contract"
+    )
+
+    assert "secrets.token_urlsafe(48)" in workflow
+    assert 'print(f"::add-mask::{value}")' in workflow
+    assert 'print(f"::add-mask::{broker_url}")' in start
+    assert "KG_CELERY_BROKER_URL" in start
+    assert "^kg-reg-[0-9a-f]{12}$" in start
+    assert "kg.test.sentinel" in start
+    assert "127.0.0.1::5672" in start
+    assert "registration Celery worker bootstrap contract" in workflow
+    assert "pytest-registration-worker-report.xml" in worker
+    assert "        if: always()" in cleanup
+    assert 'docker stop "$KG_RABBITMQ_CONTAINER_NAME"' in cleanup
+    assert 'docker rm "$KG_RABBITMQ_CONTAINER_NAME"' in cleanup
+    assert "actual_network_sentinel" in cleanup
+    assert '{{index .Labels "kg.test.sentinel"}}' in cleanup
+    assert 'docker network rm "$KG_RABBITMQ_NETWORK_NAME"' in cleanup
+    assert "Disposable RabbitMQ cleanup failed." in cleanup
+    assert "KG_IDENTITY_APPLICATION_DATABASE_URL" in workflow
+    assert "KG_DELIVERY_WORKER_DATABASE_URL" in workflow
+
+
 def test_disposable_database_drop_revalidates_current_run_sentinel():
     step_block = _workflow_step_block("Drop disposable test database")
     step_block_lines = step_block.splitlines()
