@@ -192,10 +192,8 @@ def test_请求体拒绝客户端指定user_id() -> None:
             headers=_jwt_headers(user_id=1001),
         )
 
-    # Pydantic ignores unknown keys by default, but the target remains JWT sub.
-    assert response.status_code == 200
-    assert service_mock.await_args.kwargs["user_id"] == 1001
-    assert not hasattr(service_mock.await_args.kwargs["payload"], "user_id")
+    assert response.status_code == 422
+    service_mock.assert_not_awaited()
 
 
 def test_未认证调用被拒绝() -> None:

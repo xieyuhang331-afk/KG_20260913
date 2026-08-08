@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 JsonProfileValue = dict[str, Any] | list[Any] | None
@@ -17,6 +17,8 @@ MemberProfileOutcome = Literal["CREATED", "UPDATED", "REPLAYED"]
 
 
 class MemberSelfHealthProfileWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     gender: MemberProfileGender
     birth_date: date
     height: Decimal = Field(..., gt=0, max_digits=5, decimal_places=1)

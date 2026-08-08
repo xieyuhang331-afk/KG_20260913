@@ -111,7 +111,7 @@ def _member_profile_matches(profile, payload: MemberSelfHealthProfileWriteReques
 
 def _profile_write_data(payload: MemberSelfHealthProfileWriteRequest) -> dict:
     return {
-        "gender": payload.gender,
+        "gender": {"male": "M", "female": "F"}[payload.gender],
         "birth_date": payload.birth_date,
         "height": payload.height,
         "weight": payload.weight,

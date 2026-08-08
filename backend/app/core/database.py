@@ -128,6 +128,19 @@ async def dispose_verification_writer_runtime() -> None:
         await engine.dispose()
 
 
+async def dispose_database_runtimes() -> None:
+    global _ASYNC_ENGINE
+    global _SESSION_FACTORY
+    engine = _ASYNC_ENGINE
+    _ASYNC_ENGINE = None
+    _SESSION_FACTORY = None
+    try:
+        if engine is not None:
+            await engine.dispose()
+    finally:
+        await dispose_verification_writer_runtime()
+
+
 async def get_db_session():
     session_factory = get_session_factory()
     async with session_factory() as session:

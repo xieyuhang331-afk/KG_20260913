@@ -267,6 +267,7 @@ async def test_条件更新成功返回UPDATED() -> None:
     assert result.profile.weight == Decimal("56.0")
     assert session.commits == 1
     assert update.await_args.kwargs["expected_updated_at"] == NOW
+    assert update.await_args.kwargs["profile_data"]["gender"] == "F"
 
 
 class _VendorUniqueViolation(Exception):
