@@ -69,6 +69,16 @@ def test_VerificationWriterRuntimeSessionFactory尚未实现(monkeypatch):
         "postgresql+asyncpg://kg_writer_contract:secret@127.0.0.1:5433/kg_disposable_contract",
         "postgresql+asyncpg://kg_writer_contract:secret@127.0.0.1:5432/other_database",
     ],
+    ids=[
+        "case_01",
+        "case_02",
+        "case_03",
+        "case_04",
+        "case_05",
+        "case_06",
+        "case_07",
+        "case_08",
+    ],
 )
 def test_WriterURL缺失同角色错误目标或无Credential全部fail_closed(
     monkeypatch, writer_url
