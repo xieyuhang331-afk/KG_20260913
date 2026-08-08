@@ -32,7 +32,16 @@ from app.modules.review.service import (
 router = APIRouter(prefix="/api/v1/reviews", tags=["review"])
 
 
-def get_platform_admin_manual_identity_review_service():
+async def get_platform_identity_reviewer(
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+) -> CurrentUser:
+    _require_platform_identity_reviewer(current_user)
+    return current_user
+
+
+def get_platform_admin_manual_identity_review_service(
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
+):
     from app.composition.p1_verified_transition import (
         create_platform_admin_manual_identity_review_service,
     )
@@ -58,10 +67,9 @@ def _require_platform_identity_reviewer(current_user: CurrentUser) -> None:
 async def approve_platform_user_identity_review_api(
     user_id: int,
     payload: PlatformAdminManualIdentityReviewRequest,
-    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
     service=Depends(get_platform_admin_manual_identity_review_service),
 ) -> dict:
-    _require_platform_identity_reviewer(current_user)
     try:
         result = await service.execute(
             current_user=current_user,

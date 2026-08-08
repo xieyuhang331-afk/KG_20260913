@@ -43,6 +43,21 @@ def test_人工身份审核API只复用现有JWT且不修改签发语义():
     assert "decode_access_token" not in source
 
 
+def test_无权JWT在SessionFactory构造前由共享Guard拒绝():
+    source = API.read_text(encoding="utf-8")
+    assert "def get_platform_identity_reviewer(" in source
+    assert (
+        "current_user: CurrentUser = Depends(get_platform_identity_reviewer)"
+        in source
+    )
+    service_start = source.index(
+        "def get_platform_admin_manual_identity_review_service("
+    )
+    service_end = source.index("\n\n", service_start)
+    service_signature = source[service_start:service_end]
+    assert "Depends(get_platform_identity_reviewer)" in service_signature
+
+
 def test_人工身份审核请求响应Schema排除PII并禁止额外字段():
     tree = ast.parse(SCHEMAS.read_text(encoding="utf-8"))
     classes = {

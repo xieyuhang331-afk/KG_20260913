@@ -153,7 +153,7 @@ def test_人工身份审核请求拒绝PII和非规范字段():
         _payload(evidence_digest="not-a-digest"),
         _payload(idempotency_key=" leading"),
         _payload(decided_at="2026-08-08T10:00:00"),
-        {**_payload(), "id_card": "110101199001011234"},
+        {**_payload(), "id_card": "forbidden-extra-field"},
     ):
         response = _client(service).post(
             ROUTE, json=payload, headers=_headers()
