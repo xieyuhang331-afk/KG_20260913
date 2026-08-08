@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -10,18 +13,266 @@ from app.modules.user_health.repository import (
     create_health_indicator_records,
     create_health_profile_record,
     get_health_profile_by_user_id,
+    get_member_profile_user_state,
     list_health_indicators_by_user,
     list_latest_health_indicators_by_user,
+    update_health_profile_record,
 )
 from app.modules.user_health.schemas import (
     HealthIndicatorBatchCreateRequest,
     HealthIndicatorResponse,
     HealthProfileCreateRequest,
     HealthProfileResponse,
+    MemberSelfHealthProfileData,
+    MemberSelfHealthProfileResult,
+    MemberSelfHealthProfileWriteRequest,
 )
 
 
 ALLOWED_HEALTH_INDICATOR_SOURCES = {"APP", "STORE", "DEVICE", "REPORT"}
+
+
+def _member_profile_gender(value: str) -> str:
+    normalized = {"M": "male", "F": "female"}.get(value, value)
+    if normalized not in {"male", "female"}:
+        raise HTTPException(status_code=409, detail="Health profile is unavailable for current member")
+    return normalized
+
+
+def _member_profile_state(profile) -> str:
+    if profile is None:
+        return "NOT_CREATED"
+    if profile.height is None or profile.weight is None:
+        return "INCOMPLETE"
+    return "COMPLETE"
+
+
+def _member_profile_bmi(profile) -> Decimal | None:
+    if profile is None or profile.height is None or profile.weight is None:
+        return None
+    height_m = Decimal(profile.height) / Decimal("100")
+    if height_m <= 0:
+        return None
+    return (Decimal(profile.weight) / (height_m * height_m)).quantize(
+        Decimal("0.1"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _to_member_self_profile_result(profile, *, outcome=None) -> MemberSelfHealthProfileResult:
+    if profile is None:
+        return MemberSelfHealthProfileResult(
+            state="NOT_CREATED",
+            version=None,
+            profile=None,
+            bmi=None,
+            outcome=outcome,
+        )
+    return MemberSelfHealthProfileResult(
+        state=_member_profile_state(profile),
+        version=profile.updated_at,
+        profile=MemberSelfHealthProfileData(
+            gender=_member_profile_gender(profile.gender),
+            birth_date=profile.birth_date,
+            height=profile.height,
+            weight=profile.weight,
+            blood_type=profile.blood_type,
+        ),
+        bmi=_member_profile_bmi(profile),
+        outcome=outcome,
+    )
+
+
+def _ensure_current_verified_member(user) -> None:
+    if (
+        user is None
+        or user.role != "member"
+        or user.status != "active"
+        or user.verify_status != "verified"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Health profile is unavailable for current member",
+        )
+
+
+def _member_profile_matches(profile, payload: MemberSelfHealthProfileWriteRequest) -> bool:
+    return bool(
+        profile is not None
+        and _member_profile_gender(profile.gender) == payload.gender
+        and profile.birth_date == payload.birth_date
+        and profile.height is not None
+        and profile.weight is not None
+        and Decimal(profile.height) == payload.height
+        and Decimal(profile.weight) == payload.weight
+        and profile.blood_type == payload.blood_type
+    )
+
+
+def _profile_write_data(payload: MemberSelfHealthProfileWriteRequest) -> dict:
+    return {
+        "gender": {"male": "M", "female": "F"}[payload.gender],
+        "birth_date": payload.birth_date,
+        "height": payload.height,
+        "weight": payload.weight,
+        "blood_type": payload.blood_type,
+    }
+
+
+def _known_profile_create_conflict(exc: IntegrityError) -> bool:
+    original = exc.orig
+    driver_error = getattr(original, "__cause__", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(
+        driver_error,
+        "sqlstate",
+        None,
+    )
+    constraint_name = getattr(original, "constraint_name", None) or getattr(
+        driver_error,
+        "constraint_name",
+        None,
+    )
+    return (
+        sqlstate == "23505"
+        and constraint_name == "uq_health_profile_user_id"
+    )
+
+
+async def _rollback(session) -> None:
+    try:
+        await session.rollback()
+    except Exception:
+        return
+
+
+async def _read_fresh_member_profile(
+    confirmation_session_factory_provider,
+    *,
+    user_id: int,
+):
+    session_factory = confirmation_session_factory_provider()
+    async with session_factory() as confirmation_session:
+        user = await get_member_profile_user_state(confirmation_session, user_id)
+        _ensure_current_verified_member(user)
+        return await get_health_profile_by_user_id(confirmation_session, user_id)
+
+
+async def _confirm_profile_write(
+    confirmation_session_factory_provider,
+    *,
+    user_id: int,
+    payload: MemberSelfHealthProfileWriteRequest,
+    mismatch_detail: str,
+) -> MemberSelfHealthProfileResult:
+    profile = await _read_fresh_member_profile(
+        confirmation_session_factory_provider,
+        user_id=user_id,
+    )
+    if _member_profile_matches(profile, payload):
+        return _to_member_self_profile_result(profile, outcome="REPLAYED")
+    raise HTTPException(status_code=409 if "CONFLICT" in mismatch_detail else 503, detail=mismatch_detail)
+
+
+async def get_member_self_health_profile(
+    session,
+    *,
+    user_id: int,
+) -> MemberSelfHealthProfileResult:
+    user = await get_member_profile_user_state(session, user_id)
+    _ensure_current_verified_member(user)
+    profile = await get_health_profile_by_user_id(session, user_id)
+    return _to_member_self_profile_result(profile)
+
+
+async def put_member_self_health_profile(
+    session,
+    *,
+    confirmation_session_factory_provider,
+    user_id: int,
+    payload: MemberSelfHealthProfileWriteRequest,
+) -> MemberSelfHealthProfileResult:
+    user = await get_member_profile_user_state(session, user_id)
+    _ensure_current_verified_member(user)
+    profile = await get_health_profile_by_user_id(session, user_id)
+
+    if profile is not None and _member_profile_matches(profile, payload):
+        return _to_member_self_profile_result(profile, outcome="REPLAYED")
+
+    if profile is not None:
+        if payload.expected_version is None or profile.updated_at != payload.expected_version:
+            raise HTTPException(status_code=409, detail="HEALTH_PROFILE_VERSION_CONFLICT")
+        profile = await update_health_profile_record(
+            session,
+            user_id=user_id,
+            expected_updated_at=payload.expected_version,
+            profile_data=_profile_write_data(payload),
+            updated_at=datetime.now(timezone.utc),
+        )
+        if profile is None:
+            await _rollback(session)
+            return await _confirm_profile_write(
+                confirmation_session_factory_provider,
+                user_id=user_id,
+                payload=payload,
+                mismatch_detail="HEALTH_PROFILE_VERSION_CONFLICT",
+            )
+        outcome = "UPDATED"
+    else:
+        if payload.expected_version is not None:
+            raise HTTPException(status_code=409, detail="HEALTH_PROFILE_VERSION_CONFLICT")
+        try:
+            profile = await create_health_profile_record(
+                session,
+                profile_data={
+                    "user_id": user_id,
+                    **_profile_write_data(payload),
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+        except asyncio.CancelledError:
+            await _rollback(session)
+            raise
+        except IntegrityError as exc:
+            known_conflict = _known_profile_create_conflict(exc)
+            await _rollback(session)
+            if known_conflict:
+                return await _confirm_profile_write(
+                    confirmation_session_factory_provider,
+                    user_id=user_id,
+                    payload=payload,
+                    mismatch_detail="HEALTH_PROFILE_VERSION_CONFLICT",
+                )
+            unknown_integrity = True
+        except Exception:
+            await _rollback(session)
+            raise
+        else:
+            unknown_integrity = False
+        if unknown_integrity:
+            raise HTTPException(
+                status_code=503,
+                detail="Health profile persistence is unavailable",
+            ) from None
+        outcome = "CREATED"
+
+    try:
+        await session.commit()
+    except asyncio.CancelledError:
+        await _rollback(session)
+        raise
+    except Exception:
+        await _rollback(session)
+        commit_unknown = True
+    else:
+        commit_unknown = False
+    if commit_unknown:
+        return await _confirm_profile_write(
+            confirmation_session_factory_provider,
+            user_id=user_id,
+            payload=payload,
+            mismatch_detail="HEALTH_PROFILE_OUTCOME_UNKNOWN",
+        )
+    return _to_member_self_profile_result(profile, outcome=outcome)
 
 
 def _to_health_profile_response(profile) -> HealthProfileResponse:

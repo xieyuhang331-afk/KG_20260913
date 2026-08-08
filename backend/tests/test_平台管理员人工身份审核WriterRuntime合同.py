@@ -152,6 +152,107 @@ def test_WriterRuntime显式Dispose并清空缓存(monkeypatch):
     assert len(engines) == 2
 
 
+def test_Application与WriterRuntime关闭时均Dispose且新生命周期不复用(monkeypatch):
+    _, database = _runtime(
+        monkeypatch,
+        "postgresql+asyncpg://kg_writer_contract:writer-secret@"
+        "127.0.0.1:5432/kg_disposable_contract",
+    )
+
+    class Engine:
+        def __init__(self):
+            self.disposed = 0
+
+        async def dispose(self):
+            self.disposed += 1
+
+    application_engine = Engine()
+    writer_engine = Engine()
+    old_application_factory = object()
+    old_writer_factory = object()
+    database._ASYNC_ENGINE = application_engine
+    database._SESSION_FACTORY = old_application_factory
+    database._VERIFICATION_WRITER_ASYNC_ENGINE = writer_engine
+    database._VERIFICATION_WRITER_SESSION_FACTORY = old_writer_factory
+
+    asyncio.run(database.dispose_database_runtimes())
+
+    assert application_engine.disposed == 1
+    assert writer_engine.disposed == 1
+    assert database._ASYNC_ENGINE is None
+    assert database._SESSION_FACTORY is None
+    assert database._VERIFICATION_WRITER_ASYNC_ENGINE is None
+    assert database._VERIFICATION_WRITER_SESSION_FACTORY is None
+
+    engines = []
+
+    def create_engine(*args, **kwargs):
+        engine = Engine()
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(database, "create_async_engine_from_settings", create_engine)
+    monkeypatch.setattr(database, "create_async_engine", create_engine)
+    monkeypatch.setattr(database, "create_session_factory", lambda engine: object())
+    assert database.get_session_factory() is not old_application_factory
+    assert database.get_verification_writer_session_factory() is not old_writer_factory
+    assert len(engines) == 2
+
+
+def test_FastAPI关闭时Dispose数据库Runtime(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+
+    calls = []
+
+    async def dispose_database_runtimes():
+        calls.append("disposed")
+
+    monkeypatch.setattr(
+        main,
+        "dispose_database_runtimes",
+        dispose_database_runtimes,
+        raising=False,
+    )
+    with TestClient(main.create_app()) as client:
+        assert client.get("/health").status_code == 200
+    assert calls == ["disposed"]
+
+
+def test_RuntimeDispose的Cancellation原样传播且仍清空两个缓存(monkeypatch):
+    _, database = _runtime(
+        monkeypatch,
+        "postgresql+asyncpg://kg_writer_contract:writer-secret@"
+        "127.0.0.1:5432/kg_disposable_contract",
+    )
+
+    class CancelledEngine:
+        async def dispose(self):
+            raise asyncio.CancelledError
+
+    class Engine:
+        def __init__(self):
+            self.disposed = 0
+
+        async def dispose(self):
+            self.disposed += 1
+
+    writer_engine = Engine()
+    database._ASYNC_ENGINE = CancelledEngine()
+    database._SESSION_FACTORY = object()
+    database._VERIFICATION_WRITER_ASYNC_ENGINE = writer_engine
+    database._VERIFICATION_WRITER_SESSION_FACTORY = object()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(database.dispose_database_runtimes())
+
+    assert writer_engine.disposed == 1
+    assert database._ASYNC_ENGINE is None
+    assert database._SESSION_FACTORY is None
+    assert database._VERIFICATION_WRITER_ASYNC_ENGINE is None
+    assert database._VERIFICATION_WRITER_SESSION_FACTORY is None
+
+
 def test_WriterRuntime错误链和Traceback不泄漏URL(monkeypatch):
     _, database = _runtime(
         monkeypatch,

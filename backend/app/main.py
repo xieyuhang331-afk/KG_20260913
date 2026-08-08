@@ -1,6 +1,9 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.core.config import get_settings
+from app.core.database import dispose_database_runtimes
 from app.core.middleware import add_request_middleware
 from app.core.responses import ok_response
 from app.modules.auth.api import auth_router
@@ -13,11 +16,20 @@ from app.modules.tenant.api import router as tenant_router
 from app.modules.user_health.api import router as user_health_router
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    try:
+        yield
+    finally:
+        await dispose_database_runtimes()
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title=settings.service_name,
         version=settings.version,
+        lifespan=lifespan,
         openapi_tags=[
             {"name": module.slug, "description": module.name}
             for module in get_module_registry()
