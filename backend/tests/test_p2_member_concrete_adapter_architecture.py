@@ -72,6 +72,10 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
     approved_bootstrap_uow = (
         INFRASTRUCTURE_DIR / "registration_bootstrap_unit_of_work.py"
     )
+    approved_orchestrator_repository = (
+        INFRASTRUCTURE_DIR
+        / "sqlalchemy_registration_orchestrator_repository.py"
+    )
     approved_sqlalchemy_paths = {
         approved_model,
         approved_repository,
@@ -79,6 +83,7 @@ def test_ct0_post_implementation_persistence_runtime_boundary_is_enforced():
         approved_allocation_uow,
         approved_bootstrap_repository,
         approved_bootstrap_uow,
+        approved_orchestrator_repository,
     }
     forbidden_imports = {"alembic", "asyncpg"}
     forbidden_runtime_calls = {

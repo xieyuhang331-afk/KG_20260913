@@ -130,3 +130,21 @@ def test_composition_at0_migration_and_member_roundtrip_remain_closed():
         BACKEND_ROOT / "tests" / "integration" / "test_p2_identity_member_repository_real_db.py",
     }
     assert not {path for path in forbidden if path.exists()}
+
+
+def test_registration_orchestrator_composition_uses_identity_application_boundary():
+    source = COMPOSITION_PATH.read_text(encoding="utf-8")
+    assert "create_registration_orchestrator" in source
+    assert "RegistrationOutboxWorkerUnitOfWork" not in source
+    assert "MIGRATION" not in source
+    assert "credential" not in source.lower()
+    assert "get_settings" not in source
+
+
+def test_registration_orchestrator_keeps_three_transaction_boundaries_separate():
+    source = COMPOSITION_PATH.read_text(encoding="utf-8")
+    assert "member_no_allocation_unit_of_work" in source
+    assert "registration_bootstrap_unit_of_work" in source
+    assert "RegistrationOutboxWorkerUnitOfWork" not in source
+    assert "Combined" not in source
+    assert "GlobalRegistrationUnitOfWork" not in source

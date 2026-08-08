@@ -1,3 +1,5 @@
+import secrets
+
 from sqlalchemy.exc import (
     DBAPIError,
     DisconnectionError,
@@ -14,6 +16,12 @@ from app.modules.member.application.create_registration_member import (
 from app.modules.member.application.registration_bootstrap import (
     RegistrationIdentityBootstrapService,
 )
+from app.modules.member.application.member_no_allocator import (
+    RegistrationMemberNoAllocator,
+)
+from app.modules.member.application.registration_orchestrator import (
+    RegistrationOrchestrator,
+)
 from app.modules.member.infrastructure.mapper import MemberMapper
 from app.modules.member.infrastructure.orm_state_mapper import MemberOrmStateMapper
 from app.modules.member.infrastructure.sqlalchemy_repository import (
@@ -24,6 +32,16 @@ from app.modules.member.infrastructure.unit_of_work import (
 )
 from app.modules.member.infrastructure.registration_bootstrap_unit_of_work import (
     SqlAlchemyRegistrationBootstrapUnitOfWork,
+)
+from app.modules.member.infrastructure.member_no_allocation_unit_of_work import (
+    SqlAlchemyMemberNoAllocationUnitOfWork,
+)
+from app.modules.member.infrastructure.sqlalchemy_member_no_allocation_ledger import (
+    SqlAlchemyMemberNoAllocationLedger,
+)
+from app.modules.member.infrastructure.sqlalchemy_registration_orchestrator_repository import (
+    SqlAlchemyRegistrationOrchestratorEligibilityReader,
+    SqlAlchemyRegistrationOrchestratorOutcomeReader,
 )
 from app.modules.member.infrastructure.sqlalchemy_registration_bootstrap_repository import (
     SqlAlchemyRegistrationEligibilityProofReader,
@@ -86,6 +104,24 @@ class IdentityPersistenceComposition:
             self._session_factory, self._clock
         )
 
+    def member_no_allocation_unit_of_work(self):
+        return SqlAlchemyMemberNoAllocationUnitOfWork(
+            self._session_factory,
+            lambda session: SqlAlchemyMemberNoAllocationLedger(
+                session, self._clock
+            ),
+        )
+
+    def registration_orchestrator_eligibility_reader(self):
+        return SqlAlchemyRegistrationOrchestratorEligibilityReader(
+            self._session_factory
+        )
+
+    def registration_orchestrator_outcome_reader(self):
+        return SqlAlchemyRegistrationOrchestratorOutcomeReader(
+            self._session_factory
+        )
+
     def registration_eligibility_proof_reader(
         self,
     ) -> SqlAlchemyRegistrationEligibilityProofReader:
@@ -128,4 +164,32 @@ def create_registration_identity_bootstrap_service(
             identity_persistence.registration_bootstrap_unit_of_work
         ),
         uuid_generator=uuid_generator,
+    )
+
+
+def create_registration_orchestrator(
+    *,
+    identity_persistence: IdentityPersistenceComposition,
+    uuid_generator: UuidGenerator,
+    random_bits=secrets.randbits,
+) -> RegistrationOrchestrator:
+    allocator = RegistrationMemberNoAllocator(
+        unit_of_work_factory=(
+            identity_persistence.member_no_allocation_unit_of_work
+        ),
+        uuid_generator=uuid_generator,
+        random_bits=random_bits,
+    )
+    return RegistrationOrchestrator(
+        eligibility_reader=(
+            identity_persistence.registration_orchestrator_eligibility_reader()
+        ),
+        member_no_allocator=allocator,
+        bootstrap_service=create_registration_identity_bootstrap_service(
+            identity_persistence=identity_persistence,
+            uuid_generator=uuid_generator,
+        ),
+        outcome_reader=(
+            identity_persistence.registration_orchestrator_outcome_reader()
+        ),
     )
