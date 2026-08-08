@@ -1,4 +1,5 @@
 import asyncio
+import ast
 from datetime import datetime, timezone
 import json
 import os
@@ -856,3 +857,26 @@ def _wait_for(predicate, message, *, timeout):
             pass
         time.sleep(0.25)
     raise AssertionError(message)
+
+
+def test_真实Writer准备路径必须经过人工审核Authority边界():
+    path = (
+        Path(__file__).resolve().parent
+        / "integration"
+        / "test_身份注册持久发件箱数据库合同.py"
+    )
+    file_source = path.read_text(encoding="utf-8")
+    tree = ast.parse(file_source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_production_writer_round_trip"
+    )
+    source = ast.get_source_segment(file_source, function)
+    assert source is not None
+    message = "Verified transition integration path bypasses authority boundary"
+    assert "P1VerificationTransitionCommand" not in source, message
+    assert (
+        "create_manual_identity_review_verified_transition_service" in source
+    ), message

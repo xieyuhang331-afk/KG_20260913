@@ -53,4 +53,3 @@ def test_人工审核接线不开放API_JWT_register_user或provider_callback():
         "id_card",
     ):
         assert forbidden not in source
-

@@ -172,7 +172,7 @@ def test_Authority_Port返回非决定对象时fail_closed且零Writer():
 def test_Authority异常被安全切断且零Writer():
     async def exercise():
         secret = RuntimeError(
-            "sql password=hunter2 phone=13800138000 database://secret"
+            "vendor_sql_marker credential_marker database_target_marker"
         )
         service, _, writer = _service(
             AuthorityPortStub(error=secret)
@@ -186,9 +186,9 @@ def test_Authority异常被安全切断且零Writer():
 
     error, writer = asyncio.run(exercise())
     public = f"{error!s} {error!r} {error.__cause__} {error.__context__}"
-    assert "hunter2" not in public
-    assert "13800138000" not in public
-    assert "database://" not in public
+    assert "vendor_sql_marker" not in public
+    assert "credential_marker" not in public
+    assert "database_target_marker" not in public
     assert error.__cause__ is None
     assert error.__context__ is None
     assert writer.commands == []
@@ -205,4 +205,3 @@ def test_Cancellation从Authority和Writer原样传播():
                 await service.execute("manual-review-decision-1042-v7")
 
     asyncio.run(exercise())
-

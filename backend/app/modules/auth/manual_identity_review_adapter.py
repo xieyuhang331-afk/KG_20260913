@@ -74,4 +74,3 @@ class ManualIdentityReviewVerifiedTransitionService:
             decided_at=decision.decided_at,
         )
         return await self._transition_writer.execute(command)
-

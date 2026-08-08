@@ -27,4 +27,3 @@ def create_manual_identity_review_verified_transition_service(
         authority_port=authority_port,
         transition_writer=writer,
     )
-

@@ -12,12 +12,11 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.modules.auth.registration_outbox import (
-    P1VerificationTransitionCommand,
-    P1VerificationTransitionWriter,
+from app.composition.p1_verified_transition import (
+    create_manual_identity_review_verified_transition_service,
 )
-from app.modules.auth.registration_outbox_repository import (
-    SqlAlchemyP1VerificationTransitionUnitOfWork,
+from app.modules.auth.identity_verification_authority import (
+    ManualIdentityReviewAuthorityDecision,
 )
 from app.modules.auth.eligibility_evidence import build_p1_projection_digest
 from app.modules.auth.registration_outbox_worker import (
@@ -80,6 +79,17 @@ class _UuidGenerator:
 
     def generate(self):
         return next(self._values)
+
+
+class _ManualReviewAuthorityPort:
+    def __init__(self, decision):
+        self._decision = decision
+        self.calls = []
+
+    async def load_current_decision(self, authority_decision_id):
+        self.calls.append(authority_decision_id)
+        assert authority_decision_id == self._decision.authority_decision_id
+        return self._decision
 
 
 async def _with_connection(database_url, operation):
@@ -297,28 +307,39 @@ async def _production_writer_round_trip():
 
     engine = create_async_engine(writer_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    command = P1VerificationTransitionCommand(
-        authority="P1_IDENTITY_REVIEW",
-        case_ref="review-case-82301-v4",
-        decision_version=4,
-        target_facts_version=11,
+    decision = ManualIdentityReviewAuthorityDecision(
+        authority_source="manual_review",
+        authority_decision_id="manual-review-decision-82301-v1",
+        reviewer_subject_id=17,
+        reviewer_role="super_admin",
+        reviewer_is_active=True,
+        reviewer_tenant_scope=None,
+        reviewer_org_scope="platform",
         user_ref=USER_REF,
-        verification_epoch=4,
+        subject_tenant_id=None,
+        subject_org_id=None,
+        subject_binding_started=False,
         outcome="verified",
-        evidence_digest="verification-evidence-digest-v4",
-        actor_type="platform_reviewer",
-        actor_ref="reviewer-ref-17",
+        facts_version=11,
+        currentness_version=1,
+        verification_epoch=1,
+        predecessor_currentness_version=None,
+        predecessor_verification_epoch=None,
         decided_at=NOW,
+        evidence_digest="c" * 64,
+        correlation_id="registration-correlation-82301",
+        is_current=True,
+        revocation_reference=None,
     )
-    writer = P1VerificationTransitionWriter(
-        unit_of_work_factory=lambda: SqlAlchemyP1VerificationTransitionUnitOfWork(
-            session_factory
-        ),
+    authority_port = _ManualReviewAuthorityPort(decision)
+    service = create_manual_identity_review_verified_transition_service(
+        authority_port=authority_port,
+        verification_session_factory=session_factory,
         uuid_generator=_UuidGenerator(),
     )
     try:
-        created = await writer.execute(command)
-        replayed = await writer.execute(command)
+        created = await service.execute(decision.authority_decision_id)
+        replayed = await service.execute(decision.authority_decision_id)
     finally:
         await engine.dispose()
 
@@ -326,6 +347,10 @@ async def _production_writer_round_trip():
     assert replayed.replayed is True
     assert created.verification_decision_ref == VERIFICATION_REF
     assert replayed.registration_event_id == EVENT_ID
+    assert authority_port.calls == [
+        decision.authority_decision_id,
+        decision.authority_decision_id,
+    ]
 
 
 def test_注册持久发件箱权限矩阵与真实往返(pg_database):
