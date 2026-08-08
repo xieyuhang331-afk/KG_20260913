@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TenantReviewQueueQuery(BaseModel):
@@ -96,3 +96,31 @@ class TenantReviewDecisionResponse(BaseModel):
     status: str
     reviewed_by: int
     reviewed_at: datetime
+
+
+class PlatformAdminManualIdentityReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^\S(?:.*\S)?$",
+    )
+    decided_at: datetime
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("decided_at")
+    @classmethod
+    def require_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset().total_seconds() != 0:
+            raise ValueError("decided_at must be an aware UTC datetime")
+        return value
+
+
+class PlatformAdminManualIdentityReviewResponse(BaseModel):
+    user_id: int
+    status: str
+    verification_decision_ref: str
+    registration_event_id: str
+    authority_decision_key: str
+    replayed: bool
