@@ -12,6 +12,7 @@ NAMING_CONVENTION = {
 
 try:
     from sqlalchemy import MetaData
+    from sqlalchemy.engine import make_url
     from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
     from sqlalchemy.orm import DeclarativeBase
 
@@ -64,6 +65,11 @@ def create_session_factory(engine: AsyncEngine):
 
 _ASYNC_ENGINE = None
 _SESSION_FACTORY = None
+_VERIFICATION_WRITER_ASYNC_ENGINE = None
+_VERIFICATION_WRITER_SESSION_FACTORY = None
+_VERIFICATION_WRITER_RUNTIME_ERROR = (
+    "Verification writer database runtime is unavailable"
+)
 
 
 def get_session_factory():
@@ -72,6 +78,54 @@ def get_session_factory():
         _ASYNC_ENGINE = create_async_engine_from_settings(get_settings())
         _SESSION_FACTORY = create_session_factory(_ASYNC_ENGINE)
     return _SESSION_FACTORY
+
+
+def _get_verification_writer_database_url(settings: Settings) -> str:
+    raw_url = settings.verification_writer_database_url
+    valid = False
+    try:
+        url = make_url(raw_url) if raw_url else None
+        valid = bool(
+            url is not None
+            and url.drivername == "postgresql+asyncpg"
+            and url.username
+            and url.password
+            and url.username not in {settings.database_user, "postgres"}
+            and url.host == settings.database_host
+            and url.port == settings.database_port
+            and url.database == settings.database_name
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_VERIFICATION_WRITER_RUNTIME_ERROR) from None
+    return raw_url
+
+
+def get_verification_writer_session_factory():
+    global _VERIFICATION_WRITER_ASYNC_ENGINE
+    global _VERIFICATION_WRITER_SESSION_FACTORY
+    if _VERIFICATION_WRITER_SESSION_FACTORY is None:
+        settings = get_settings()
+        url = _get_verification_writer_database_url(settings)
+        try:
+            engine = create_async_engine(url, pool_pre_ping=True)
+            session_factory = create_session_factory(engine)
+        except Exception:
+            raise RuntimeError(_VERIFICATION_WRITER_RUNTIME_ERROR) from None
+        _VERIFICATION_WRITER_ASYNC_ENGINE = engine
+        _VERIFICATION_WRITER_SESSION_FACTORY = session_factory
+    return _VERIFICATION_WRITER_SESSION_FACTORY
+
+
+async def dispose_verification_writer_runtime() -> None:
+    global _VERIFICATION_WRITER_ASYNC_ENGINE
+    global _VERIFICATION_WRITER_SESSION_FACTORY
+    engine = _VERIFICATION_WRITER_ASYNC_ENGINE
+    _VERIFICATION_WRITER_ASYNC_ENGINE = None
+    _VERIFICATION_WRITER_SESSION_FACTORY = None
+    if engine is not None:
+        await engine.dispose()
 
 
 async def get_db_session():

@@ -257,6 +257,53 @@ def test_本地RabbitMQ清理在Sentinel不匹配时仍删除精确容器():
     ) not in events
 
 
+def test_Beat观察使用有上限条件轮询并保持Registration专用队列():
+    depths = iter((0, 0, 1))
+
+    class Process:
+        def poll(self):
+            return None
+
+    events = []
+    _wait_for_beat_message(
+        Process(),
+        "kg-reg-0123456789ab",
+        "registration",
+        timeout=2,
+        queue_depth=lambda container, queue: (
+            events.append((container, queue)) or next(depths)
+        ),
+        sleep=lambda _seconds: None,
+    )
+    assert events == [
+        ("kg-reg-0123456789ab", "registration"),
+        ("kg-reg-0123456789ab", "registration"),
+        ("kg-reg-0123456789ab", "registration"),
+    ]
+
+
+def test_Beat提前退出立即阻断且诊断不包含运行Secret():
+    class Process:
+        def poll(self):
+            return 3
+
+    with pytest.raises(
+        AssertionError,
+        match="Celery Beat exited before publishing registration task",
+    ) as caught:
+        _wait_for_beat_message(
+            Process(),
+            "kg-reg-0123456789ab",
+            "registration",
+            timeout=2,
+            queue_depth=lambda *_args: 0,
+            sleep=lambda _seconds: None,
+        )
+    public = str(caught.value).lower()
+    for forbidden in ("amqp://", "password", "credential", "database_url"):
+        assert forbidden not in public
+
+
 if (
     os.getenv("KG_RUN_PG_INTEGRATION") == "1"
     and os.getenv("KG_RUN_RABBITMQ_INTEGRATION") == "1"
@@ -496,10 +543,14 @@ if (
             processes.remove(worker_c)
             beat = _start_beat(child_env, beat_schedule)
             processes.append(beat)
-            time.sleep(7)
+            _wait_for_beat_message(
+                beat,
+                container_name,
+                REGISTRATION_QUEUE,
+                timeout=30,
+            )
             _stop_process(beat)
             processes.remove(beat)
-            assert _rabbitmq_queue_depth(container_name, REGISTRATION_QUEUE) >= 1
 
             worker_a = _start_worker("registration-a@%h", child_env)
             processes.append(worker_a)
@@ -826,6 +877,29 @@ def _rabbitmq_queue_depth(container_name, queue):
         if len(fields) == 2 and fields[0] == queue:
             return int(fields[1])
     return 0
+
+
+def _wait_for_beat_message(
+    process,
+    container_name,
+    queue,
+    *,
+    timeout,
+    queue_depth=_rabbitmq_queue_depth,
+    sleep=time.sleep,
+):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise AssertionError(
+                "Celery Beat exited before publishing registration task"
+            )
+        if queue_depth(container_name, queue) >= 1:
+            return
+        sleep(0.25)
+    raise AssertionError(
+        "Celery Beat did not publish to the registration queue before timeout"
+    )
 
 
 def _wait_for_queue_empty(container_name, queue):

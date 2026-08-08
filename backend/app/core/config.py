@@ -23,6 +23,7 @@ class Settings(BaseModel):
     database_name: str = "kg_20260727"
     database_user: str = "kg_app"
     database_password: str
+    verification_writer_database_url: str | None = None
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 120
@@ -48,6 +49,9 @@ def get_settings() -> Settings:
         database_name=os.getenv("KG_DATABASE_NAME", "kg_20260727"),
         database_user=os.getenv("KG_DATABASE_USER", "kg_app"),
         database_password=require_secret("KG_DATABASE_PASSWORD"),
+        verification_writer_database_url=os.getenv(
+            "KG_VERIFICATION_WRITER_DATABASE_URL"
+        ),
         jwt_secret_key=require_secret("KG_JWT_SECRET_KEY"),
         jwt_algorithm=os.getenv("KG_JWT_ALGORITHM", "HS256"),
         jwt_access_token_expire_minutes=int(
