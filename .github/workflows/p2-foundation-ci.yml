@@ -179,6 +179,9 @@ jobs:
               for name in roles
               if name != "KG_TEST_DDL_OWNER_ROLE"
           }
+          rabbit_suffix = secrets.token_hex(6)
+          rabbit_user = f"kg_{secrets.token_hex(8)}"
+          rabbit_password = secrets.token_urlsafe(48)
           values = {
               "KG_TEST_RUN_ID": run_id,
               "KG_DATABASE_HOST": host,
@@ -189,6 +192,13 @@ jobs:
               "KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"],
               "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_RABBITMQ_CONTAINER_NAME": f"kg-reg-{rabbit_suffix}",
+              "KG_RABBITMQ_NETWORK_NAME": f"kg-reg-{rabbit_suffix}-network",
+              "KG_RABBITMQ_SENTINEL": f"kg-registration-disposable:{rabbit_suffix}",
+              "KG_RABBITMQ_USER": rabbit_user,
+              "KG_RABBITMQ_PASSWORD": rabbit_password,
+              "KG_RUN_RABBITMQ_INTEGRATION": "1",
+              "KG_CELERY_TEST_RESULT_BACKEND": "rpc",
               **roles,
           }
           url_names = {
@@ -210,13 +220,78 @@ jobs:
                   f"postgresql+asyncpg://{role}:{quote(password)}@"
                   f"{host}:{port}/{outbox_database}"
               )
-          for value in (*values.values(), *passwords.values()):
+          values["KG_IDENTITY_APPLICATION_DATABASE_URL"] = values[
+              "KG_TEST_DATABASE_URL"
+          ]
+          values["KG_DELIVERY_WORKER_DATABASE_URL"] = values[
+              "KG_TEST_DELIVERY_WORKER_DATABASE_URL"
+          ]
+          for value in (
+              *values.values(),
+              *passwords.values(),
+              rabbit_user,
+              rabbit_password,
+          ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
               for name, value in values.items():
                   env_file.write(f"{name}={value}\n")
               for role_name, password in passwords.items():
                   env_file.write(f"{role_name}_PASSWORD={password}\n")
+          PY
+
+      - name: Start disposable RabbitMQ
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$KG_RABBITMQ_CONTAINER_NAME" =~ ^kg-reg-[0-9a-f]{12}$ ]]; then
+            echo 'Refusing an invalid disposable RabbitMQ container name.'
+            exit 1
+          fi
+          if [[ "$KG_RABBITMQ_NETWORK_NAME" != "${KG_RABBITMQ_CONTAINER_NAME}-network" ]]; then
+            echo 'Refusing an invalid disposable RabbitMQ network name.'
+            exit 1
+          fi
+          docker network create \
+            --label "kg.test.sentinel=$KG_RABBITMQ_SENTINEL" \
+            "$KG_RABBITMQ_NETWORK_NAME" >/dev/null
+          docker run -d \
+            --name "$KG_RABBITMQ_CONTAINER_NAME" \
+            --network "$KG_RABBITMQ_NETWORK_NAME" \
+            --label "kg.test.sentinel=$KG_RABBITMQ_SENTINEL" \
+            -e "RABBITMQ_DEFAULT_USER=$KG_RABBITMQ_USER" \
+            -e "RABBITMQ_DEFAULT_PASS=$KG_RABBITMQ_PASSWORD" \
+            -p 127.0.0.1::5672 \
+            --health-cmd 'rabbitmq-diagnostics -q ping' \
+            --health-interval 2s \
+            --health-timeout 5s \
+            --health-retries 30 \
+            rabbitmq:3-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281 \
+            >/dev/null
+          for _ in $(seq 1 60); do
+            if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$KG_RABBITMQ_CONTAINER_NAME")" == 'healthy' ]]; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$KG_RABBITMQ_CONTAINER_NAME")" != 'healthy' ]]; then
+            echo 'Disposable RabbitMQ did not become healthy.'
+            exit 1
+          fi
+          rabbit_port="$(docker port "$KG_RABBITMQ_CONTAINER_NAME" 5672/tcp | awk -F: '{print $NF}')"
+          export rabbit_port
+          python - <<'PY'
+          import os
+          from urllib.parse import quote
+
+          broker_url = (
+              f"amqp://{quote(os.environ['KG_RABBITMQ_USER'])}:"
+              f"{quote(os.environ['KG_RABBITMQ_PASSWORD'])}@"
+              f"127.0.0.1:{os.environ['rabbit_port']}//"
+          )
+          print(f"::add-mask::{broker_url}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"KG_CELERY_BROKER_URL={broker_url}\n")
           PY
 
       - name: Create disposable test database
@@ -303,6 +378,12 @@ jobs:
           python -m pytest tests/integration
           --ignore=tests/integration/test_身份注册持久发件箱数据库合同.py
           -q --junitxml=pytest-integration-report.xml
+
+      - name: Run registration Celery worker bootstrap contract
+        run: >-
+          python -m pytest
+          tests/test_身份注册编排器CeleryWorkerBootstrap合同.py::test_真实独立CeleryWorker进程Bootstrap与Beat
+          -q --junitxml=pytest-registration-worker-report.xml
 
       - name: Apply Outbox Alembic head in controlled DDL-owner window
         run: |
@@ -411,11 +492,56 @@ jobs:
           name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             backend/pytest-integration-report.xml
+            backend/pytest-registration-worker-report.xml
             backend/pytest-outbox-steady-state-report.xml
             backend/pytest-outbox-r2-report.xml
             backend/pytest-uuid-validation-report.xml
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stop and remove disposable RabbitMQ
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${KG_RABBITMQ_CONTAINER_NAME:-}" || -z "${KG_RABBITMQ_NETWORK_NAME:-}" ]]; then
+            exit 0
+          fi
+          if [[ ! "$KG_RABBITMQ_CONTAINER_NAME" =~ ^kg-reg-[0-9a-f]{12}$ ]]; then
+            echo 'Refusing an invalid disposable RabbitMQ cleanup target.'
+            exit 1
+          fi
+          if [[ "$KG_RABBITMQ_NETWORK_NAME" != "${KG_RABBITMQ_CONTAINER_NAME}-network" ]]; then
+            echo 'Refusing an invalid disposable RabbitMQ network cleanup target.'
+            exit 1
+          fi
+          cleanup_failed=0
+          if docker inspect "$KG_RABBITMQ_CONTAINER_NAME" >/dev/null 2>&1; then
+            actual_sentinel="$(docker inspect --format '{{index .Config.Labels "kg.test.sentinel"}}' "$KG_RABBITMQ_CONTAINER_NAME")"
+            if [[ "$actual_sentinel" != "$KG_RABBITMQ_SENTINEL" ]]; then
+              cleanup_failed=1
+            fi
+            docker stop "$KG_RABBITMQ_CONTAINER_NAME" >/dev/null || cleanup_failed=1
+            docker rm "$KG_RABBITMQ_CONTAINER_NAME" >/dev/null || cleanup_failed=1
+          fi
+          if docker network inspect "$KG_RABBITMQ_NETWORK_NAME" >/dev/null 2>&1; then
+            actual_network_sentinel="$(docker network inspect --format '{{index .Labels "kg.test.sentinel"}}' "$KG_RABBITMQ_NETWORK_NAME")"
+            if [[ "$actual_network_sentinel" != "$KG_RABBITMQ_SENTINEL" ]]; then
+              cleanup_failed=1
+            else
+              docker network rm "$KG_RABBITMQ_NETWORK_NAME" >/dev/null || cleanup_failed=1
+            fi
+          fi
+          if docker inspect "$KG_RABBITMQ_CONTAINER_NAME" >/dev/null 2>&1; then
+            cleanup_failed=1
+          fi
+          if docker network inspect "$KG_RABBITMQ_NETWORK_NAME" >/dev/null 2>&1; then
+            cleanup_failed=1
+          fi
+          if [[ "$cleanup_failed" -ne 0 ]]; then
+            echo 'Disposable RabbitMQ cleanup failed.'
+            exit 1
+          fi
 
       - name: Drop disposable Outbox test database
         if: always()
