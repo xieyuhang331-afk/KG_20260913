@@ -132,3 +132,42 @@ class MemberSelfHealthIndicatorPage(BaseModel):
 class MemberSelfHealthIndicatorLatest(BaseModel):
     state: Literal["EMPTY", "AVAILABLE"]
     items: list[MemberSelfHealthIndicatorItem]
+
+
+DetectionReportType = Literal["initial_screening", "store_retest", "home_self_test"]
+DetectionReportViewStatus = Literal["unread", "read"]
+
+
+class DetectionReportMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    indicator_code: str = Field(..., min_length=1, max_length=64)
+    value: Decimal
+    unit: str = Field(..., min_length=1, max_length=32)
+    measured_at: datetime | None = None
+
+
+class DetectionReportStoredData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metrics: list[DetectionReportMetric]
+
+
+class MemberSelfDetectionReportListItem(BaseModel):
+    report_id: int
+    report_type: DetectionReportType
+    detection_time: datetime
+    view_status: DetectionReportViewStatus
+    summary: str | None
+    is_initial_baseline: bool
+
+
+class MemberSelfDetectionReportPage(BaseModel):
+    state: Literal["EMPTY", "AVAILABLE"]
+    items: list[MemberSelfDetectionReportListItem]
+    next_cursor: str | None
+
+
+class MemberSelfDetectionReportDetail(MemberSelfDetectionReportListItem):
+    state: Literal["AVAILABLE"] = "AVAILABLE"
+    metrics: list[DetectionReportMetric]

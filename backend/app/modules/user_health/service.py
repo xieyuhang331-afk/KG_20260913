@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+import hashlib
+import hmac
 import json
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import get_settings
 from app.modules.auth.repository import get_user_by_id
 from app.modules.user_health.repository import (
     create_health_indicator_records,
     create_health_profile_record,
     get_health_profile_by_user_id,
+    get_member_detection_report,
     get_member_profile_user_state,
+    list_member_detection_reports,
     list_member_health_indicator_history,
     list_member_latest_health_indicators,
     list_health_indicators_by_user,
@@ -33,6 +40,10 @@ from app.modules.user_health.schemas import (
     MemberSelfHealthIndicatorItem,
     MemberSelfHealthIndicatorLatest,
     MemberSelfHealthIndicatorPage,
+    DetectionReportStoredData,
+    MemberSelfDetectionReportDetail,
+    MemberSelfDetectionReportListItem,
+    MemberSelfDetectionReportPage,
 )
 
 
@@ -207,6 +218,155 @@ async def get_member_self_latest_health_indicators(
     return MemberSelfHealthIndicatorLatest(
         state="AVAILABLE" if rows else "EMPTY",
         items=[_indicator_item(row) for row in rows],
+    )
+
+
+def _ensure_current_detection_report_member(user) -> None:
+    if (
+        user is None
+        or user.role != "member"
+        or user.status != "active"
+        or user.verify_status != "verified"
+    ):
+        raise HTTPException(status_code=403, detail="MEMBER_DETECTION_REPORT_ACCESS_DENIED")
+
+
+def _detection_report_list_item(row) -> MemberSelfDetectionReportListItem:
+    if row.report_schema_version != 1:
+        raise HTTPException(status_code=409, detail="DETECTION_REPORT_CONTENT_INCONSISTENT")
+    return MemberSelfDetectionReportListItem(
+        report_id=row.id,
+        report_type=row.report_type,
+        detection_time=row.detection_time,
+        view_status=row.view_status,
+        summary=row.summary,
+        is_initial_baseline=row.is_initial_baseline,
+    )
+
+
+def _detection_report_cursor_key() -> bytes:
+    return get_settings().jwt_secret_key.encode("utf-8")
+
+
+def _encode_detection_report_cursor(row) -> str:
+    raw = json.dumps(
+        {"detection_time": row.detection_time.isoformat(), "id": row.id},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        _detection_report_cursor_key(),
+        b"member-detection-report-cursor:v1:" + raw,
+        hashlib.sha256,
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{payload}.{encoded_signature}"
+
+
+def _decode_detection_report_cursor(cursor: str | None):
+    if cursor is None:
+        return None, None
+    try:
+        encoded_payload, encoded_signature = cursor.split(".")
+        raw = base64.b64decode(
+            (encoded_payload + "=" * (-len(encoded_payload) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        signature = base64.b64decode(
+            (encoded_signature + "=" * (-len(encoded_signature) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        expected_signature = hmac.new(
+            _detection_report_cursor_key(),
+            b"member-detection-report-cursor:v1:" + raw,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected_signature):
+            raise ValueError
+        payload = json.loads(raw)
+        if set(payload) != {"detection_time", "id"}:
+            raise ValueError
+        detection_time = datetime.fromisoformat(payload["detection_time"])
+        row_id = int(payload["id"])
+        if detection_time.tzinfo is None or detection_time.utcoffset() is None or row_id < 1:
+            raise ValueError
+        return detection_time, row_id
+    except (binascii.Error, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="DETECTION_REPORT_QUERY_INVALID") from None
+
+
+async def list_member_self_detection_reports_service(
+    session,
+    *,
+    user_id: int,
+    report_type: str | None,
+    start_at,
+    end_at,
+    limit: int,
+    cursor: str | None,
+) -> MemberSelfDetectionReportPage:
+    for boundary in (start_at, end_at):
+        if boundary is not None and (boundary.tzinfo is None or boundary.utcoffset() is None):
+            raise HTTPException(status_code=422, detail="DETECTION_REPORT_QUERY_INVALID")
+    if start_at is not None and end_at is not None and start_at > end_at:
+        raise HTTPException(status_code=422, detail="DETECTION_REPORT_QUERY_INVALID")
+    cursor_time, cursor_id = _decode_detection_report_cursor(cursor)
+    try:
+        user = await get_member_profile_user_state(session, user_id)
+        _ensure_current_detection_report_member(user)
+        rows = await list_member_detection_reports(
+            session,
+            user_id=user_id,
+            report_type=report_type,
+            start_at=start_at,
+            end_at=end_at,
+            cursor_detection_time=cursor_time,
+            cursor_id=cursor_id,
+            limit=limit + 1,
+        )
+        visible = rows[:limit]
+        items = [_detection_report_list_item(row) for row in visible]
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
+    return MemberSelfDetectionReportPage(
+        state="AVAILABLE" if items else "EMPTY",
+        items=items,
+        next_cursor=_encode_detection_report_cursor(visible[-1]) if len(rows) > limit else None,
+    )
+
+
+async def get_member_self_detection_report_service(
+    session,
+    *,
+    user_id: int,
+    report_id: int,
+) -> MemberSelfDetectionReportDetail:
+    try:
+        user = await get_member_profile_user_state(session, user_id)
+        _ensure_current_detection_report_member(user)
+        row = await get_member_detection_report(session, user_id=user_id, report_id=report_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="DETECTION_REPORT_NOT_FOUND")
+        item = _detection_report_list_item(row)
+        stored = DetectionReportStoredData.model_validate(row.report_data)
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        raise
+    except ValidationError:
+        raise HTTPException(status_code=409, detail="DETECTION_REPORT_CONTENT_INCONSISTENT") from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
+    return MemberSelfDetectionReportDetail(
+        **item.model_dump(),
+        metrics=stored.metrics,
     )
 
 

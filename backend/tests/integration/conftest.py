@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260809_0012"
+REQUIRED_HEAD_REVISION = "20260809_0013"
 
 
 def pytest_configure(config):
@@ -174,6 +174,11 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
     database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{readonly_role}"')
+    database.execute(f'GRANT SELECT ON TABLE public.detection_report TO "{application_role}", "{readonly_role}"')
+    database.execute(
+        'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.detection_report FROM "{application_role}", "{readonly_role}"'
+    )
     database.execute("REVOKE ALL ON SCHEMA identity FROM PUBLIC")
     database.execute(f'GRANT USAGE ON SCHEMA identity TO "{application_role}"')
     database.execute(f'REVOKE CREATE ON SCHEMA identity FROM "{application_role}"')

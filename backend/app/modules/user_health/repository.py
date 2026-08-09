@@ -6,7 +6,7 @@ from sqlalchemy import and_, or_, select, update
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
-from app.modules.user_health.models import HealthIndicator, HealthProfile
+from app.modules.user_health.models import DetectionReport, HealthIndicator, HealthProfile
 
 
 def _ensure_mapped() -> None:
@@ -180,3 +180,72 @@ async def list_member_latest_health_indicators(session, *, user_id: int):
         .order_by(table.c.indicator_type, table.c.recorded_at.desc(), table.c.id.desc())
     )
     return (await session.execute(statement)).mappings().all()
+
+
+def _detection_report_projection(*, include_data: bool):
+    table = DetectionReport.__table__
+    candidate = table.alias("first_detection_report")
+    first_report_id = (
+        select(candidate.c.id)
+        .where(candidate.c.user_id == table.c.user_id)
+        .order_by(candidate.c.detection_time.asc(), candidate.c.id.asc())
+        .limit(1)
+        .correlate(table)
+        .scalar_subquery()
+    )
+    columns = [
+        table.c.id,
+        table.c.report_type,
+        table.c.detection_time,
+        table.c.view_status,
+        table.c.summary,
+        table.c.report_schema_version,
+        (table.c.id == first_report_id).label("is_initial_baseline"),
+    ]
+    if include_data:
+        columns.append(table.c.report_data)
+    return tuple(columns)
+
+
+async def list_member_detection_reports(
+    session,
+    *,
+    user_id: int,
+    report_type: str | None,
+    start_at,
+    end_at,
+    cursor_detection_time,
+    cursor_id: int | None,
+    limit: int,
+):
+    _ensure_mapped()
+    table = DetectionReport.__table__
+    statement = select(*_detection_report_projection(include_data=False)).where(
+        table.c.user_id == user_id
+    )
+    if report_type is not None:
+        statement = statement.where(table.c.report_type == report_type)
+    if start_at is not None:
+        statement = statement.where(table.c.detection_time >= start_at)
+    if end_at is not None:
+        statement = statement.where(table.c.detection_time <= end_at)
+    if cursor_detection_time is not None and cursor_id is not None:
+        statement = statement.where(
+            or_(
+                table.c.detection_time < cursor_detection_time,
+                and_(table.c.detection_time == cursor_detection_time, table.c.id < cursor_id),
+            )
+        )
+    statement = statement.order_by(table.c.detection_time.desc(), table.c.id.desc()).limit(limit)
+    return (await session.execute(statement)).mappings().all()
+
+
+async def get_member_detection_report(session, *, user_id: int, report_id: int):
+    _ensure_mapped()
+    table = DetectionReport.__table__
+    statement = (
+        select(*_detection_report_projection(include_data=True))
+        .where(table.c.user_id == user_id, table.c.id == report_id)
+        .limit(1)
+    )
+    return (await session.execute(statement)).mappings().one_or_none()

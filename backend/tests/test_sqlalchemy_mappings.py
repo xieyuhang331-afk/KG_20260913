@@ -26,6 +26,7 @@ class SqlAlchemyMappingTests(unittest.TestCase):
                 "user",
                 "health_profile",
                 "health_indicator",
+                "detection_report",
                 "message",
                 "operation_log",
             },

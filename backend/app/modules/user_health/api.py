@@ -9,6 +9,7 @@ from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user, get_current_user_from_jwt
 from app.modules.user_health.schemas import (
+    DetectionReportType,
     HealthIndicatorBatchCreateRequest,
     HealthProfileCreateRequest,
     MemberSelfHealthProfileWriteRequest,
@@ -17,16 +18,56 @@ from app.modules.user_health.service import (
     create_health_indicators,
     create_health_profile,
     get_member_self_health_profile,
+    get_member_self_detection_report_service,
     get_member_self_latest_health_indicators,
     get_health_profile,
     get_latest_health_indicators,
     list_health_indicators,
     list_member_self_health_indicators,
+    list_member_self_detection_reports_service,
     put_member_self_health_profile,
 )
 
 
 router = APIRouter(prefix="/api/v1/users", tags=["user_health"])
+
+
+@router.get("/me/detection-reports")
+async def list_member_self_detection_reports(
+    report_type: DetectionReportType | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    session=Depends(get_db_session),
+) -> dict:
+    ensure_is_member(current_user)
+    result = await list_member_self_detection_reports_service(
+        session,
+        user_id=current_user.id,
+        report_type=report_type,
+        start_at=start_at,
+        end_at=end_at,
+        limit=limit,
+        cursor=cursor,
+    )
+    return ok_response(result.model_dump(mode="json"))
+
+
+@router.get("/me/detection-reports/{report_id}")
+async def get_member_self_detection_report(
+    report_id: int,
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    session=Depends(get_db_session),
+) -> dict:
+    ensure_is_member(current_user)
+    result = await get_member_self_detection_report_service(
+        session,
+        user_id=current_user.id,
+        report_id=report_id,
+    )
+    return ok_response(result.model_dump(mode="json"))
 
 
 @router.get("/me/health-indicators")

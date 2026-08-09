@@ -28,6 +28,7 @@ class CoreOrmModelTests(unittest.TestCase):
                 "user",
                 "health_profile",
                 "health_indicator",
+                "detection_report",
                 "message",
                 "operation_log",
             },
@@ -38,6 +39,7 @@ class CoreOrmModelTests(unittest.TestCase):
         self.assertEqual(specs["tenant_attachment"].module, "tenant")
         self.assertEqual(specs["health_profile"].module, "user_health")
         self.assertEqual(specs["health_indicator"].module, "user_health")
+        self.assertEqual(specs["detection_report"].module, "user_health")
         self.assertEqual(specs["message"].module, "system")
         self.assertEqual(specs["tenant_review_log"].module, "tenant")
         self.assertEqual(specs["operation_log"].module, "system")
@@ -75,6 +77,11 @@ class CoreOrmModelTests(unittest.TestCase):
         self.assertEqual(indicator.hypertable_time_column, "recorded_at")
         self.assertEqual(indicator.column("source").default, "APP")
 
+        report = specs["detection_report"]
+        self.assertEqual(report.column("user_id").foreign_key, "user.id")
+        self.assertEqual(report.column("store_id").foreign_key, "tenant.id")
+        self.assertEqual(report.column("report_data").ddl_type, "JSONB")
+
         message = specs["message"]
         self.assertEqual(message.column("session_id").foreign_key, "interpretation_session.id")
         self.assertEqual(message.column("sender_id").foreign_key, "user.id")
@@ -104,6 +111,10 @@ class CoreOrmModelTests(unittest.TestCase):
         self.assertIn(("idx_tenant_type_status", ("type", "status")), specs["tenant"].indexes)
         self.assertIn(("idx_user_tenant", ("tenant_id",)), specs["user"].indexes)
         self.assertIn(("idx_hi_user_time", ("user_id", "recorded_at DESC")), specs["health_indicator"].indexes)
+        self.assertIn(
+            ("idx_detection_report_user_time", ("user_id", "detection_time DESC", "id DESC")),
+            specs["detection_report"].indexes,
+        )
         self.assertIn(("idx_msg_session", ("session_id", "created_at")), specs["message"].indexes)
         self.assertIn(("idx_tenant_review_log_tenant", ("tenant_id",)), specs["tenant_review_log"].indexes)
         self.assertIn(

@@ -6,11 +6,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260809_0012"
+EXPECTED_HEAD = "20260809_0013"
 STALE_HEAD = "20260807_0010"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260809_0012; found stale revision 20260808_0011"
+    "20260809_0013; found stale revision 20260809_0012"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "

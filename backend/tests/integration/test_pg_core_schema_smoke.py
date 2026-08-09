@@ -11,6 +11,7 @@ CORE_TABLES = {
     "tenant_attachment",
     "tenant_review_log",
     "operation_log",
+    "detection_report",
 }
 
 
@@ -51,6 +52,7 @@ def test_core_tables_have_expected_primary_keys(pg_database):
         ("tenant_attachment", "id"),
         ("tenant_review_log", "id"),
         ("operation_log", "id"),
+        ("detection_report", "id"),
     }
 
 
@@ -110,6 +112,14 @@ def test_core_columns_have_expected_nullability_and_enum_types(pg_database):
         ("operation_log", "object_type"),
         ("operation_log", "action"),
         ("operation_log", "created_at"),
+        ("detection_report", "id"),
+        ("detection_report", "user_id"),
+        ("detection_report", "report_type"),
+        ("detection_report", "detection_time"),
+        ("detection_report", "view_status"),
+        ("detection_report", "report_schema_version"),
+        ("detection_report", "report_data"),
+        ("detection_report", "created_at"),
     }
     assert {
         column
@@ -172,5 +182,7 @@ def test_core_foreign_keys_exist(pg_database):
             ("tenant_review_log", "tenant_id", "tenant", "id"),
             ("tenant_review_log", "reviewer_id", "user", "id"),
             ("operation_log", "operator_id", "user", "id"),
+            ("detection_report", "user_id", "user", "id"),
+            ("detection_report", "store_id", "tenant", "id"),
         }
     )

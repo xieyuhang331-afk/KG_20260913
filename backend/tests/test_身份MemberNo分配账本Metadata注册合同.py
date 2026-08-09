@@ -5,6 +5,7 @@ from app.core.database import Base
 
 
 CORE_TABLES = {
+    "detection_report",
     "health_indicator",
     "health_profile",
     "message",

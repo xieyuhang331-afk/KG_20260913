@@ -445,6 +445,8 @@ jobs:
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"application_role";
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO :"readonly_role";
           REVOKE INSERT, UPDATE, DELETE ON TABLE public.alembic_version FROM :"application_role";
+          GRANT SELECT ON TABLE public.detection_report TO :"application_role", :"readonly_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.detection_report FROM :"application_role", :"readonly_role";
 
           REVOKE ALL ON SCHEMA identity FROM PUBLIC;
           GRANT USAGE ON SCHEMA identity TO :"application_role", :"readonly_role";
