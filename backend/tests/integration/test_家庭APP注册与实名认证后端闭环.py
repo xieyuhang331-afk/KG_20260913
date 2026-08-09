@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import os
 from uuid import UUID
 
 import pytest
@@ -11,6 +12,39 @@ pytestmark = pytest.mark.integration
 NOW = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
 REVIEWER_ID = 94801
 CLASSIFICATION_ID = UUID("01890f3e-7b7d-7cc3-88c8-2f5a12d29801")
+
+
+@pytest.fixture(autouse=True)
+def _bind_isolated_runtime_urls(monkeypatch):
+    aliases = {
+        "KG_IDENTITY_APPLICATION_DATABASE_URL": "KG_TEST_DATABASE_URL",
+        "KG_VERIFICATION_WRITER_DATABASE_URL": (
+            "KG_TEST_VERIFICATION_WRITER_DATABASE_URL"
+        ),
+        "KG_DELIVERY_WORKER_DATABASE_URL": "KG_TEST_DELIVERY_WORKER_DATABASE_URL",
+    }
+    values = {alias: os.getenv(source) for alias, source in aliases.items()}
+    configured = [value for value in values.values() if value]
+    if configured and len(configured) != len(set(configured)):
+        pytest.fail("STAGE_DATABASE_ROLE_ISOLATION", pytrace=False)
+    for alias, value in values.items():
+        if value:
+            monkeypatch.setenv(alias, value)
+    application_url = values["KG_IDENTITY_APPLICATION_DATABASE_URL"]
+    if application_url:
+        from sqlalchemy.engine import make_url
+
+        parsed = make_url(application_url)
+        settings = {
+            "KG_DATABASE_HOST": parsed.host,
+            "KG_DATABASE_PORT": str(parsed.port),
+            "KG_DATABASE_NAME": parsed.database,
+            "KG_DATABASE_USER": parsed.username,
+            "KG_DATABASE_PASSWORD": parsed.password,
+        }
+        for name, value in settings.items():
+            if value:
+                monkeypatch.setenv(name, value)
 
 
 def _headers(user_id: int, role: str) -> dict[str, str]:
@@ -33,6 +67,21 @@ def _stage_call(stage: str, operation):
         return operation()
     except BaseException as exc:
         pytest.fail(f"{stage}_{type(exc).__name__.upper()}", pytrace=False)
+
+
+def _require_status(response, expected: int, stage: str) -> None:
+    if response.status_code != expected:
+        pytest.fail(stage, pytrace=False)
+
+
+def _require_equal(actual, expected, stage: str) -> None:
+    if actual != expected:
+        pytest.fail(stage, pytrace=False)
+
+
+def _require_absent(text: str, forbidden: str, stage: str) -> None:
+    if forbidden in text:
+        pytest.fail(stage, pytrace=False)
 
 
 def _seed_reviewer_and_classification(pg_database, user_id: int) -> None:
@@ -75,7 +124,7 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
         "/api/v1/users/register",
         json={"phone": "13800139801", "password": "Secret12345"},
     )
-    assert registered.status_code == 200, "STAGE_REGISTER_FIRST"
+    _require_status(registered, 200, "STAGE_REGISTER_FIRST")
     user_id = registered.json()["data"]["id"]
     member_headers = _headers(user_id, "member")
 
@@ -83,21 +132,21 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
         "/api/v1/users/me/identity-verification",
         json=_submission(), headers=member_headers,
     )
-    assert created.status_code == 200, "STAGE_SUBMIT_FIRST"
-    assert created.json()["data"] == {
+    _require_status(created, 200, "STAGE_SUBMIT_FIRST")
+    _require_equal(created.json()["data"], {
         "status": "submitted", "submission_version": 1,
         "id_card_masked": "110105********002X",
         "submitted_at": created.json()["data"]["submitted_at"],
         "outcome": "CREATED",
-    }, "STAGE_SUBMIT_RESPONSE"
-    assert "11010519491231002X" not in created.text, "STAGE_SUBMIT_REDACTION"
+    }, "STAGE_SUBMIT_RESPONSE")
+    _require_absent(created.text, _submission()["id_card"], "STAGE_SUBMIT_REDACTION")
 
     replay = real_db_client.put(
         "/api/v1/users/me/identity-verification",
         json=_submission(), headers=member_headers,
     )
-    assert replay.status_code == 200, "STAGE_REPLAY_FIRST"
-    assert replay.json()["data"]["outcome"] == "REPLAYED", "STAGE_REPLAY_OUTCOME"
+    _require_status(replay, 200, "STAGE_REPLAY_FIRST")
+    _require_equal(replay.json()["data"]["outcome"], "REPLAYED", "STAGE_REPLAY_OUTCOME")
     assert application_database.fetch_value(
         "SELECT count(*) FROM public.identity_verification_submission "
         f"WHERE user_ref={user_id}"
@@ -114,9 +163,9 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
             "/api/v1/reviews/identity?status=submitted", headers=admin_headers
         ),
     )
-    assert queue.status_code == 200, f"STAGE_QUEUE_STATUS_{queue.status_code}"
+    _require_status(queue, 200, "STAGE_QUEUE_STATUS")
     assert any(item["user_id"] == user_id for item in queue.json()["data"]["items"]), "STAGE_QUEUE_MEMBER"
-    assert "11010519491231002X" not in queue.text, "STAGE_QUEUE_REDACTION"
+    _require_absent(queue.text, _submission()["id_card"], "STAGE_QUEUE_REDACTION")
 
     detail = _stage_call(
         "STAGE_DETAIL_CALL",
@@ -125,8 +174,8 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
             headers=admin_headers,
         ),
     )
-    assert detail.status_code == 200, f"STAGE_DETAIL_STATUS_{detail.status_code}"
-    assert detail.json()["data"]["real_name"] == "测试会员甲", "STAGE_DETAIL_PAYLOAD"
+    _require_status(detail, 200, "STAGE_DETAIL_STATUS")
+    _require_equal(detail.json()["data"]["real_name"], _submission()["real_name"], "STAGE_DETAIL_PAYLOAD")
     assert application_database.fetch_value(
         "SELECT count(*) FROM public.operation_log "
         f"WHERE object_id={user_id} AND action='identity_sensitive_detail_read'"
@@ -197,12 +246,13 @@ def test_拒绝冷却期和权限矩阵保持fail_closed(
         "/api/v1/users/register",
         json={"phone": "13800139802", "password": "Secret12345"},
     )
-    assert registered.status_code == 200, "STAGE_REGISTER_SECOND"
+    _require_status(registered, 200, "STAGE_REGISTER_SECOND")
     user_id = registered.json()["data"]["id"]
     headers = _headers(user_id, "member")
-    assert real_db_client.put(
+    submitted = real_db_client.put(
         "/api/v1/users/me/identity-verification", json=_submission("second-user-submit-v1"), headers=headers
-    ).status_code == 200, "STAGE_SUBMIT_SECOND"
+    )
+    _require_status(submitted, 200, "STAGE_SUBMIT_SECOND")
     assert _stage_call(
         "STAGE_REJECT_SUBMISSION_QUERY",
         lambda: application_database.fetch_value(
@@ -229,12 +279,22 @@ def test_拒绝冷却期和权限矩阵保持fail_closed(
             },
         ),
     )
-    assert rejected.status_code == 200, f"STAGE_REJECT_STATUS_{rejected.status_code}"
+    _require_status(rejected, 200, "STAGE_REJECT_STATUS")
     cooldown = real_db_client.put(
         "/api/v1/users/me/identity-verification", json=_submission("second-user-submit-v2"), headers=headers
     )
-    assert cooldown.status_code == 429, "STAGE_COOLDOWN"
-    assert real_db_client.get(
+    _require_status(cooldown, 429, "STAGE_COOLDOWN")
+    forbidden_detail = real_db_client.get(
         f"/api/v1/reviews/users/{user_id}/identity?purpose_code=MANUAL_REVIEW",
         headers=_headers(user_id, "member"),
-    ).status_code == 403, "STAGE_FORBIDDEN_DETAIL"
+    )
+    _require_status(forbidden_detail, 403, "STAGE_FORBIDDEN_DETAIL")
+
+
+def test_Integration失败诊断只输出固定安全阶段() -> None:
+    class _Response:
+        status_code = 503
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        _require_status(_Response(), 200, "STAGE_FIXED_SAFE_FAILURE")
+    assert str(failure.value) == "STAGE_FIXED_SAFE_FAILURE"
