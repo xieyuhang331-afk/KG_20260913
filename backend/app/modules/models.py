@@ -24,7 +24,7 @@ def get_core_model_classes():
     from app.modules.auth.models import User
     from app.modules.system.models import Message, OperationLog, PlatformOrg
     from app.modules.tenant.models import Tenant, TenantAttachment, TenantReviewLog
-    from app.modules.user_health.models import HealthIndicator, HealthProfile
+    from app.modules.user_health.models import DetectionReport, HealthIndicator, HealthProfile
 
     return {
         "platform_org": PlatformOrg,
@@ -34,6 +34,7 @@ def get_core_model_classes():
         "user": User,
         "health_profile": HealthProfile,
         "health_indicator": HealthIndicator,
+        "detection_report": DetectionReport,
         "message": Message,
         "operation_log": OperationLog,
     }

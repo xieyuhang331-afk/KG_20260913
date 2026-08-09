@@ -50,6 +50,30 @@ HEALTH_INDICATOR_TABLE = TableSpec(
     hypertable_time_column="recorded_at",
 )
 
+DETECTION_REPORT_TABLE = TableSpec(
+    name="detection_report",
+    module="user_health",
+    columns=(
+        ColumnSpec("id", "BIGSERIAL", nullable=False, primary_key=True),
+        ColumnSpec("user_id", "BIGINT", nullable=False, foreign_key="user.id"),
+        ColumnSpec("store_id", "BIGINT", foreign_key="tenant.id"),
+        ColumnSpec("report_type", "VARCHAR(32)", nullable=False),
+        ColumnSpec("detection_time", "TIMESTAMPTZ", nullable=False),
+        ColumnSpec("view_status", "VARCHAR(16)", nullable=False, default="unread"),
+        ColumnSpec("summary", "TEXT"),
+        ColumnSpec("report_schema_version", "INT", nullable=False, default="1"),
+        ColumnSpec("report_data", "JSONB", nullable=False),
+        ColumnSpec("created_at", "TIMESTAMPTZ", nullable=False, default="NOW()"),
+    ),
+    indexes=(
+        ("idx_detection_report_user_time", ("user_id", "detection_time DESC", "id DESC")),
+        (
+            "idx_detection_report_user_type_time",
+            ("user_id", "report_type", "detection_time DESC", "id DESC"),
+        ),
+    ),
+)
+
 
 class HealthProfile:
     __tablename__ = HEALTH_PROFILE_TABLE.name
@@ -61,4 +85,9 @@ class HealthIndicator:
     __table_spec__ = HEALTH_INDICATOR_TABLE
 
 
-register_core_table_specs(HEALTH_PROFILE_TABLE, HEALTH_INDICATOR_TABLE)
+class DetectionReport:
+    __tablename__ = DETECTION_REPORT_TABLE.name
+    __table_spec__ = DETECTION_REPORT_TABLE
+
+
+register_core_table_specs(HEALTH_PROFILE_TABLE, HEALTH_INDICATOR_TABLE, DETECTION_REPORT_TABLE)
