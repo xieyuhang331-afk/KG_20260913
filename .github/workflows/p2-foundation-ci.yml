@@ -76,12 +76,16 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import base64
           import os
           import secrets
 
           values = {
               "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_IDENTITY_PII_KEK_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
           }
           for value in values.values():
               print(f"::add-mask::{value}")
@@ -150,6 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           import os
           import secrets
           from urllib.parse import quote
@@ -192,6 +197,13 @@ jobs:
               "KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"],
               "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_IDENTITY_PII_KEK_B64": base64.b64encode(
+                  secrets.token_bytes(32)
+              ).decode(),
+              "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(
+                  secrets.token_bytes(32)
+              ).decode(),
+              "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
               "KG_RABBITMQ_CONTAINER_NAME": f"kg-reg-{rabbit_suffix}",
               "KG_RABBITMQ_NETWORK_NAME": f"kg-reg-{rabbit_suffix}-network",
               "KG_RABBITMQ_SENTINEL": f"kg-registration-disposable:{rabbit_suffix}",
@@ -457,6 +469,11 @@ jobs:
           GRANT UPDATE (status, available_at, attempt_count, lease_owner, locked_until, lease_generation, last_error_category, last_error_code, last_error_digest, delivered_at, updated_at) ON TABLE public.registration_verified_outbox TO :"worker_role";
           REVOKE ALL ON TABLE public.alembic_version FROM :"writer_role", :"worker_role", :"audit_role";
           REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.registration_verified_outbox FROM :"application_role", :"readonly_role";
+          GRANT SELECT, INSERT ON TABLE public.identity_verification_submission TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_submission FROM :"application_role";
+          GRANT SELECT ON TABLE public.identity_verification_submission TO :"readonly_role", :"writer_role", :"audit_role";
+          GRANT UPDATE (status, decided_at, reviewed_by, decision_basis_code, evidence_digest, rejection_reason_code) ON TABLE public.identity_verification_submission TO :"writer_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_submission FROM :"readonly_role", :"audit_role";
           SQL
 
       - name: Run Outbox steady-state PostgreSQL contract
@@ -488,8 +505,56 @@ jobs:
       - name: Run UUIDv7 library validation
         run: python -m pytest tests/uuid_validation -q --junitxml=pytest-uuid-validation-report.xml
 
-      - name: Upload integration test report
+      - name: Reject sensitive values in JUnit artifacts
+        id: junit_sensitive_scan
         if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          reports = sorted(Path(".").glob("pytest-*-report.xml"))
+          forbidden_patterns = {
+              "authorization": re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~-]+"),
+              "jwt": re.compile(
+                  r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
+              ),
+              "phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
+              "identity_number": re.compile(r"(?<!\d)\d{17}[0-9Xx](?!\w)"),
+              "database_or_broker_url": re.compile(
+                  r"(?i)\b(?:postgresql(?:\+asyncpg)?|amqp)://"
+              ),
+          }
+          exact_values = {
+              "pii_kek": os.environ.get("KG_IDENTITY_PII_KEK_B64", ""),
+              "pii_hmac": os.environ.get("KG_IDENTITY_PII_HMAC_KEY_B64", ""),
+              "jwt_secret": os.environ.get("KG_JWT_SECRET_KEY", ""),
+              "database_password": os.environ.get("KG_DATABASE_PASSWORD", ""),
+              "rabbitmq_password": os.environ.get("KG_RABBITMQ_PASSWORD", ""),
+              "test_password": "Secret12345",
+          }
+          findings = set()
+          for report in reports:
+              content = report.read_text(encoding="utf-8")
+              findings.update(
+                  label for label, pattern in forbidden_patterns.items()
+                  if pattern.search(content)
+              )
+              findings.update(
+                  label for label, value in exact_values.items()
+                  if value and value in content
+              )
+          if findings:
+              print("JUnit sensitive-data scan failed: " + ",".join(sorted(findings)))
+              raise SystemExit(1)
+          print(f"JUnit sensitive-data scan passed for {len(reports)} report(s).")
+          PY
+
+      - name: Upload integration test report
+        if: always() && steps.junit_sensitive_scan.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}

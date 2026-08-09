@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260808_0011"
+REQUIRED_HEAD_REVISION = "20260809_0012"
 
 
 def pytest_configure(config):
@@ -290,6 +290,25 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
             'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
             f'ON TABLE public.registration_verified_outbox FROM "{role}"'
         )
+    database.execute(
+        f'GRANT SELECT, INSERT ON TABLE public.identity_verification_submission TO "{application_role}"'
+    )
+    database.execute(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.identity_verification_submission FROM "{application_role}"'
+    )
+    database.execute(
+        f'GRANT SELECT ON TABLE public.identity_verification_submission TO "{readonly_role}", "{writer_role}", "{audit_role}"'
+    )
+    database.execute(
+        'GRANT UPDATE (status, decided_at, reviewed_by, decision_basis_code, '
+        'evidence_digest, rejection_reason_code) '
+        f'ON TABLE public.identity_verification_submission TO "{writer_role}"'
+    )
+    database.execute(
+        'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.identity_verification_submission FROM "{readonly_role}", "{audit_role}"'
+    )
 
 
 @pytest.fixture(scope="module")
@@ -386,6 +405,39 @@ def pg_database():
     _grant_test_role_permissions(database)
 
     yield database
+
+
+@pytest.fixture(scope="module")
+def application_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_application_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        if connected_role != _validated_role_name("KG_TEST_APPLICATION_ROLE"):
+            raise RuntimeError("application database URL role does not match KG_TEST_APPLICATION_ROLE")
+    return database
+
+
+@pytest.fixture(scope="module")
+def readonly_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_readonly_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        if connected_role != _validated_role_name("KG_TEST_READONLY_ROLE"):
+            raise RuntimeError("readonly database URL role does not match KG_TEST_READONLY_ROLE")
+    return database
+
+
+@pytest.fixture(scope="module")
+def outbox_audit_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_outbox_audit_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        if connected_role != _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE"):
+            raise RuntimeError("outbox audit database URL role does not match KG_TEST_OUTBOX_AUDIT_ROLE")
+    return database
 
 
 @pytest.fixture

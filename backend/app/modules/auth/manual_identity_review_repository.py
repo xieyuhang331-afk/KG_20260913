@@ -4,6 +4,7 @@ from datetime import timezone
 from types import SimpleNamespace
 
 from sqlalchemy import select
+from sqlalchemy import func, update
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.eligibility_evidence_models import (
@@ -20,6 +21,7 @@ from app.modules.auth.manual_identity_review_application import (
     PlatformAdminManualIdentityReviewUnavailable,
 )
 from app.modules.auth.models import User
+from app.modules.auth.identity_submission_models import IdentityVerificationSubmissionOrmModel
 from app.modules.auth.registration_outbox import (
     P1VerificationTransitionCommand,
 )
@@ -106,11 +108,21 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
             )
             .limit(1),
         )
+        submission = None
+        if self._request.submission_version is not None:
+            submission = await self._scalar_one_or_none(
+                session,
+                select(IdentityVerificationSubmissionOrmModel).where(
+                    IdentityVerificationSubmissionOrmModel.user_ref == self._user_ref,
+                    IdentityVerificationSubmissionOrmModel.version == self._request.submission_version,
+                ).limit(1),
+            )
         return SimpleNamespace(
             reviewer=reviewer,
             subject=subject,
             classification=classification,
             verification=verification,
+            submission=submission,
         )
 
     def _build_decision(self, snapshot):
@@ -118,6 +130,7 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
         subject = snapshot.subject
         classification = snapshot.classification
         verification = snapshot.verification
+        submission = getattr(snapshot, "submission", None)
 
         if reviewer is None or (
             reviewer.id != self._reviewer_subject_id
@@ -147,6 +160,30 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
                 "manual identity review prerequisites are not ready"
             )
 
+        evidence_digest = self._request.evidence_digest
+        if self._request.submission_version is not None:
+            if (
+                submission is None
+                or submission.status != "submitted"
+                or submission.user_ref != self._user_ref
+                or self._request.decision_basis_code != "APPROVED_OFFLINE_IDENTITY_CHECK"
+            ):
+                raise PlatformAdminManualIdentityReviewConflict(
+                    "manual identity review submission is stale"
+                )
+            import hashlib
+            evidence_digest = hashlib.sha256(
+                (
+                    f"identity-submission-review:v1:{submission.submission_id}:"
+                    f"{submission.version}:{submission.content_digest}:"
+                    f"{self._request.decision_basis_code}"
+                ).encode()
+            ).hexdigest()
+        if evidence_digest is None:
+            raise PlatformAdminManualIdentityReviewConflict(
+                "manual identity review evidence is missing"
+            )
+
         decision = ManualIdentityReviewAuthorityDecision(
             authority_source="manual_review",
             authority_decision_id=self._authority_decision_id,
@@ -166,7 +203,7 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
             predecessor_currentness_version=None,
             predecessor_verification_epoch=None,
             decided_at=self._request.decided_at,
-            evidence_digest=self._request.evidence_digest,
+            evidence_digest=evidence_digest,
             correlation_id=self._authority_decision_id,
             is_current=True,
             revocation_reference=None,
@@ -245,3 +282,101 @@ def _user_projection_statement(user_ref: int):
         .where(User.id == user_ref)
         .limit(1)
     )
+
+
+class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def list_submitted(self, *, offset: int, limit: int):
+        statement = (
+            select(IdentityVerificationSubmissionOrmModel)
+            .where(IdentityVerificationSubmissionOrmModel.status == "submitted")
+            .order_by(IdentityVerificationSubmissionOrmModel.submitted_at)
+            .offset(offset).limit(limit)
+        )
+        return list((await self._session.execute(statement)).scalars().all())
+
+    async def count_submitted(self) -> int:
+        value = await self._session.execute(
+            select(func.count()).select_from(IdentityVerificationSubmissionOrmModel)
+            .where(IdentityVerificationSubmissionOrmModel.status == "submitted")
+        )
+        return int(value.scalar_one())
+
+    async def get_submission(self, *, user_ref: int, version: int | None = None, lock=False):
+        statement = select(IdentityVerificationSubmissionOrmModel).where(
+            IdentityVerificationSubmissionOrmModel.user_ref == user_ref
+        )
+        if version is not None:
+            statement = statement.where(
+                IdentityVerificationSubmissionOrmModel.version == version
+            )
+        statement = statement.order_by(
+            IdentityVerificationSubmissionOrmModel.version.desc()
+        ).limit(1)
+        if lock:
+            statement = statement.with_for_update()
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def add_sensitive_read_audit(self, *, reviewer_id: int, model, purpose_code: str):
+        from app.modules.system.repository import create_operation_log
+
+        await create_operation_log(
+            self._session,
+            operator_id=reviewer_id,
+            module="identity_review",
+            object_type="identity_submission",
+            object_id=model.user_ref,
+            action="identity_sensitive_detail_read",
+            payload={"submission_version": model.version, "purpose_code": purpose_code},
+        )
+
+    async def mark_rejected(self, *, model, reviewer_id: int, decided_at, reason_code: str, evidence_digest: str):
+        result = await self._session.execute(
+            update(IdentityVerificationSubmissionOrmModel)
+            .where(
+                IdentityVerificationSubmissionOrmModel.submission_id == model.submission_id,
+                IdentityVerificationSubmissionOrmModel.status == "submitted",
+                IdentityVerificationSubmissionOrmModel.version == model.version,
+            )
+            .values(
+                status="rejected", reviewed_by=reviewer_id, decided_at=decided_at,
+                rejection_reason_code=reason_code,
+                decision_basis_code="REJECTED_OFFLINE_IDENTITY_CHECK",
+                evidence_digest=evidence_digest,
+            )
+        )
+        if result.rowcount != 1:
+            return False
+        map_core_model_classes()
+        user_result = await self._session.execute(
+            update(User).where(
+                User.id == model.user_ref,
+                User.verify_status == "submitted",
+            ).values(verify_status="rejected")
+        )
+        return user_result.rowcount == 1
+
+    async def mark_verified(self, *, user_ref: int, version: int, reviewer_id: int, decided_at, evidence_digest: str):
+        result = await self._session.execute(
+            update(IdentityVerificationSubmissionOrmModel)
+            .where(
+                IdentityVerificationSubmissionOrmModel.user_ref == user_ref,
+                IdentityVerificationSubmissionOrmModel.version == version,
+                IdentityVerificationSubmissionOrmModel.status == "submitted",
+                IdentityVerificationSubmissionOrmModel.content_digest.is_not(None),
+            )
+            .values(
+                status="verified", reviewed_by=reviewer_id, decided_at=decided_at,
+                decision_basis_code="APPROVED_OFFLINE_IDENTITY_CHECK",
+                evidence_digest=evidence_digest,
+            )
+        )
+        return result.rowcount == 1
+
+    async def commit(self):
+        await self._session.commit()
+
+    async def rollback(self):
+        await self._session.rollback()
