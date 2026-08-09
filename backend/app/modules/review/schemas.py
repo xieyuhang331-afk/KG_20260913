@@ -107,7 +107,11 @@ class PlatformAdminManualIdentityReviewRequest(BaseModel):
         pattern=r"^\S(?:.*\S)?$",
     )
     decided_at: datetime
-    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    submission_version: int | None = Field(default=None, ge=1)
+    decision_basis_code: str | None = Field(
+        default=None, pattern=r"^APPROVED_OFFLINE_IDENTITY_CHECK$"
+    )
 
     @field_validator("decided_at")
     @classmethod
@@ -123,4 +127,74 @@ class PlatformAdminManualIdentityReviewResponse(BaseModel):
     verification_decision_ref: str
     registration_event_id: str
     authority_decision_key: str
+    replayed: bool
+
+
+class IdentityReviewQueueItem(BaseModel):
+    user_id: int
+    submission_version: int
+    id_card_masked: str
+    submitted_at: datetime
+
+    @classmethod
+    def from_submission(cls, model):
+        return cls(
+            user_id=model.user_ref,
+            submission_version=model.version,
+            id_card_masked=model.id_card_masked,
+            submitted_at=model.submitted_at,
+        )
+
+
+class IdentityReviewQueueResponse(BaseModel):
+    items: list[IdentityReviewQueueItem]
+    page: int
+    page_size: int
+    total: int
+
+
+class IdentityReviewDetailResponse(BaseModel):
+    user_id: int
+    submission_version: int
+    status: str
+    real_name: str
+    id_card: str
+    id_card_masked: str
+    consent_version: str
+    submitted_at: datetime
+
+    @classmethod
+    def from_review(cls, model, name: str, card: str):
+        return cls(
+            user_id=model.user_ref,
+            submission_version=model.version,
+            status=model.status,
+            real_name=name,
+            id_card=card,
+            id_card_masked=model.id_card_masked,
+            consent_version=model.consent_version,
+            submitted_at=model.submitted_at,
+        )
+
+
+class IdentityReviewRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    submission_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$")
+    decided_at: datetime
+
+    @field_validator("decided_at")
+    @classmethod
+    def require_reject_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset().total_seconds() != 0:
+            raise ValueError("decided_at must be an aware UTC datetime")
+        return value
+
+
+class IdentityReviewRejectResponse(BaseModel):
+    user_id: int
+    submission_version: int
+    status: str
     replayed: bool

@@ -24,6 +24,9 @@ class Settings(BaseModel):
     database_user: str = "kg_app"
     database_password: str
     verification_writer_database_url: str | None = None
+    identity_pii_kek_b64: str | None = None
+    identity_pii_hmac_key_b64: str | None = None
+    identity_pii_key_id: str | None = None
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 120
@@ -52,6 +55,9 @@ def get_settings() -> Settings:
         verification_writer_database_url=os.getenv(
             "KG_VERIFICATION_WRITER_DATABASE_URL"
         ),
+        identity_pii_kek_b64=os.getenv("KG_IDENTITY_PII_KEK_B64"),
+        identity_pii_hmac_key_b64=os.getenv("KG_IDENTITY_PII_HMAC_KEY_B64"),
+        identity_pii_key_id=os.getenv("KG_IDENTITY_PII_KEY_ID"),
         jwt_secret_key=require_secret("KG_JWT_SECRET_KEY"),
         jwt_algorithm=os.getenv("KG_JWT_ALGORITHM", "HS256"),
         jwt_access_token_expire_minutes=int(

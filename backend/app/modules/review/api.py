@@ -13,10 +13,16 @@ from app.modules.auth.manual_identity_review_application import (
     PlatformAdminManualIdentityReviewNotFound,
     PlatformAdminManualIdentityReviewRequest as ApplicationReviewRequest,
     PlatformAdminManualIdentityReviewUnavailable,
+    PlatformIdentitySubmissionReviewService,
 )
 from app.modules.review.schemas import (
     PlatformAdminManualIdentityReviewRequest,
     PlatformAdminManualIdentityReviewResponse,
+    IdentityReviewDetailResponse,
+    IdentityReviewQueueItem,
+    IdentityReviewQueueResponse,
+    IdentityReviewRejectRequest,
+    IdentityReviewRejectResponse,
     TenantReviewApproveRequest,
     TenantReviewQueueQuery,
     TenantReviewRejectRequest,
@@ -68,6 +74,32 @@ def get_platform_admin_manual_identity_review_service(
     )
 
 
+def get_platform_identity_submission_review_service(
+    session=Depends(get_db_session),
+):
+    from app.core.database import get_verification_writer_session_factory
+    from app.modules.auth.identity_submission_crypto import (
+        IdentitySubmissionCrypto,
+        IdentitySubmissionCryptoUnavailable,
+    )
+    from app.modules.auth.manual_identity_review_repository import (
+        SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+    )
+
+    try:
+        writer_factory = get_verification_writer_session_factory()
+        crypto = IdentitySubmissionCrypto.from_environment()
+    except (RuntimeError, IdentitySubmissionCryptoUnavailable):
+        raise HTTPException(
+            status_code=503, detail="Identity review service unavailable"
+        ) from None
+    return PlatformIdentitySubmissionReviewService(
+        application_repository=SqlAlchemyPlatformIdentitySubmissionReviewRepository(session),
+        writer_session_factory=writer_factory,
+        crypto=crypto,
+    )
+
+
 def _require_platform_identity_reviewer(current_user: CurrentUser) -> None:
     if (
         current_user.role != "super_admin"
@@ -85,15 +117,45 @@ async def approve_platform_user_identity_review_api(
     service=Depends(get_platform_admin_manual_identity_review_service),
 ) -> dict:
     try:
+        submission_review = None
+        evidence_digest = payload.evidence_digest
+        if payload.submission_version is not None:
+            from app.core.database import (
+                get_session_factory,
+                get_verification_writer_session_factory,
+            )
+            from app.modules.auth.identity_submission_crypto import IdentitySubmissionCrypto
+            from app.modules.auth.manual_identity_review_repository import (
+                SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+            )
+            authority_factory = get_session_factory()
+            async with authority_factory() as authority_session:
+                submission_review = PlatformIdentitySubmissionReviewService(
+                    application_repository=SqlAlchemyPlatformIdentitySubmissionReviewRepository(
+                        authority_session
+                    ),
+                    writer_session_factory=get_verification_writer_session_factory(),
+                    crypto=IdentitySubmissionCrypto.from_environment(),
+                )
+                evidence_digest = await submission_review.approval_evidence_digest(
+                    current_user=current_user, user_ref=user_id, request=payload
+                )
         result = await service.execute(
             current_user=current_user,
             user_ref=user_id,
             request=ApplicationReviewRequest(
                 idempotency_key=payload.idempotency_key,
                 decided_at=payload.decided_at,
-                evidence_digest=payload.evidence_digest,
+                evidence_digest=evidence_digest,
+                submission_version=payload.submission_version,
+                decision_basis_code=payload.decision_basis_code,
             ),
         )
+        if submission_review is not None:
+            await submission_review.mark_verified(
+                current_user=current_user, user_ref=user_id, request=payload,
+                evidence_digest=evidence_digest,
+            )
     except PlatformAdminManualIdentityReviewForbidden:
         raise HTTPException(status_code=403, detail="Forbidden") from None
     except PlatformAdminManualIdentityReviewNotFound:
@@ -121,6 +183,72 @@ async def approve_platform_user_identity_review_api(
         replayed=result.replayed,
     )
     return ok_response(response.model_dump())
+
+
+@router.get("/identity")
+async def list_platform_identity_reviews_api(
+    status: str = Query(default="submitted", pattern=r"^submitted$"),
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
+    service=Depends(get_platform_identity_submission_review_service),
+) -> dict:
+    del status
+    items, total = await service.list_queue(
+        current_user=current_user, page=page, page_size=page_size
+    )
+    response = IdentityReviewQueueResponse(
+        items=[IdentityReviewQueueItem.from_submission(item) for item in items],
+        page=page, page_size=page_size, total=total,
+    )
+    return ok_response(response.model_dump())
+
+
+@router.get("/users/{user_id}/identity")
+async def get_platform_identity_review_detail_api(
+    user_id: int,
+    purpose_code: str = Query(pattern=r"^[A-Z][A-Z0-9_]{2,63}$"),
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
+    service=Depends(get_platform_identity_submission_review_service),
+) -> dict:
+    try:
+        model, name, card = await service.detail(
+            current_user=current_user, user_ref=user_id, purpose_code=purpose_code
+        )
+    except PlatformAdminManualIdentityReviewForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    except PlatformAdminManualIdentityReviewNotFound:
+        raise HTTPException(status_code=404, detail="Identity review subject not found") from None
+    except PlatformAdminManualIdentityReviewUnavailable:
+        raise HTTPException(status_code=503, detail="Identity review service unavailable") from None
+    return ok_response(
+        IdentityReviewDetailResponse.from_review(model, name, card).model_dump()
+    )
+
+
+@router.post("/users/{user_id}/identity/reject")
+async def reject_platform_identity_review_api(
+    user_id: int,
+    payload: IdentityReviewRejectRequest,
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
+    service=Depends(get_platform_identity_submission_review_service),
+) -> dict:
+    try:
+        model, replayed = await service.reject(
+            current_user=current_user, user_ref=user_id, request=payload
+        )
+    except PlatformAdminManualIdentityReviewForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    except PlatformAdminManualIdentityReviewNotFound:
+        raise HTTPException(status_code=404, detail="Identity review subject not found") from None
+    except PlatformAdminManualIdentityReviewConflict:
+        raise HTTPException(status_code=409, detail="Identity review decision conflict") from None
+    except PlatformAdminManualIdentityReviewUnavailable:
+        raise HTTPException(status_code=503, detail="Identity review service unavailable") from None
+    return ok_response(IdentityReviewRejectResponse(
+        user_id=user_id, submission_version=model.version,
+        status="rejected", replayed=replayed,
+    ).model_dump())
 
 
 @router.get("/queue/tenant")

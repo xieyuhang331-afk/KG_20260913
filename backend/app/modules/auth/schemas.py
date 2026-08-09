@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UserRegisterRequest(BaseModel):
@@ -62,6 +62,41 @@ class UserIdentityResponse(BaseModel):
     real_name: str
     id_card_masked: str
     verify_status: str
+
+
+class IdentityVerificationSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    real_name: str = Field(min_length=2, max_length=50)
+    id_card: str = Field(pattern=r"^\d{17}[0-9X]$")
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^\S(?:.*\S)?$")
+    consent_version: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+
+    @field_validator("real_name")
+    @classmethod
+    def validate_real_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized != value or any(ord(character) < 32 for character in value):
+            raise ValueError("real_name is invalid")
+        return value
+
+
+class IdentityVerificationSubmissionResponse(BaseModel):
+    status: str
+    submission_version: int
+    id_card_masked: str
+    submitted_at: datetime
+    outcome: str
+
+
+class IdentityVerificationStatusResponse(BaseModel):
+    status: str
+    submission_version: int | None = None
+    id_card_masked: str | None = None
+    submitted_at: datetime | None = None
+    decided_at: datetime | None = None
+    rejection_reason_code: str | None = None
+    resubmit_available_at: datetime | None = None
 
 
 class TenantBindingRequest(BaseModel):
