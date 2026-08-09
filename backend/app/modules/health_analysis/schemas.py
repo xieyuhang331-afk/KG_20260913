@@ -74,6 +74,13 @@ class HealthTrend(BaseModel):
     points: list[TrendPoint]
 
 
+class MemberSelfHealthTrend(BaseModel):
+    state: Literal["EMPTY", "AVAILABLE"]
+    indicator_type: str
+    unit: str | None
+    points: list[TrendPoint]
+
+
 class AIUserContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
@@ -124,3 +124,59 @@ async def list_latest_health_indicators_by_user(session, *, user_id: int):
     )
     result = await session.execute(statement)
     return result.scalars().all()
+
+
+def _member_indicator_projection():
+    table = HealthIndicator.__table__
+    return (
+        table.c.id,
+        table.c.batch_id,
+        table.c.indicator_type,
+        table.c.value,
+        table.c.unit,
+        table.c.source,
+        table.c.recorded_at,
+    )
+
+
+async def list_member_health_indicator_history(
+    session,
+    *,
+    user_id: int,
+    indicator_type: str | None,
+    start_at,
+    end_at,
+    cursor_recorded_at,
+    cursor_id: int | None,
+    limit: int,
+):
+    _ensure_mapped()
+    table = HealthIndicator.__table__
+    statement = select(*_member_indicator_projection()).where(table.c.user_id == user_id)
+    if indicator_type is not None:
+        statement = statement.where(table.c.indicator_type == indicator_type)
+    if start_at is not None:
+        statement = statement.where(table.c.recorded_at >= start_at)
+    if end_at is not None:
+        statement = statement.where(table.c.recorded_at <= end_at)
+    if cursor_recorded_at is not None and cursor_id is not None:
+        statement = statement.where(
+            or_(
+                table.c.recorded_at < cursor_recorded_at,
+                and_(table.c.recorded_at == cursor_recorded_at, table.c.id < cursor_id),
+            )
+        )
+    statement = statement.order_by(table.c.recorded_at.desc(), table.c.id.desc()).limit(limit)
+    return (await session.execute(statement)).mappings().all()
+
+
+async def list_member_latest_health_indicators(session, *, user_id: int):
+    _ensure_mapped()
+    table = HealthIndicator.__table__
+    statement = (
+        select(*_member_indicator_projection())
+        .distinct(table.c.indicator_type)
+        .where(table.c.user_id == user_id)
+        .order_by(table.c.indicator_type, table.c.recorded_at.desc(), table.c.id.desc())
+    )
+    return (await session.execute(statement)).mappings().all()

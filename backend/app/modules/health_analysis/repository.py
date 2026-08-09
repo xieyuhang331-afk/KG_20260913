@@ -58,3 +58,34 @@ async def list_indicator_trend_points(
     statement = statement.order_by(HealthIndicator.recorded_at.asc()).limit(limit)
     result = await session.execute(statement)
     return result.scalars().all()
+
+
+async def list_member_indicator_trend_points(
+    session,
+    *,
+    user_id: int,
+    indicator_type: str,
+    start_at,
+    end_at,
+    limit: int,
+):
+    _ensure_mapped()
+    table = HealthIndicator.__table__
+    statement = (
+        select(
+            table.c.id,
+            table.c.value,
+            table.c.unit,
+            table.c.source,
+            table.c.recorded_at,
+        )
+        .where(
+            table.c.user_id == user_id,
+            table.c.indicator_type == indicator_type,
+            table.c.recorded_at >= start_at,
+            table.c.recorded_at <= end_at,
+        )
+        .order_by(table.c.recorded_at.asc(), table.c.id.asc())
+        .limit(limit)
+    )
+    return (await session.execute(statement)).mappings().all()

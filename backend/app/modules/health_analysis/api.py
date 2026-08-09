@@ -5,15 +5,40 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 
 from app.core.database import get_db_session
-from app.core.permissions import ensure_can_access_own_user_resource
+from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_member
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.modules.health_analysis.ai_contract_service import get_ai_health_input_contract
-from app.modules.health_analysis.service import get_health_summary, get_health_trend
+from app.modules.health_analysis.service import (
+    get_health_summary,
+    get_health_trend,
+    get_member_self_health_trend,
+)
 
 
 router = APIRouter(prefix="/api/v1/users", tags=["health_analysis"])
 internal_router = APIRouter(prefix="/internal/v1/users", tags=["health_analysis_internal"])
+
+
+@router.get("/me/health-trends")
+async def get_member_self_health_trend_api(
+    indicator_type: str = Query(..., min_length=1, max_length=30),
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    session=Depends(get_db_session),
+) -> dict:
+    ensure_is_member(current_user)
+    result = await get_member_self_health_trend(
+        session,
+        user_id=current_user.id,
+        indicator_type=indicator_type,
+        start_at=start_at,
+        end_at=end_at,
+        limit=limit,
+    )
+    return ok_response(result.model_dump(mode="json"))
 
 
 @router.get("/{user_id}/health-summary")
