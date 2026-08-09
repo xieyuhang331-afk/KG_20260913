@@ -21,6 +21,7 @@ IDENTITY_TABLES = {
     "identity.registration_bootstrap_record",
     "identity.user_member_self_link",
     "public.identity_verification_decision",
+    "public.identity_verification_submission",
     "public.registration_eligibility_decision",
     "public.registration_verified_outbox",
     "public.user_account_classification_decision",

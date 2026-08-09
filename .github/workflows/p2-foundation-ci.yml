@@ -76,12 +76,16 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import base64
           import os
           import secrets
 
           values = {
               "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_IDENTITY_PII_KEK_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
           }
           for value in values.values():
               print(f"::add-mask::{value}")
@@ -457,6 +461,11 @@ jobs:
           GRANT UPDATE (status, available_at, attempt_count, lease_owner, locked_until, lease_generation, last_error_category, last_error_code, last_error_digest, delivered_at, updated_at) ON TABLE public.registration_verified_outbox TO :"worker_role";
           REVOKE ALL ON TABLE public.alembic_version FROM :"writer_role", :"worker_role", :"audit_role";
           REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.registration_verified_outbox FROM :"application_role", :"readonly_role";
+          GRANT SELECT, INSERT ON TABLE public.identity_verification_submission TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_submission FROM :"application_role";
+          GRANT SELECT ON TABLE public.identity_verification_submission TO :"readonly_role", :"writer_role", :"audit_role";
+          GRANT UPDATE (status, decided_at, reviewed_by, decision_basis_code, evidence_digest, rejection_reason_code) ON TABLE public.identity_verification_submission TO :"writer_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_submission FROM :"readonly_role", :"audit_role";
           SQL
 
       - name: Run Outbox steady-state PostgreSQL contract
