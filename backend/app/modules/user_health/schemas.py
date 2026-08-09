@@ -111,3 +111,24 @@ class HealthIndicatorResponse(BaseModel):
     source: HealthIndicatorSource
     recorded_at: datetime
     created_at: datetime
+
+
+class MemberSelfHealthIndicatorItem(BaseModel):
+    id: int
+    batch_id: str | None
+    indicator_type: str
+    value: Decimal
+    unit: str
+    source: HealthIndicatorSource
+    recorded_at: datetime
+
+
+class MemberSelfHealthIndicatorPage(BaseModel):
+    state: Literal["EMPTY", "AVAILABLE"]
+    items: list[MemberSelfHealthIndicatorItem]
+    next_cursor: str | None
+
+
+class MemberSelfHealthIndicatorLatest(BaseModel):
+    state: Literal["EMPTY", "AVAILABLE"]
+    items: list[MemberSelfHealthIndicatorItem]

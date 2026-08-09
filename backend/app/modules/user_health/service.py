@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+import json
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -14,6 +16,8 @@ from app.modules.user_health.repository import (
     create_health_profile_record,
     get_health_profile_by_user_id,
     get_member_profile_user_state,
+    list_member_health_indicator_history,
+    list_member_latest_health_indicators,
     list_health_indicators_by_user,
     list_latest_health_indicators_by_user,
     update_health_profile_record,
@@ -26,6 +30,9 @@ from app.modules.user_health.schemas import (
     MemberSelfHealthProfileData,
     MemberSelfHealthProfileResult,
     MemberSelfHealthProfileWriteRequest,
+    MemberSelfHealthIndicatorItem,
+    MemberSelfHealthIndicatorLatest,
+    MemberSelfHealthIndicatorPage,
 )
 
 
@@ -94,6 +101,113 @@ def _ensure_current_verified_member(user) -> None:
             status_code=409,
             detail="Health profile is unavailable for current member",
         )
+
+
+def ensure_current_health_data_member(user) -> None:
+    if (
+        user is None
+        or user.role != "member"
+        or user.status != "active"
+        or user.verify_status != "verified"
+    ):
+        raise HTTPException(status_code=409, detail="HEALTH_DATA_UNAVAILABLE")
+
+
+def _indicator_item(row) -> MemberSelfHealthIndicatorItem:
+    return MemberSelfHealthIndicatorItem(
+        id=row.id,
+        batch_id=row.batch_id,
+        indicator_type=row.indicator_type,
+        value=row.value,
+        unit=row.unit,
+        source=row.source,
+        recorded_at=row.recorded_at,
+    )
+
+
+def _encode_indicator_cursor(row) -> str:
+    raw = json.dumps(
+        {"recorded_at": row.recorded_at.isoformat(), "id": row.id},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _decode_indicator_cursor(cursor: str | None):
+    if cursor is None:
+        return None, None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        recorded_at = datetime.fromisoformat(payload["recorded_at"])
+        row_id = int(payload["id"])
+        if recorded_at.tzinfo is None or row_id < 1:
+            raise ValueError
+        return recorded_at, row_id
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="HEALTH_INDICATOR_CURSOR_INVALID") from None
+
+
+async def list_member_self_health_indicators(
+    session,
+    *,
+    user_id: int,
+    indicator_type: str | None,
+    start_at,
+    end_at,
+    limit: int,
+    cursor: str | None,
+) -> MemberSelfHealthIndicatorPage:
+    if start_at is not None and end_at is not None and start_at > end_at:
+        raise HTTPException(status_code=422, detail="HEALTH_INDICATOR_TIME_RANGE_INVALID")
+    cursor_recorded_at, cursor_id = _decode_indicator_cursor(cursor)
+    try:
+        user = await get_member_profile_user_state(session, user_id)
+        ensure_current_health_data_member(user)
+        rows = await list_member_health_indicator_history(
+            session,
+            user_id=user_id,
+            indicator_type=indicator_type,
+            start_at=start_at,
+            end_at=end_at,
+            cursor_recorded_at=cursor_recorded_at,
+            cursor_id=cursor_id,
+            limit=limit + 1,
+        )
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
+    visible = rows[:limit]
+    return MemberSelfHealthIndicatorPage(
+        state="AVAILABLE" if visible else "EMPTY",
+        items=[_indicator_item(row) for row in visible],
+        next_cursor=_encode_indicator_cursor(visible[-1]) if len(rows) > limit else None,
+    )
+
+
+async def get_member_self_latest_health_indicators(
+    session,
+    *,
+    user_id: int,
+) -> MemberSelfHealthIndicatorLatest:
+    try:
+        user = await get_member_profile_user_state(session, user_id)
+        ensure_current_health_data_member(user)
+        rows = await list_member_latest_health_indicators(session, user_id=user_id)
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
+    return MemberSelfHealthIndicatorLatest(
+        state="AVAILABLE" if rows else "EMPTY",
+        items=[_indicator_item(row) for row in rows],
+    )
 
 
 def _member_profile_matches(profile, payload: MemberSelfHealthProfileWriteRequest) -> bool:
