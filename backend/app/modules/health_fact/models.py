@@ -70,7 +70,7 @@ class CanonicalHealthFactOrmModel(Base):
         CheckConstraint(
             "(supersedes_fact_id IS NULL AND correction_reason_code IS NULL) OR "
             "(supersedes_fact_id IS NOT NULL AND correction_reason_code IS NOT NULL)",
-            name="correction_complete",
+            name="predecessor_reason_pair",
         ),
         Index(
             "idx_canonical_health_fact_subject_indicator_time",

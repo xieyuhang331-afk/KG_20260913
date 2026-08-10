@@ -43,7 +43,7 @@ def test_ORM约束与索引精确存在():
     assert "uq_canonical_health_fact_single_successor" in constraints
     for suffix in (
         "catalog_v1", "value_kind_v1_numeric", "indicator_v1", "unit_v1",
-        "source_type", "source_digest", "payload_digest", "correction_complete",
+        "source_type", "source_digest", "payload_digest", "predecessor_reason_pair",
     ):
         assert any(name and name.endswith(suffix) for name in constraints)
     assert {index.name for index in table.indexes} == {

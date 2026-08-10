@@ -64,7 +64,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(supersedes_fact_id IS NULL AND correction_reason_code IS NULL) OR "
             "(supersedes_fact_id IS NOT NULL AND correction_reason_code IS NOT NULL)",
-            name="ck_canonical_health_fact_correction_complete",
+            name="ck_canonical_health_fact_predecessor_reason_pair",
         ),
         sa.ForeignKeyConstraint(("subject_user_id",), ("public.user.id",), name="fk_canonical_health_fact_subject_user_id_user"),
         sa.ForeignKeyConstraint(("supersedes_fact_id",), ("public.canonical_health_fact.id",), name="fk_canonical_health_fact_supersedes_fact_id"),
