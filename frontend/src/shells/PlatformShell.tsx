@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Building2, ClipboardCheck, LayoutDashboard } from "lucide-react";
+import { BadgeCheck, Building2, ClipboardCheck, LayoutDashboard } from "lucide-react";
 import { platformNavigation } from "@/domains/platform/navigation";
 import { useAuthStore } from "@/shared/auth/authStore";
 
 const navigationIcons: Record<string, ReactNode> = {
   首页: <LayoutDashboard size={16} />,
-  入驻审核: <ClipboardCheck size={16} />
+  入驻审核: <ClipboardCheck size={16} />,
+  实名审核: <BadgeCheck size={16} />,
 };
 
 export function PlatformShell() {
@@ -23,21 +24,23 @@ export function PlatformShell() {
           </div>
         </div>
         <nav className="mt-8 space-y-2 text-sm">
-          {platformNavigation.map((item) => (
-            <NavLink
-              className={({ isActive }) =>
-                [
-                  "flex items-center gap-2 rounded-md px-3 py-2 font-medium",
-                  isActive ? "bg-mint text-pine" : "text-slate-600 hover:bg-slate-50 hover:text-ink"
-                ].join(" ")
-              }
-              key={item.path}
-              to={item.path}
-            >
-              {navigationIcons[item.label]}
-              {item.label}
-            </NavLink>
-          ))}
+          {platformNavigation
+            .filter((item) => !item.roles || (currentUser ? item.roles.includes(currentUser.role) : false))
+            .map((item) => (
+              <NavLink
+                className={({ isActive }) =>
+                  [
+                    "flex items-center gap-2 rounded-md px-3 py-2 font-medium",
+                    isActive ? "bg-mint text-pine" : "text-slate-600 hover:bg-slate-50 hover:text-ink",
+                  ].join(" ")
+                }
+                key={item.path}
+                to={item.path}
+              >
+                {navigationIcons[item.label]}
+                {item.label}
+              </NavLink>
+            ))}
         </nav>
         <div className="absolute bottom-6 left-5 right-5 rounded-md bg-slate-50 p-3 text-xs text-slate-500">
           <div className="font-medium text-ink">当前账号</div>
