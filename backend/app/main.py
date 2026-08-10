@@ -10,6 +10,7 @@ from app.modules.auth.api import auth_router
 from app.modules.auth.api import router as user_auth_router
 from app.modules.health_analysis.api import internal_router as health_analysis_internal_router
 from app.modules.health_analysis.api import router as health_analysis_router
+from app.modules.organization.api import router as organization_router
 from app.modules.registry import get_module_registry
 from app.modules.review.api import router as review_router
 from app.modules.tenant.api import router as tenant_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(user_health_router)
     app.include_router(health_analysis_router)
     app.include_router(health_analysis_internal_router)
+    app.include_router(organization_router)
 
     @app.get("/health", tags=["system"])
     async def health_check() -> dict:

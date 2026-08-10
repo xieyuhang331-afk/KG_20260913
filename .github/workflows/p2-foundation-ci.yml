@@ -444,8 +444,16 @@ jobs:
           REVOKE CREATE ON SCHEMA public FROM :"application_role", :"readonly_role", :"writer_role", :"worker_role", :"audit_role";
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"application_role";
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.platform_org FROM :"application_role";
+          GRANT UPDATE (org_name, sort_order, status, admin_id, version, updated_at, updated_by) ON TABLE public.platform_org TO :"application_role";
+          REVOKE UPDATE ON SEQUENCE public.platform_org_id_seq FROM :"application_role";
+          GRANT USAGE, SELECT ON SEQUENCE public.platform_org_id_seq TO :"application_role";
           REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.operation_log FROM :"application_role";
+          REVOKE UPDATE ON SEQUENCE public.operation_log_id_seq FROM :"application_role";
+          GRANT USAGE, SELECT ON SEQUENCE public.operation_log_id_seq TO :"application_role";
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO :"readonly_role";
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.platform_org, public.operation_log FROM :"readonly_role";
+          REVOKE ALL ON SEQUENCE public.platform_org_id_seq, public.operation_log_id_seq FROM :"readonly_role";
           REVOKE INSERT, UPDATE, DELETE ON TABLE public.alembic_version FROM :"application_role";
           GRANT SELECT ON TABLE public.detection_report TO :"application_role", :"readonly_role";
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.detection_report FROM :"application_role", :"readonly_role";

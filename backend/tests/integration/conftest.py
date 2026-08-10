@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260809_0013"
+REQUIRED_HEAD_REVISION = "20260810_0014"
 
 
 def pytest_configure(config):
@@ -169,10 +169,42 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{application_role}"')
     database.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{application_role}"')
     database.execute(f'GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{application_role}"')
+    database.execute(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.platform_org FROM "{application_role}"'
+    )
+    database.execute(
+        'GRANT UPDATE (org_name, sort_order, status, admin_id, version, updated_at, updated_by) '
+        f'ON TABLE public.platform_org TO "{application_role}"'
+    )
+    database.execute(
+        f'REVOKE UPDATE ON SEQUENCE public.platform_org_id_seq FROM "{application_role}"'
+    )
+    database.execute(
+        f'GRANT USAGE, SELECT ON SEQUENCE public.platform_org_id_seq TO "{application_role}"'
+    )
+    database.execute(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.operation_log FROM "{application_role}"'
+    )
+    database.execute(
+        f'REVOKE UPDATE ON SEQUENCE public.operation_log_id_seq FROM "{application_role}"'
+    )
+    database.execute(
+        f'GRANT USAGE, SELECT ON SEQUENCE public.operation_log_id_seq TO "{application_role}"'
+    )
     database.execute(f'REVOKE INSERT, UPDATE, DELETE ON TABLE alembic_version FROM "{application_role}"')
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{application_role}"')
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
     database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
+    database.execute(
+        'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        f'ON TABLE public.platform_org, public.operation_log FROM "{readonly_role}"'
+    )
+    database.execute(
+        'REVOKE ALL ON SEQUENCE public.platform_org_id_seq, public.operation_log_id_seq '
+        f'FROM "{readonly_role}"'
+    )
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{readonly_role}"')
     database.execute(f'GRANT SELECT ON TABLE public.detection_report TO "{application_role}", "{readonly_role}"')
     database.execute(
