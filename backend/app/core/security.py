@@ -125,6 +125,25 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return payload
 
 
+def decode_access_token_for_step_up(token: str) -> dict[str, Any]:
+    """Validate the stricter access-token profile required by step-up auth."""
+    payload = decode_access_token(token)
+    now = int(datetime.now(timezone.utc).timestamp())
+    if payload.get("iss") != "kanglin" or payload.get("typ") != "access":
+        raise _jwt_error()
+    if type(payload.get("sub")) is not str or not payload["sub"].isdigit():
+        raise _jwt_error()
+    if int(payload["sub"]) <= 0:
+        raise _jwt_error()
+    issued_at = payload.get("iat")
+    expires_at = payload.get("exp")
+    if type(issued_at) is not int or type(expires_at) is not int:
+        raise _jwt_error()
+    if issued_at > now + 5 or expires_at <= now or expires_at <= issued_at:
+        raise _jwt_error()
+    return payload
+
+
 def _parse_claim_required_int(value: Any) -> int:
     if value is None or value == "":
         raise HTTPException(status_code=401, detail="Invalid token claims")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -9,6 +10,9 @@ from app.modules.auth.identity_verification_authority import (
     IdentityVerificationAuthorityRejected,
     IdentityVerificationAuthorityUnavailable,
     InvalidIdentityVerificationAuthorityDecision,
+)
+from app.modules.auth.identity_review_step_up import (
+    PlatformIdentityReviewStepUpError,
 )
 from app.modules.auth.registration_outbox import (
     P1VerificationTransitionInconsistent,
@@ -84,6 +88,19 @@ class PlatformAdminManualIdentityReviewRequest:
             raise ValueError("decision_basis_code is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class PlatformAdminManualIdentityReviewExecutionResult:
+    user_ref: int
+    verification_decision_ref: object
+    registration_event_id: object
+    authority_decision_key: str
+    transition_digest: str
+    facts_version: int
+    status: str
+    replayed: bool
+    decided_at: datetime
+
+
 def _authority_decision_id(user_ref: int, idempotency_key: str) -> str:
     digest = hashlib.sha256(
         f"{user_ref}:{idempotency_key}".encode("utf-8")
@@ -129,6 +146,21 @@ class PlatformAdminManualIdentityReviewService:
                 authority_port
             )
             result = await transition_service.execute(authority_decision_id)
+            if hasattr(result, "user_ref"):
+                result = PlatformAdminManualIdentityReviewExecutionResult(
+                    user_ref=result.user_ref,
+                    verification_decision_ref=result.verification_decision_ref,
+                    registration_event_id=result.registration_event_id,
+                    authority_decision_key=result.authority_decision_key,
+                    transition_digest=result.transition_digest,
+                    facts_version=result.facts_version,
+                    status=result.status,
+                    replayed=result.replayed,
+                    decided_at=(
+                        getattr(authority_port, "last_decided_at", None)
+                        or request.decided_at
+                    ),
+                )
         except (
             PlatformAdminManualIdentityReviewForbidden,
             PlatformAdminManualIdentityReviewNotFound,
@@ -178,10 +210,22 @@ class PlatformAdminManualIdentityReviewService:
 
 
 class PlatformIdentitySubmissionReviewService:
-    def __init__(self, *, application_repository, writer_session_factory, crypto) -> None:
+    def __init__(
+        self,
+        *,
+        application_repository,
+        writer_session_factory,
+        crypto,
+        step_up_service=None,
+        application_session_factory=None,
+        clock=lambda: datetime.now(timezone.utc),
+    ) -> None:
         self._application_repository = application_repository
         self._writer_session_factory = writer_session_factory
         self._crypto = crypto
+        self._step_up_service = step_up_service
+        self._application_session_factory = application_session_factory
+        self._clock = clock
 
     @staticmethod
     def _require_reviewer(current_user, user_ref: int | None = None) -> None:
@@ -229,15 +273,22 @@ class PlatformIdentitySubmissionReviewService:
         total = await self._application_repository.count_submitted()
         return items, total
 
-    async def approval_evidence_digest(self, *, current_user, user_ref: int, request) -> str | None:
+    async def approval_evidence_digest(
+        self,
+        *,
+        current_user,
+        user_ref: int,
+        request,
+        allow_verified_replay: bool = False,
+    ) -> str | None:
         self._require_reviewer(current_user, user_ref)
-        if request.submission_version is None:
-            return request.evidence_digest
         model = await self._application_repository.get_submission(
             user_ref=user_ref, version=request.submission_version
         )
         if (
-            model is None or model.status != "submitted"
+            model is None
+            or model.status
+            not in ({"submitted", "verified"} if allow_verified_replay else {"submitted"})
             or request.decision_basis_code != "APPROVED_OFFLINE_IDENTITY_CHECK"
         ):
             raise PlatformAdminManualIdentityReviewConflict("stale")
@@ -248,12 +299,32 @@ class PlatformIdentitySubmissionReviewService:
             ).encode()
         ).hexdigest()
 
-    async def detail(self, *, current_user, user_ref: int, purpose_code: str):
+    async def detail(
+        self,
+        *,
+        current_user,
+        user_ref: int,
+        purpose_code: str,
+        access_token: str | None = None,
+        step_up_token: str | None = None,
+    ):
         await self._require_current_reviewer(current_user, user_ref)
-        model = await self._application_repository.get_submission(user_ref=user_ref)
-        if model is None:
-            raise PlatformAdminManualIdentityReviewNotFound("not found")
+        if self._step_up_service is None:
+            raise PlatformAdminManualIdentityReviewUnavailable("unavailable")
+        consumption = None
         try:
+            consumption = await self._step_up_service.begin_consumption(
+                current_user=current_user,
+                subject_user_id=user_ref,
+                purpose=purpose_code,
+                access_token=access_token,
+                step_up_token=step_up_token,
+            )
+            model = await self._application_repository.get_submission(
+                user_ref=user_ref
+            )
+            if model is None or model.status != "submitted":
+                raise PlatformAdminManualIdentityReviewNotFound("not found")
             name = self._crypto.decrypt(
                 self._encrypted(model.real_name_ciphertext, model.real_name_nonce),
                 aad=self._aad(model, "real_name"),
@@ -263,56 +334,145 @@ class PlatformIdentitySubmissionReviewService:
                 aad=self._aad(model, "id_card"),
             )
             await self._application_repository.add_sensitive_read_audit(
-                reviewer_id=current_user.id, model=model, purpose_code=purpose_code
+                reviewer_id=current_user.id,
+                model=model,
+                purpose_code=purpose_code,
+                nonce_digest=consumption.nonce_digest,
+                attempt_digest=consumption.attempt_digest,
+                reviewer_projection_digest=(
+                    consumption.reviewer_projection_digest
+                ),
             )
             await self._application_repository.commit()
             return model, name, card
+        except (
+            PlatformAdminManualIdentityReviewForbidden,
+            PlatformAdminManualIdentityReviewNotFound,
+            PlatformIdentityReviewStepUpError,
+        ):
+            await self._application_repository.rollback()
+            raise
         except BaseException as exc:
-            import asyncio
             await self._application_repository.rollback()
             if isinstance(exc, asyncio.CancelledError):
                 raise
+            if consumption is not None:
+                await self._confirm_consumption_outcome(consumption)
             raise PlatformAdminManualIdentityReviewUnavailable("unavailable") from None
+
+    @asynccontextmanager
+    async def subject_coordination(self, user_ref: int):
+        await self._application_repository.acquire_subject_lock(user_ref)
+        try:
+            yield
+        finally:
+            await self._application_repository.rollback()
+
+    async def _confirm_consumption_outcome(self, consumption) -> None:
+        if self._application_session_factory is None:
+            return
+        from app.modules.auth.manual_identity_review_repository import (
+            SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+        )
+
+        try:
+            async with self._application_session_factory() as session:
+                repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(
+                    session
+                )
+                await repository.acquire_nonce_lock(consumption.nonce_digest)
+                await repository.find_step_up_consumption(
+                    consumption.nonce_digest,
+                    consumption.reviewer_id,
+                    consumption.subject_user_id,
+                    consumption.attempt_digest,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def reject(self, *, current_user, user_ref: int, request):
         await self._require_current_reviewer(current_user, user_ref)
         digest = self._crypto.digest(
             "review-reject",
-            f"{user_ref}:{request.submission_version}:{request.idempotency_key}:{request.reason_code}",
+            f"{user_ref}:{current_user.id}:{request.submission_version}:"
+            f"{request.idempotency_key}:{request.reason_code}",
         )
         from app.modules.auth.manual_identity_review_repository import (
             SqlAlchemyPlatformIdentitySubmissionReviewRepository,
         )
         try:
-            async with self._writer_session_factory() as session:
-                repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
-                model = await repository.get_submission(
-                    user_ref=user_ref, version=request.submission_version, lock=True
-                )
-                if model is None:
-                    raise PlatformAdminManualIdentityReviewNotFound("not found")
-                if model.status == "rejected" and model.evidence_digest == digest:
-                    return model, True
-                if model.status != "submitted":
-                    raise PlatformAdminManualIdentityReviewConflict("stale")
-                changed = await repository.mark_rejected(
-                    model=model, reviewer_id=current_user.id, decided_at=request.decided_at,
-                    reason_code=request.reason_code, evidence_digest=digest,
-                )
-                if not changed:
-                    raise PlatformAdminManualIdentityReviewConflict("stale")
-                await repository.commit()
-                model.status = "rejected"
-                return model, False
+            async with self.subject_coordination(user_ref):
+                async with self._writer_session_factory() as session:
+                    repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+                    model = await repository.get_submission(
+                        user_ref=user_ref, version=request.submission_version, lock=True
+                    )
+                    if model is None:
+                        raise PlatformAdminManualIdentityReviewNotFound("not found")
+                    if model.status == "rejected" and model.evidence_digest == digest:
+                        return model, True
+                    if model.status != "submitted":
+                        raise PlatformAdminManualIdentityReviewConflict("stale")
+                    changed = await repository.mark_rejected(
+                        model=model,
+                        reviewer_id=current_user.id,
+                        decided_at=self._clock(),
+                        reason_code=request.reason_code,
+                        evidence_digest=digest,
+                    )
+                    if not changed:
+                        raise PlatformAdminManualIdentityReviewConflict("stale")
+                    await repository.commit()
+                    model.status = "rejected"
+                    return model, False
         except (PlatformAdminManualIdentityReviewNotFound, PlatformAdminManualIdentityReviewConflict):
             raise
         except BaseException as exc:
-            import asyncio
             if isinstance(exc, asyncio.CancelledError):
                 raise
+            confirmed = await self._confirm_reject_outcome(
+                user_ref=user_ref,
+                version=request.submission_version,
+                reviewer_id=current_user.id,
+                evidence_digest=digest,
+            )
+            if confirmed is not None:
+                return confirmed, True
             raise PlatformAdminManualIdentityReviewUnavailable("unavailable") from None
 
-    async def mark_verified(self, *, current_user, user_ref: int, request, evidence_digest: str):
+    async def _confirm_reject_outcome(
+        self, *, user_ref: int, version: int, reviewer_id: int, evidence_digest: str
+    ):
+        from app.modules.auth.manual_identity_review_repository import (
+            SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+        )
+
+        try:
+            async with self._writer_session_factory() as session:
+                repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+                model = await repository.get_submission(
+                    user_ref=user_ref, version=version, lock=False
+                )
+                if (
+                    model is not None
+                    and model.status == "rejected"
+                    and model.version == version
+                    and model.reviewed_by == reviewer_id
+                    and model.evidence_digest == evidence_digest
+                ):
+                    return model
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        return None
+
+    async def mark_verified(
+        self, *, current_user, user_ref: int, request, evidence_digest: str,
+        decided_at: datetime,
+    ):
         self._require_reviewer(current_user, user_ref)
         if request.submission_version is None:
             return
@@ -322,9 +482,22 @@ class PlatformIdentitySubmissionReviewService:
         try:
             async with self._writer_session_factory() as session:
                 repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+                model = await repository.get_submission(
+                    user_ref=user_ref, version=request.submission_version, lock=True
+                )
+                if self._verified_submission_matches(
+                    model,
+                    version=request.submission_version,
+                    reviewer_id=current_user.id,
+                    evidence_digest=evidence_digest,
+                    decided_at=decided_at,
+                ):
+                    return
+                if model is None or model.status != "submitted":
+                    raise PlatformAdminManualIdentityReviewConflict("stale")
                 changed = await repository.mark_verified(
                     user_ref=user_ref, version=request.submission_version,
-                    reviewer_id=current_user.id, decided_at=request.decided_at,
+                    reviewer_id=current_user.id, decided_at=decided_at,
                     evidence_digest=evidence_digest,
                 )
                 if not changed:
@@ -333,10 +506,66 @@ class PlatformIdentitySubmissionReviewService:
         except PlatformAdminManualIdentityReviewConflict:
             raise
         except BaseException as exc:
-            import asyncio
             if isinstance(exc, asyncio.CancelledError):
                 raise
+            if await self._confirm_verified_outcome(
+                user_ref=user_ref,
+                version=request.submission_version,
+                reviewer_id=current_user.id,
+                evidence_digest=evidence_digest,
+                decided_at=decided_at,
+            ):
+                return
             raise PlatformAdminManualIdentityReviewUnavailable("unavailable") from None
+
+    async def _confirm_verified_outcome(
+        self,
+        *,
+        user_ref: int,
+        version: int,
+        reviewer_id: int,
+        evidence_digest: str,
+        decided_at: datetime,
+    ) -> bool:
+        from app.modules.auth.manual_identity_review_repository import (
+            SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+        )
+
+        try:
+            async with self._writer_session_factory() as session:
+                repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+                model = await repository.get_submission(
+                    user_ref=user_ref, version=version, lock=False
+                )
+                return self._verified_submission_matches(
+                    model,
+                    version=version,
+                    reviewer_id=reviewer_id,
+                    evidence_digest=evidence_digest,
+                    decided_at=decided_at,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    @staticmethod
+    def _verified_submission_matches(
+        model,
+        *,
+        version: int,
+        reviewer_id: int,
+        evidence_digest: str,
+        decided_at: datetime,
+    ) -> bool:
+        return (
+            model is not None
+            and model.status == "verified"
+            and model.version == version
+            and model.reviewed_by == reviewer_id
+            and model.evidence_digest == evidence_digest
+            and model.decided_at == decided_at
+        )
 
     @staticmethod
     def _encrypted(ciphertext, nonce):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import timezone
+from dataclasses import replace
+from datetime import datetime, timezone
+import hashlib
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -26,6 +28,7 @@ from app.modules.auth.registration_outbox import (
     P1VerificationTransitionCommand,
 )
 from app.modules.tenant.models import Tenant
+from app.modules.system.models import OperationLog
 
 
 _WRITER_AUTHORITY = "P1_MANUAL_IDENTITY_REVIEW"
@@ -46,6 +49,11 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
         self._user_ref = user_ref
         self._request = request
         self._authority_decision_id = authority_decision_id
+        self._last_decided_at = None
+
+    @property
+    def last_decided_at(self):
+        return self._last_decided_at
 
     async def load_current_decision(
         self, authority_decision_id: str
@@ -73,6 +81,7 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
             raise PlatformAdminManualIdentityReviewUnavailable(
                 "manual identity review authority is unavailable"
             )
+        self._last_decided_at = decision.decided_at
         return decision
 
     async def _load_snapshot(self, session):
@@ -138,6 +147,7 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
             or reviewer.role != "super_admin"
             or reviewer.status != "active"
             or reviewer.tenant_id is not None
+            or getattr(reviewer, "org_id", None) is not None
         ):
             raise PlatformAdminManualIdentityReviewForbidden("forbidden")
         if subject is None:
@@ -165,7 +175,7 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
         if self._request.submission_version is not None:
             if (
                 submission is None
-                or submission.status != "submitted"
+                or submission.status not in {"submitted", "verified"}
                 or submission.user_ref != self._user_ref
                 or self._request.decision_basis_code != "APPROVED_OFFLINE_IDENTITY_CHECK"
             ):
@@ -216,6 +226,26 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
                     "manual identity review subject is not pending"
                 )
             return decision
+
+        candidate = P1VerificationTransitionCommand(
+            authority=_WRITER_AUTHORITY,
+            case_ref=decision.authority_decision_id,
+            decision_version=decision.currentness_version,
+            target_facts_version=decision.facts_version,
+            user_ref=decision.user_ref,
+            verification_epoch=decision.verification_epoch,
+            outcome=decision.outcome,
+            evidence_digest=decision.evidence_digest,
+            actor_type=decision.reviewer_role,
+            actor_ref=str(decision.reviewer_subject_id),
+            decided_at=decision.decided_at,
+        )
+        if (
+            getattr(verification, "authority_decision_key", None)
+            == candidate.authority_decision_key
+            and isinstance(getattr(verification, "decided_at", None), datetime)
+        ):
+            decision = replace(decision, decided_at=verification.decided_at)
 
         if subject.verify_status != "verified" or not self._is_replay(
             verification, decision
@@ -302,6 +332,11 @@ def _reviewer_projection_statement(reviewer_id: int):
     )
 
 
+def _advisory_key(namespace: str, value: object) -> int:
+    digest = hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
 class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
     def __init__(self, session) -> None:
         self._session = session
@@ -312,6 +347,83 @@ class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
             _reviewer_projection_statement(reviewer_id)
         )
         return result.one_or_none()
+
+    async def acquire_reviewer_lock(self, reviewer_id: int) -> None:
+        await self._acquire_advisory_lock("identity-reviewer", reviewer_id)
+
+    async def acquire_nonce_lock(self, nonce_digest: str) -> None:
+        await self._acquire_advisory_lock("identity-step-up-nonce", nonce_digest)
+
+    async def acquire_subject_lock(self, user_ref: int) -> None:
+        await self._acquire_advisory_lock("identity-review-subject", user_ref)
+
+    async def _acquire_advisory_lock(self, namespace: str, value: object) -> None:
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(_advisory_key(namespace, value)))
+        )
+
+    async def count_failed_reauth_attempts(self, *, reviewer_id: int, since) -> int:
+        map_core_model_classes()
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(OperationLog)
+            .where(
+                OperationLog.operator_id == reviewer_id,
+                OperationLog.module == "identity_review",
+                OperationLog.object_type == "identity_submission",
+                OperationLog.action == "identity_step_up_password_failed",
+                OperationLog.created_at >= since,
+            )
+        )
+        return int(result.scalar_one())
+
+    async def find_step_up_consumption(
+        self,
+        nonce_digest: str,
+        reviewer_id: int,
+        subject_user_id: int,
+        attempt_digest: str | None = None,
+    ):
+        map_core_model_classes()
+        statement = (
+            select(OperationLog.id, OperationLog.payload)
+            .where(
+                OperationLog.module == "identity_review",
+                OperationLog.object_type == "identity_submission",
+                OperationLog.action == "identity_sensitive_detail_read",
+                OperationLog.operator_id == reviewer_id,
+                OperationLog.object_id == subject_user_id,
+                OperationLog.payload["nonce_digest"].as_string() == nonce_digest,
+            )
+            .limit(1)
+        )
+        if attempt_digest is not None:
+            statement = statement.where(
+                OperationLog.payload["attempt_digest"].as_string()
+                == attempt_digest
+            )
+        result = await self._session.execute(statement)
+        return result.one_or_none()
+
+    async def add_step_up_audit(
+        self,
+        *,
+        reviewer_id: int,
+        subject_user_id: int,
+        action: str,
+        payload: dict,
+    ) -> None:
+        from app.modules.system.repository import create_operation_log
+
+        await create_operation_log(
+            self._session,
+            operator_id=reviewer_id,
+            module="identity_review",
+            object_type="identity_submission",
+            object_id=subject_user_id,
+            action=action,
+            payload=payload,
+        )
 
     async def list_submitted(self, *, offset: int, limit: int):
         statement = (
@@ -344,7 +456,16 @@ class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
             statement = statement.with_for_update()
         return (await self._session.execute(statement)).scalar_one_or_none()
 
-    async def add_sensitive_read_audit(self, *, reviewer_id: int, model, purpose_code: str):
+    async def add_sensitive_read_audit(
+        self,
+        *,
+        reviewer_id: int,
+        model,
+        purpose_code: str,
+        nonce_digest: str | None = None,
+        attempt_digest: str | None = None,
+        reviewer_projection_digest: str | None = None,
+    ):
         from app.modules.system.repository import create_operation_log
 
         await create_operation_log(
@@ -354,7 +475,19 @@ class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
             object_type="identity_submission",
             object_id=model.user_ref,
             action="identity_sensitive_detail_read",
-            payload={"submission_version": model.version, "purpose_code": purpose_code},
+            payload={
+                "submission_version": model.version,
+                "purpose_code": purpose_code,
+                **(
+                    {
+                        "nonce_digest": nonce_digest,
+                        "attempt_digest": attempt_digest,
+                        "reviewer_projection_digest": reviewer_projection_digest,
+                    }
+                    if nonce_digest is not None
+                    else {}
+                ),
+            },
         )
 
     async def mark_rejected(self, *, model, reviewer_id: int, decided_at, reason_code: str, evidence_digest: str):

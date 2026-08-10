@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import datetime, timezone
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from app.core.database import get_db_session
 from app.core.responses import ok_response
@@ -16,13 +17,21 @@ from app.modules.auth.manual_identity_review_application import (
     PlatformIdentitySubmissionReviewService,
 )
 from app.modules.review.schemas import (
+    IdentityReviewDetailEnvelope,
     PlatformAdminManualIdentityReviewRequest,
+    PlatformAdminManualIdentityReviewEnvelope,
     PlatformAdminManualIdentityReviewResponse,
     IdentityReviewDetailResponse,
     IdentityReviewQueueItem,
     IdentityReviewQueueResponse,
-    IdentityReviewRejectRequest,
+    IdentityReviewQueueEnvelope,
+    PlatformIdentityReviewRejectRequest,
+    IdentityReviewRejectEnvelope,
     IdentityReviewRejectResponse,
+    PlatformIdentityReviewStepUpEnvelope,
+    PlatformIdentityReviewStepUpRequest,
+    PlatformIdentityReviewStepUpResponse,
+    ReviewErrorResponse,
     TenantReviewApproveRequest,
     TenantReviewQueueQuery,
     TenantReviewRejectRequest,
@@ -36,6 +45,14 @@ from app.modules.review.service import (
 
 
 router = APIRouter(prefix="/api/v1/reviews", tags=["review"])
+
+
+def _bearer_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return token
 
 
 async def get_platform_identity_reviewer(
@@ -77,7 +94,10 @@ def get_platform_admin_manual_identity_review_service(
 def get_platform_identity_submission_review_service(
     session=Depends(get_db_session),
 ):
-    from app.core.database import get_verification_writer_session_factory
+    from app.core.database import (
+        get_session_factory,
+        get_verification_writer_session_factory,
+    )
     from app.modules.auth.identity_submission_crypto import (
         IdentitySubmissionCrypto,
         IdentitySubmissionCryptoUnavailable,
@@ -97,7 +117,77 @@ def get_platform_identity_submission_review_service(
         application_repository=SqlAlchemyPlatformIdentitySubmissionReviewRepository(session),
         writer_session_factory=writer_factory,
         crypto=crypto,
+        application_session_factory=get_session_factory(),
     )
+
+
+def get_platform_identity_detail_service(
+    session=Depends(get_db_session),
+):
+    from app.core.database import (
+        get_session_factory,
+        get_verification_writer_session_factory,
+    )
+    from app.modules.auth.identity_review_step_up import (
+        PlatformIdentityReviewStepUpUnavailable,
+        SqlAlchemyPlatformIdentityReviewStepUpRepository,
+        create_platform_identity_review_step_up_service,
+    )
+    from app.modules.auth.identity_submission_crypto import (
+        IdentitySubmissionCrypto,
+        IdentitySubmissionCryptoUnavailable,
+    )
+    from app.modules.auth.manual_identity_review_repository import (
+        SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+    )
+
+    repository = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+    try:
+        step_up_service = create_platform_identity_review_step_up_service(
+            repository=SqlAlchemyPlatformIdentityReviewStepUpRepository(
+                session=session, delegate=repository
+            )
+        )
+        writer_factory = get_verification_writer_session_factory()
+        crypto = IdentitySubmissionCrypto.from_environment()
+    except (
+        RuntimeError,
+        IdentitySubmissionCryptoUnavailable,
+        PlatformIdentityReviewStepUpUnavailable,
+    ):
+        raise HTTPException(
+            status_code=503, detail="Identity review service unavailable"
+        ) from None
+    return PlatformIdentitySubmissionReviewService(
+        application_repository=repository,
+        writer_session_factory=writer_factory,
+        crypto=crypto,
+        step_up_service=step_up_service,
+        application_session_factory=get_session_factory(),
+    )
+
+
+def get_platform_identity_step_up_service(session=Depends(get_db_session)):
+    from app.modules.auth.identity_review_step_up import (
+        PlatformIdentityReviewStepUpUnavailable,
+        SqlAlchemyPlatformIdentityReviewStepUpRepository,
+        create_platform_identity_review_step_up_service,
+    )
+    from app.modules.auth.manual_identity_review_repository import (
+        SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+    )
+
+    try:
+        delegate = SqlAlchemyPlatformIdentitySubmissionReviewRepository(session)
+        return create_platform_identity_review_step_up_service(
+            repository=SqlAlchemyPlatformIdentityReviewStepUpRepository(
+                session=session, delegate=delegate
+            )
+        )
+    except PlatformIdentityReviewStepUpUnavailable:
+        raise HTTPException(
+            status_code=503, detail="Identity review service unavailable"
+        ) from None
 
 
 def _require_platform_identity_reviewer(current_user: CurrentUser) -> None:
@@ -109,52 +199,99 @@ def _require_platform_identity_reviewer(current_user: CurrentUser) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-@router.post("/users/{user_id}/identity/approve")
+@router.post(
+    "/users/{user_id}/identity/step-up",
+    response_model=PlatformIdentityReviewStepUpEnvelope,
+    responses={
+        401: {"model": ReviewErrorResponse},
+        403: {"model": ReviewErrorResponse},
+        404: {"model": ReviewErrorResponse},
+        429: {"model": ReviewErrorResponse},
+        503: {"model": ReviewErrorResponse},
+    },
+)
+async def issue_platform_identity_review_step_up_api(
+    user_id: int,
+    payload: PlatformIdentityReviewStepUpRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(get_platform_identity_reviewer),
+    service=Depends(get_platform_identity_step_up_service),
+) -> dict:
+    from app.modules.auth.identity_review_step_up import (
+        PlatformIdentityReviewStepUpForbidden,
+        PlatformIdentityReviewStepUpNotFound,
+        PlatformIdentityReviewStepUpRateLimited,
+        PlatformIdentityReviewStepUpUnauthorized,
+        PlatformIdentityReviewStepUpUnavailable,
+    )
+
+    try:
+        result = await service.issue(
+            current_user=current_user,
+            subject_user_id=user_id,
+            password=payload.password.get_secret_value(),
+            access_token=_bearer_token(request),
+        )
+    except PlatformIdentityReviewStepUpUnauthorized:
+        raise HTTPException(status_code=401, detail="Invalid re-authentication") from None
+    except PlatformIdentityReviewStepUpForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    except PlatformIdentityReviewStepUpNotFound:
+        raise HTTPException(status_code=404, detail="Identity review subject not found") from None
+    except PlatformIdentityReviewStepUpRateLimited:
+        raise HTTPException(status_code=429, detail="Re-authentication rate limited") from None
+    except PlatformIdentityReviewStepUpUnavailable:
+        raise HTTPException(status_code=503, detail="Identity review service unavailable") from None
+    return ok_response(
+        PlatformIdentityReviewStepUpResponse(
+            step_up_token=result.token,
+            expires_in=result.expires_in,
+        ).model_dump()
+    )
+
+
+@router.post(
+    "/users/{user_id}/identity/approve",
+    response_model=PlatformAdminManualIdentityReviewEnvelope,
+    responses={
+        401: {"model": ReviewErrorResponse},
+        403: {"model": ReviewErrorResponse},
+        404: {"model": ReviewErrorResponse},
+        409: {"model": ReviewErrorResponse},
+        503: {"model": ReviewErrorResponse},
+    },
+)
 async def approve_platform_user_identity_review_api(
     user_id: int,
     payload: PlatformAdminManualIdentityReviewRequest,
     current_user: CurrentUser = Depends(get_platform_identity_reviewer),
     service=Depends(get_platform_admin_manual_identity_review_service),
+    submission_review=Depends(get_platform_identity_submission_review_service),
 ) -> dict:
+    decided_at = datetime.now(timezone.utc)
     try:
-        submission_review = None
-        evidence_digest = payload.evidence_digest
-        if payload.submission_version is not None:
-            from app.core.database import (
-                get_session_factory,
-                get_verification_writer_session_factory,
+        async with submission_review.subject_coordination(user_id):
+            evidence_digest = await submission_review.approval_evidence_digest(
+                current_user=current_user,
+                user_ref=user_id,
+                request=payload,
+                allow_verified_replay=True,
             )
-            from app.modules.auth.identity_submission_crypto import IdentitySubmissionCrypto
-            from app.modules.auth.manual_identity_review_repository import (
-                SqlAlchemyPlatformIdentitySubmissionReviewRepository,
+            result = await service.execute(
+                current_user=current_user,
+                user_ref=user_id,
+                request=ApplicationReviewRequest(
+                    idempotency_key=payload.idempotency_key,
+                    decided_at=decided_at,
+                    evidence_digest=evidence_digest,
+                    submission_version=payload.submission_version,
+                    decision_basis_code=payload.decision_basis_code,
+                ),
             )
-            authority_factory = get_session_factory()
-            async with authority_factory() as authority_session:
-                submission_review = PlatformIdentitySubmissionReviewService(
-                    application_repository=SqlAlchemyPlatformIdentitySubmissionReviewRepository(
-                        authority_session
-                    ),
-                    writer_session_factory=get_verification_writer_session_factory(),
-                    crypto=IdentitySubmissionCrypto.from_environment(),
-                )
-                evidence_digest = await submission_review.approval_evidence_digest(
-                    current_user=current_user, user_ref=user_id, request=payload
-                )
-        result = await service.execute(
-            current_user=current_user,
-            user_ref=user_id,
-            request=ApplicationReviewRequest(
-                idempotency_key=payload.idempotency_key,
-                decided_at=payload.decided_at,
-                evidence_digest=evidence_digest,
-                submission_version=payload.submission_version,
-                decision_basis_code=payload.decision_basis_code,
-            ),
-        )
-        if submission_review is not None:
             await submission_review.mark_verified(
                 current_user=current_user, user_ref=user_id, request=payload,
                 evidence_digest=evidence_digest,
+                decided_at=getattr(result, "decided_at", decided_at),
             )
     except PlatformAdminManualIdentityReviewForbidden:
         raise HTTPException(status_code=403, detail="Forbidden") from None
@@ -176,16 +313,23 @@ async def approve_platform_user_identity_review_api(
 
     response = PlatformAdminManualIdentityReviewResponse(
         user_id=result.user_ref,
+        submission_version=payload.submission_version,
         status=result.status,
-        verification_decision_ref=str(result.verification_decision_ref),
-        registration_event_id=str(result.registration_event_id),
-        authority_decision_key=result.authority_decision_key,
+        decision_ref=str(result.verification_decision_ref),
         replayed=result.replayed,
     )
     return ok_response(response.model_dump())
 
 
-@router.get("/identity")
+@router.get(
+    "/identity",
+    response_model=IdentityReviewQueueEnvelope,
+    responses={
+        401: {"model": ReviewErrorResponse},
+        403: {"model": ReviewErrorResponse},
+        503: {"model": ReviewErrorResponse},
+    },
+)
 async def list_platform_identity_reviews_api(
     status: str = Query(default="submitted", pattern=r"^submitted$"),
     page: Annotated[int, Query(ge=1)] = 1,
@@ -211,17 +355,46 @@ async def list_platform_identity_reviews_api(
     return ok_response(response.model_dump())
 
 
-@router.get("/users/{user_id}/identity")
+@router.get(
+    "/users/{user_id}/identity",
+    response_model=IdentityReviewDetailEnvelope,
+    responses={
+        401: {"model": ReviewErrorResponse},
+        403: {"model": ReviewErrorResponse},
+        404: {"model": ReviewErrorResponse},
+        503: {"model": ReviewErrorResponse},
+    },
+)
 async def get_platform_identity_review_detail_api(
     user_id: int,
-    purpose_code: str = Query(pattern=r"^[A-Z][A-Z0-9_]{2,63}$"),
+    request: Request,
+    step_up_token: Annotated[
+        str, Header(alias="X-Identity-Review-Step-Up", min_length=1)
+    ],
+    purpose_code: Literal["MANUAL_REVIEW"] = Query(),
     current_user: CurrentUser = Depends(get_platform_identity_reviewer),
-    service=Depends(get_platform_identity_submission_review_service),
+    service=Depends(get_platform_identity_detail_service),
 ) -> dict:
+    from app.modules.auth.identity_review_step_up import (
+        PlatformIdentityReviewStepUpForbidden,
+        PlatformIdentityReviewStepUpUnauthorized,
+        PlatformIdentityReviewStepUpUnavailable,
+    )
+
     try:
         model, name, card = await service.detail(
-            current_user=current_user, user_ref=user_id, purpose_code=purpose_code
+            current_user=current_user,
+            user_ref=user_id,
+            purpose_code=purpose_code,
+            access_token=_bearer_token(request),
+            step_up_token=step_up_token,
         )
+    except PlatformIdentityReviewStepUpUnauthorized:
+        raise HTTPException(status_code=401, detail="Invalid or expired step-up") from None
+    except PlatformIdentityReviewStepUpForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    except PlatformIdentityReviewStepUpUnavailable:
+        raise HTTPException(status_code=503, detail="Identity review service unavailable") from None
     except PlatformAdminManualIdentityReviewForbidden:
         raise HTTPException(status_code=403, detail="Forbidden") from None
     except PlatformAdminManualIdentityReviewNotFound:
@@ -233,10 +406,20 @@ async def get_platform_identity_review_detail_api(
     )
 
 
-@router.post("/users/{user_id}/identity/reject")
+@router.post(
+    "/users/{user_id}/identity/reject",
+    response_model=IdentityReviewRejectEnvelope,
+    responses={
+        401: {"model": ReviewErrorResponse},
+        403: {"model": ReviewErrorResponse},
+        404: {"model": ReviewErrorResponse},
+        409: {"model": ReviewErrorResponse},
+        503: {"model": ReviewErrorResponse},
+    },
+)
 async def reject_platform_identity_review_api(
     user_id: int,
-    payload: IdentityReviewRejectRequest,
+    payload: PlatformIdentityReviewRejectRequest,
     current_user: CurrentUser = Depends(get_platform_identity_reviewer),
     service=Depends(get_platform_identity_submission_review_service),
 ) -> dict:

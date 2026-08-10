@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -29,8 +31,8 @@ def _headers(
 def _payload(**changes) -> dict:
     values = {
         "idempotency_key": "manual-review-request-1042-v1",
-        "decided_at": "2026-08-08T10:00:00Z",
-        "evidence_digest": "a" * 64,
+        "submission_version": 3,
+        "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
     }
     values.update(changes)
     return values
@@ -49,6 +51,7 @@ class _Service:
             ),
             authority_decision_key="b" * 64,
             replayed=False,
+            decided_at=datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc),
         )
         self.error = error
         self.calls = []
@@ -60,16 +63,37 @@ class _Service:
         return self.result
 
 
+class _SubmissionReviewService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    @asynccontextmanager
+    async def subject_coordination(self, user_ref):
+        self.calls.append(("lock", user_ref))
+        yield
+
+    async def approval_evidence_digest(self, **kwargs):
+        self.calls.append(("evidence", kwargs))
+        return "a" * 64
+
+    async def mark_verified(self, **kwargs):
+        self.calls.append(("verified", kwargs))
+
+
 def _client(service: _Service) -> TestClient:
     from app.main import create_app
     from app.modules.review.api import (
         get_platform_admin_manual_identity_review_service,
+        get_platform_identity_submission_review_service,
     )
 
     app = create_app()
     app.dependency_overrides[
         get_platform_admin_manual_identity_review_service
     ] = lambda: service
+    app.dependency_overrides[
+        get_platform_identity_submission_review_service
+    ] = lambda: _SubmissionReviewService()
     return TestClient(app)
 
 
@@ -87,14 +111,11 @@ def test_平台后台人工身份审核API尚未实现():
         "message": "ok",
         "data": {
             "user_id": 1042,
+            "submission_version": 3,
             "status": "verified",
-            "verification_decision_ref": (
+            "decision_ref": (
                 "0198a2ef-1234-7abc-8def-0123456789ab"
             ),
-            "registration_event_id": (
-                "0198a2ef-5678-7abc-8def-0123456789ab"
-            ),
-            "authority_decision_key": "b" * 64,
             "replayed": False,
         },
     }
@@ -106,6 +127,38 @@ def test_平台后台人工身份审核API尚未实现():
     assert user_ref == 1042
     assert request.idempotency_key == "manual-review-request-1042-v1"
     assert request.evidence_digest == "a" * 64
+    assert request.submission_version == 3
+    assert request.decision_basis_code == "APPROVED_OFFLINE_IDENTITY_CHECK"
+
+
+def test_权威转换稳定重放仍使用原决定时间补齐Submission终态():
+    canonical_decided_at = datetime(2026, 8, 9, 8, 0, tzinfo=timezone.utc)
+    service = _Service(
+        result=SimpleNamespace(
+            user_ref=1042,
+            status="verified",
+            verification_decision_ref="0198a2ef-1234-7abc-8def-0123456789ab",
+            registration_event_id="0198a2ef-5678-7abc-8def-0123456789ab",
+            authority_decision_key="b" * 64,
+            replayed=True,
+            decided_at=canonical_decided_at,
+        )
+    )
+    submission_review = _SubmissionReviewService()
+    from app.main import create_app
+    from app.modules.review.api import (
+        get_platform_admin_manual_identity_review_service,
+        get_platform_identity_submission_review_service,
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_platform_admin_manual_identity_review_service] = lambda: service
+    app.dependency_overrides[get_platform_identity_submission_review_service] = lambda: submission_review
+    response = TestClient(app).post(ROUTE, json=_payload(), headers=_headers())
+
+    assert response.status_code == 200
+    verified = next(call[1] for call in submission_review.calls if call[0] == "verified")
+    assert verified["decided_at"] == canonical_decided_at
 
 
 def test_人工身份审核路由遵循既有平台Review路径族():
@@ -208,6 +261,8 @@ def test_人工身份审核响应不包含PII_JWT或数据库信息():
         "authorization",
         "database_url",
         "credential",
+        "registration_event_id",
+        "authority_decision_key",
     ):
         assert forbidden not in public
 
