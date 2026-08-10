@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "lint": "biome lint --config-path scripts/前端质量门禁配置.json vite.config.ts src/测试初始化.ts src/domains/platform/实名认证审核接口.ts src/domains/platform/实名认证审核类型.ts src/domains/platform/navigation.ts src/domains/platform/routes.tsx src/domains/platform/pages/实名认证审核列表页.tsx src/domains/platform/pages/实名认证审核详情页.tsx src/domains/platform/实名认证审核工作台.test.tsx src/shells/PlatformShell.tsx scripts/前端PII扫描.mjs",
+    "format": "biome format --write --config-path scripts/前端质量门禁配置.json vite.config.ts src/测试初始化.ts src/domains/platform/实名认证审核接口.ts src/domains/platform/实名认证审核类型.ts src/domains/platform/navigation.ts src/domains/platform/routes.tsx src/domains/platform/pages/实名认证审核列表页.tsx src/domains/platform/pages/实名认证审核详情页.tsx src/domains/platform/实名认证审核工作台.test.tsx src/shells/PlatformShell.tsx scripts/前端PII扫描.mjs",
+    "format:check": "biome format --config-path scripts/前端质量门禁配置.json vite.config.ts src/测试初始化.ts src/domains/platform/实名认证审核接口.ts src/domains/platform/实名认证审核类型.ts src/domains/platform/navigation.ts src/domains/platform/routes.tsx src/domains/platform/pages/实名认证审核列表页.tsx src/domains/platform/pages/实名认证审核详情页.tsx src/domains/platform/实名认证审核工作台.test.tsx src/shells/PlatformShell.tsx scripts/前端PII扫描.mjs",
+    "pii:scan": "node scripts/前端PII扫描.mjs",
+    "quality": "npm run build && npm run test && npm run lint && npm run format:check && npm run pii:scan"
   },
   "dependencies": {
     "@hookform/resolvers": "5.2.2",
@@ -20,12 +26,19 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.3",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "jsdom": "29.1.1",
     "postcss": "8.5.16",
     "rollup": "4.62.2",
     "tailwindcss": "3.4.19",
     "typescript": "5.9.3",
-    "vite": "6.4.3"
+    "vite": "6.4.3",
+    "vitest": "4.1.10"
   }
 }
