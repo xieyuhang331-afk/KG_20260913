@@ -25,6 +25,7 @@ from app.modules.auth.identity_submission_models import IdentityVerificationSubm
 from app.modules.auth.registration_outbox import (
     P1VerificationTransitionCommand,
 )
+from app.modules.tenant.models import Tenant
 
 
 _WRITER_AUTHORITY = "P1_MANUAL_IDENTITY_REVIEW"
@@ -284,9 +285,33 @@ def _user_projection_statement(user_ref: int):
     )
 
 
+def _reviewer_projection_statement(reviewer_id: int):
+    return (
+        select(
+            User.id,
+            User.role,
+            User.status,
+            User.tenant_id,
+            Tenant.org_id.label("org_id"),
+            User.verify_status,
+            User.updated_at,
+        )
+        .outerjoin(Tenant, Tenant.id == User.tenant_id)
+        .where(User.id == reviewer_id)
+        .limit(1)
+    )
+
+
 class SqlAlchemyPlatformIdentitySubmissionReviewRepository:
     def __init__(self, session) -> None:
         self._session = session
+
+    async def get_reviewer_state(self, reviewer_id: int):
+        map_core_model_classes()
+        result = await self._session.execute(
+            _reviewer_projection_statement(reviewer_id)
+        )
+        return result.one_or_none()
 
     async def list_submitted(self, *, offset: int, limit: int):
         statement = (

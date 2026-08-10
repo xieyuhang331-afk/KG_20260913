@@ -116,7 +116,11 @@ class IdentitySubmissionService:
             )
             await self._repository.commit()
             return self._result(model, outcome="CREATED")
-        except (IdentitySubmissionConflict, IdentitySubmissionRateLimited):
+        except (
+            IdentitySubmissionForbidden,
+            IdentitySubmissionConflict,
+            IdentitySubmissionRateLimited,
+        ):
             await self._repository.rollback()
             raise
         except BaseException as exc:
@@ -134,7 +138,7 @@ class IdentitySubmissionService:
         self._require_member(current_user)
         try:
             user = await self._repository.get_user(current_user.id)
-            self._require_eligible_user(user, current_user.id)
+            self._require_status_user(user, current_user.id)
             latest = await self._repository.find_latest(current_user.id)
             if latest is None:
                 return IdentitySubmissionResult(
@@ -167,6 +171,14 @@ class IdentitySubmissionService:
             user is None or user.id != user_ref or user.role != "member"
             or user.status != "active" or user.tenant_id is not None
             or user.verify_status == "verified"
+        ):
+            raise IdentitySubmissionForbidden("forbidden")
+
+    @staticmethod
+    def _require_status_user(user, user_ref: int) -> None:
+        if (
+            user is None or user.id != user_ref or user.role != "member"
+            or user.status != "active" or user.tenant_id is not None
         ):
             raise IdentitySubmissionForbidden("forbidden")
 

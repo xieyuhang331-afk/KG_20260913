@@ -194,9 +194,16 @@ async def list_platform_identity_reviews_api(
     service=Depends(get_platform_identity_submission_review_service),
 ) -> dict:
     del status
-    items, total = await service.list_queue(
-        current_user=current_user, page=page, page_size=page_size
-    )
+    try:
+        items, total = await service.list_queue(
+            current_user=current_user, page=page, page_size=page_size
+        )
+    except PlatformAdminManualIdentityReviewForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    except PlatformAdminManualIdentityReviewUnavailable:
+        raise HTTPException(
+            status_code=503, detail="Identity review service unavailable"
+        ) from None
     response = IdentityReviewQueueResponse(
         items=[IdentityReviewQueueItem.from_submission(item) for item in items],
         page=page, page_size=page_size, total=total,

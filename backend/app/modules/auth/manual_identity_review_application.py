@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -192,8 +193,36 @@ class PlatformIdentitySubmissionReviewService:
         ):
             raise PlatformAdminManualIdentityReviewForbidden("forbidden")
 
+    async def _require_current_reviewer(
+        self, current_user, user_ref: int | None = None
+    ) -> None:
+        self._require_reviewer(current_user, user_ref)
+        unavailable = False
+        reviewer = None
+        try:
+            reviewer = await self._application_repository.get_reviewer_state(
+                current_user.id
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            unavailable = True
+        if unavailable:
+            raise PlatformAdminManualIdentityReviewUnavailable(
+                "manual identity review service is unavailable"
+            ) from None
+        if (
+            reviewer is None
+            or reviewer.id != current_user.id
+            or reviewer.role != "super_admin"
+            or reviewer.status != "active"
+            or reviewer.tenant_id is not None
+            or reviewer.org_id is not None
+        ):
+            raise PlatformAdminManualIdentityReviewForbidden("forbidden")
+
     async def list_queue(self, *, current_user, page: int, page_size: int):
-        self._require_reviewer(current_user)
+        await self._require_current_reviewer(current_user)
         items = await self._application_repository.list_submitted(
             offset=(page - 1) * page_size, limit=page_size
         )
@@ -220,7 +249,7 @@ class PlatformIdentitySubmissionReviewService:
         ).hexdigest()
 
     async def detail(self, *, current_user, user_ref: int, purpose_code: str):
-        self._require_reviewer(current_user, user_ref)
+        await self._require_current_reviewer(current_user, user_ref)
         model = await self._application_repository.get_submission(user_ref=user_ref)
         if model is None:
             raise PlatformAdminManualIdentityReviewNotFound("not found")
@@ -246,7 +275,7 @@ class PlatformIdentitySubmissionReviewService:
             raise PlatformAdminManualIdentityReviewUnavailable("unavailable") from None
 
     async def reject(self, *, current_user, user_ref: int, request):
-        self._require_reviewer(current_user, user_ref)
+        await self._require_current_reviewer(current_user, user_ref)
         digest = self._crypto.digest(
             "review-reject",
             f"{user_ref}:{request.submission_version}:{request.idempotency_key}:{request.reason_code}",
