@@ -24,6 +24,9 @@ class Settings(BaseModel):
     database_user: str = "kg_app"
     database_password: str
     verification_writer_database_url: str | None = None
+    health_fact_writer_database_url: str | None = None
+    health_fact_digest_current_key_id: str | None = None
+    health_fact_digest_keyring_json: str | None = None
     identity_pii_kek_b64: str | None = None
     identity_pii_hmac_key_b64: str | None = None
     identity_pii_key_id: str | None = None
@@ -55,6 +58,15 @@ def get_settings() -> Settings:
         database_password=require_secret("KG_DATABASE_PASSWORD"),
         verification_writer_database_url=os.getenv(
             "KG_VERIFICATION_WRITER_DATABASE_URL"
+        ),
+        health_fact_writer_database_url=os.getenv(
+            "KG_HEALTH_FACT_WRITER_DATABASE_URL"
+        ),
+        health_fact_digest_current_key_id=os.getenv(
+            "KG_HEALTH_FACT_DIGEST_CURRENT_KEY_ID"
+        ),
+        health_fact_digest_keyring_json=os.getenv(
+            "KG_HEALTH_FACT_DIGEST_KEYRING_JSON"
         ),
         identity_pii_kek_b64=os.getenv("KG_IDENTITY_PII_KEK_B64"),
         identity_pii_hmac_key_b64=os.getenv("KG_IDENTITY_PII_HMAC_KEY_B64"),

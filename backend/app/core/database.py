@@ -67,9 +67,12 @@ _ASYNC_ENGINE = None
 _SESSION_FACTORY = None
 _VERIFICATION_WRITER_ASYNC_ENGINE = None
 _VERIFICATION_WRITER_SESSION_FACTORY = None
+_HEALTH_FACT_WRITER_ASYNC_ENGINE = None
+_HEALTH_FACT_WRITER_SESSION_FACTORY = None
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
+_HEALTH_FACT_WRITER_RUNTIME_ERROR = "Health fact writer database runtime is unavailable"
 
 
 def get_session_factory():
@@ -118,12 +121,68 @@ def get_verification_writer_session_factory():
     return _VERIFICATION_WRITER_SESSION_FACTORY
 
 
+def _get_health_fact_writer_database_url(settings: Settings) -> str:
+    raw_url = settings.health_fact_writer_database_url
+    valid = False
+    try:
+        url = make_url(raw_url) if raw_url else None
+        verification_url = (
+            make_url(settings.verification_writer_database_url)
+            if settings.verification_writer_database_url
+            else None
+        )
+        forbidden_users = {settings.database_user, "postgres"}
+        if verification_url is not None and verification_url.username:
+            forbidden_users.add(verification_url.username)
+        valid = bool(
+            url is not None
+            and url.drivername == "postgresql+asyncpg"
+            and url.username
+            and url.password
+            and url.username not in forbidden_users
+            and url.host == settings.database_host
+            and url.port == settings.database_port
+            and url.database == settings.database_name
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_HEALTH_FACT_WRITER_RUNTIME_ERROR) from None
+    return raw_url
+
+
+def get_health_fact_writer_session_factory():
+    global _HEALTH_FACT_WRITER_ASYNC_ENGINE
+    global _HEALTH_FACT_WRITER_SESSION_FACTORY
+    if _HEALTH_FACT_WRITER_SESSION_FACTORY is None:
+        settings = get_settings()
+        url = _get_health_fact_writer_database_url(settings)
+        try:
+            engine = create_async_engine(url, pool_pre_ping=True)
+            session_factory = create_session_factory(engine)
+        except Exception:
+            raise RuntimeError(_HEALTH_FACT_WRITER_RUNTIME_ERROR) from None
+        _HEALTH_FACT_WRITER_ASYNC_ENGINE = engine
+        _HEALTH_FACT_WRITER_SESSION_FACTORY = session_factory
+    return _HEALTH_FACT_WRITER_SESSION_FACTORY
+
+
 async def dispose_verification_writer_runtime() -> None:
     global _VERIFICATION_WRITER_ASYNC_ENGINE
     global _VERIFICATION_WRITER_SESSION_FACTORY
     engine = _VERIFICATION_WRITER_ASYNC_ENGINE
     _VERIFICATION_WRITER_ASYNC_ENGINE = None
     _VERIFICATION_WRITER_SESSION_FACTORY = None
+    if engine is not None:
+        await engine.dispose()
+
+
+async def dispose_health_fact_writer_runtime() -> None:
+    global _HEALTH_FACT_WRITER_ASYNC_ENGINE
+    global _HEALTH_FACT_WRITER_SESSION_FACTORY
+    engine = _HEALTH_FACT_WRITER_ASYNC_ENGINE
+    _HEALTH_FACT_WRITER_ASYNC_ENGINE = None
+    _HEALTH_FACT_WRITER_SESSION_FACTORY = None
     if engine is not None:
         await engine.dispose()
 
@@ -138,7 +197,10 @@ async def dispose_database_runtimes() -> None:
         if engine is not None:
             await engine.dispose()
     finally:
-        await dispose_verification_writer_runtime()
+        try:
+            await dispose_verification_writer_runtime()
+        finally:
+            await dispose_health_fact_writer_runtime()
 
 
 async def get_db_session():
