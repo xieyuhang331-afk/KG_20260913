@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260810_0014"
+REQUIRED_HEAD_REVISION = "20260811_0015"
 
 
 def pytest_configure(config):
@@ -74,6 +74,10 @@ def _get_delivery_worker_database_url() -> str:
 
 def _get_outbox_audit_database_url() -> str:
     return _get_role_database_url("KG_TEST_OUTBOX_AUDIT_DATABASE_URL")
+
+
+def _get_health_fact_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_FACT_WRITER_DATABASE_URL")
 
 
 def _get_role_database_url(environment_name: str) -> str:
@@ -285,6 +289,7 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     writer_role = _validated_role_name("KG_TEST_VERIFICATION_WRITER_ROLE")
     worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
     audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
+    fact_writer_role = _validated_role_name("KG_TEST_HEALTH_FACT_WRITER_ROLE")
     runtime_roles = (writer_role, worker_role, audit_role)
     for role in runtime_roles:
         database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
@@ -346,6 +351,37 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
         'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
         f'ON TABLE public.identity_verification_submission FROM "{readonly_role}", "{audit_role}"'
     )
+    database.execute(f'GRANT USAGE ON SCHEMA public TO "{fact_writer_role}"')
+    database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{fact_writer_role}"')
+    database.execute(
+        'GRANT SELECT, INSERT ON TABLE public.canonical_health_fact, '
+        f'public.operation_log TO "{fact_writer_role}"'
+    )
+    database.execute(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE '
+        'public.canonical_health_fact, public.operation_log '
+        f'FROM "{fact_writer_role}"'
+    )
+    database.execute(
+        'GRANT USAGE, SELECT ON SEQUENCE public.canonical_health_fact_id_seq, '
+        f'public.operation_log_id_seq TO "{fact_writer_role}"'
+    )
+    database.execute(
+        'REVOKE UPDATE ON SEQUENCE public.canonical_health_fact_id_seq, '
+        f'public.operation_log_id_seq FROM "{fact_writer_role}"'
+    )
+    database.execute(
+        'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+        'ON TABLE public.canonical_health_fact '
+        f'FROM "{application_role}", "{readonly_role}"'
+    )
+    database.execute(
+        'REVOKE ALL ON SEQUENCE public.canonical_health_fact_id_seq '
+        f'FROM "{application_role}", "{readonly_role}"'
+    )
+    database.execute(
+        f'REVOKE ALL ON TABLE public.alembic_version FROM "{fact_writer_role}"'
+    )
 
 
 @pytest.fixture(scope="module")
@@ -363,6 +399,7 @@ def pg_database():
         writer_role = _validated_role_name("KG_TEST_VERIFICATION_WRITER_ROLE")
         worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
         audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
+        fact_writer_role = _validated_role_name("KG_TEST_HEALTH_FACT_WRITER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -371,6 +408,7 @@ def pg_database():
             writer_role,
             worker_role,
             audit_role,
+            fact_writer_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -474,6 +512,22 @@ def outbox_audit_database(pg_database):
         connected_role = database.fetch_value("SELECT current_user")
         if connected_role != _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE"):
             raise RuntimeError("outbox audit database URL role does not match KG_TEST_OUTBOX_AUDIT_ROLE")
+    return database
+
+
+@pytest.fixture(scope="module")
+def health_fact_writer_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_health_fact_writer_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        if connected_role != _validated_role_name(
+            "KG_TEST_HEALTH_FACT_WRITER_ROLE"
+        ):
+            raise RuntimeError(
+                "health fact writer database URL role does not match "
+                "KG_TEST_HEALTH_FACT_WRITER_ROLE"
+            )
     return database
 
 

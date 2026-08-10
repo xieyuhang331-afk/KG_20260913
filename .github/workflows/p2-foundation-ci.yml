@@ -155,6 +155,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import base64
+          import json
           import os
           import secrets
           from urllib.parse import quote
@@ -178,6 +179,7 @@ jobs:
               "KG_TEST_VERIFICATION_WRITER_ROLE": f"kg_ci_writer_{suffix}",
               "KG_TEST_DELIVERY_WORKER_ROLE": f"kg_ci_worker_{suffix}",
               "KG_TEST_OUTBOX_AUDIT_ROLE": f"kg_ci_audit_{suffix}",
+              "KG_TEST_HEALTH_FACT_WRITER_ROLE": f"kg_ci_fact_writer_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -205,6 +207,7 @@ jobs:
                   secrets.token_bytes(32)
               ).decode(),
               "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
+              "KG_HEALTH_FACT_DIGEST_CURRENT_KEY_ID": "ci-k2",
               "KG_RABBITMQ_CONTAINER_NAME": f"kg-reg-{rabbit_suffix}",
               "KG_RABBITMQ_NETWORK_NAME": f"kg-reg-{rabbit_suffix}-network",
               "KG_RABBITMQ_SENTINEL": f"kg-registration-disposable:{rabbit_suffix}",
@@ -214,6 +217,13 @@ jobs:
               "KG_CELERY_TEST_RESULT_BACKEND": "rpc",
               **roles,
           }
+          health_fact_keys = {
+              "ci-k1": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "ci-k2": base64.b64encode(secrets.token_bytes(32)).decode(),
+          }
+          values["KG_HEALTH_FACT_DIGEST_KEYRING_JSON"] = json.dumps(
+              health_fact_keys, separators=(",", ":"), sort_keys=True
+          )
           url_names = {
               "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
               "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
@@ -221,6 +231,7 @@ jobs:
               "KG_TEST_VERIFICATION_WRITER_DATABASE_URL": "KG_TEST_VERIFICATION_WRITER_ROLE",
               "KG_TEST_DELIVERY_WORKER_DATABASE_URL": "KG_TEST_DELIVERY_WORKER_ROLE",
               "KG_TEST_OUTBOX_AUDIT_DATABASE_URL": "KG_TEST_OUTBOX_AUDIT_ROLE",
+              "KG_TEST_HEALTH_FACT_WRITER_DATABASE_URL": "KG_TEST_HEALTH_FACT_WRITER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -242,11 +253,15 @@ jobs:
           values["KG_DELIVERY_WORKER_DATABASE_URL"] = values[
               "KG_TEST_DELIVERY_WORKER_DATABASE_URL"
           ]
+          values["KG_HEALTH_FACT_WRITER_DATABASE_URL"] = values[
+              "KG_TEST_HEALTH_FACT_WRITER_DATABASE_URL"
+          ]
           for value in (
               *values.values(),
               *passwords.values(),
               rabbit_user,
               rabbit_password,
+              *health_fact_keys.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
@@ -360,6 +375,8 @@ jobs:
             --set=worker_password="$KG_TEST_DELIVERY_WORKER_ROLE_PASSWORD" \
             --set=audit_role="$KG_TEST_OUTBOX_AUDIT_ROLE" \
             --set=audit_password="$KG_TEST_OUTBOX_AUDIT_ROLE_PASSWORD" \
+            --set=fact_writer_role="$KG_TEST_HEALTH_FACT_WRITER_ROLE" \
+            --set=fact_writer_password="$KG_TEST_HEALTH_FACT_WRITER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -368,6 +385,7 @@ jobs:
           CREATE ROLE :"writer_role" LOGIN PASSWORD :'writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"worker_role" LOGIN PASSWORD :'worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"audit_role" LOGIN PASSWORD :'audit_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"fact_writer_role" LOGIN PASSWORD :'fact_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";
@@ -435,7 +453,8 @@ jobs:
             --set=readonly_role="$KG_TEST_READONLY_ROLE" \
             --set=writer_role="$KG_TEST_VERIFICATION_WRITER_ROLE" \
             --set=worker_role="$KG_TEST_DELIVERY_WORKER_ROLE" \
-            --set=audit_role="$KG_TEST_OUTBOX_AUDIT_ROLE" <<'SQL'
+            --set=audit_role="$KG_TEST_OUTBOX_AUDIT_ROLE" \
+            --set=fact_writer_role="$KG_TEST_HEALTH_FACT_WRITER_ROLE" <<'SQL'
           ALTER ROLE :"migration_role" IN DATABASE :"database_name" RESET role;
           REVOKE :"ddl_owner_role" FROM :"migration_role";
           GRANT SELECT ON TABLE public.alembic_version TO :"migration_role";
@@ -486,6 +505,16 @@ jobs:
           GRANT SELECT ON TABLE public.identity_verification_submission TO :"readonly_role", :"writer_role", :"audit_role";
           GRANT UPDATE (status, decided_at, reviewed_by, decision_basis_code, evidence_digest, rejection_reason_code) ON TABLE public.identity_verification_submission TO :"writer_role";
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.identity_verification_submission FROM :"readonly_role", :"audit_role";
+
+          GRANT USAGE ON SCHEMA public TO :"fact_writer_role";
+          REVOKE CREATE ON SCHEMA public FROM :"fact_writer_role";
+          GRANT SELECT, INSERT ON TABLE public.canonical_health_fact, public.operation_log TO :"fact_writer_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.canonical_health_fact, public.operation_log FROM :"fact_writer_role";
+          GRANT USAGE, SELECT ON SEQUENCE public.canonical_health_fact_id_seq, public.operation_log_id_seq TO :"fact_writer_role";
+          REVOKE UPDATE ON SEQUENCE public.canonical_health_fact_id_seq, public.operation_log_id_seq FROM :"fact_writer_role";
+          REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.canonical_health_fact FROM :"application_role", :"readonly_role";
+          REVOKE ALL ON SEQUENCE public.canonical_health_fact_id_seq FROM :"application_role", :"readonly_role";
+          REVOKE ALL ON TABLE public.alembic_version FROM :"fact_writer_role";
           SQL
 
       - name: Run Outbox steady-state PostgreSQL contract
