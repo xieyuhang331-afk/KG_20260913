@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
-const roots = ["src/domains/platform"];
+const roots = ["src/domains/platform", "src/domains/organization"];
 const allowedExtensions = new Set([".ts", ".tsx"]);
 const forbiddenPatterns = [
   ["完整身份证号", /(?<!\d)\d{17}[0-9Xx](?!\w)/g],
@@ -13,6 +13,8 @@ const forbiddenPatterns = [
   ["测试快照", /\btoMatch(?:Inline)?Snapshot\s*\(/g],
   ["错误报告", /\b(?:captureException|captureMessage|reportError)\s*\(/g],
 ];
+const organizationProductionPiiPattern =
+  /\b(?:contact|phone|id_card|email|address|password|credit_code|license|legal_person)\b/g;
 
 const findings = [];
 
@@ -24,6 +26,11 @@ for (const root of roots) {
       pattern.lastIndex = 0;
       if (pattern.test(content)) findings.push(`${label}: ${file}`);
     }
+    const portableFile = file.replaceAll("\\", "/");
+    if (portableFile.includes("domains/organization") && !portableFile.endsWith(".test.tsx")) {
+      organizationProductionPiiPattern.lastIndex = 0;
+      if (organizationProductionPiiPattern.test(content)) findings.push(`组织PII字段: ${file}`);
+    }
   }
 }
 
@@ -32,7 +39,9 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log("PII scan passed: platform frontend source contains no forbidden identity values or token literals.");
+console.log(
+  "PII scan passed: platform and organization frontend source contains no forbidden sensitive values or token literals.",
+);
 
 async function listFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
