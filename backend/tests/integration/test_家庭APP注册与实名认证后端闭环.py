@@ -204,6 +204,21 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
             pytrace=False,
         )
     assert approved.json()["data"]["status"] == "verified", "STAGE_APPROVE_RESPONSE"
+    verified_status = real_db_client.get(
+        "/api/v1/users/me/identity-verification", headers=member_headers
+    )
+    _require_status(verified_status, 200, "STAGE_VERIFIED_STATUS_READ")
+    _require_equal(
+        verified_status.json()["data"]["status"],
+        "verified",
+        "STAGE_VERIFIED_STATUS_VALUE",
+    )
+    verified_resubmit = real_db_client.put(
+        "/api/v1/users/me/identity-verification",
+        json=_submission("verified-resubmit-must-fail"),
+        headers=member_headers,
+    )
+    _require_status(verified_resubmit, 403, "STAGE_VERIFIED_RESUBMIT_FORBIDDEN")
     assert application_database.fetch_value(
         "SELECT count(*) FROM public.identity_verification_submission "
         f"WHERE user_ref={user_id} AND status='verified'"
@@ -298,3 +313,86 @@ def test_Integration失败诊断只输出固定安全阶段() -> None:
     with pytest.raises(pytest.fail.Exception) as failure:
         _require_status(_Response(), 200, "STAGE_FIXED_SAFE_FAILURE")
     assert str(failure.value) == "STAGE_FIXED_SAFE_FAILURE"
+
+
+def test_旧JWT声明super_admin但reviewer数据库漂移时全路径fail_closed(
+    real_db_client, application_database
+) -> None:
+    reviewer_id = 94802
+    target = real_db_client.post(
+        "/api/v1/users/register",
+        json={"phone": "13800139803", "password": "Secret12345"},
+    )
+    _require_status(target, 200, "STAGE_CURRENTNESS_TARGET_REGISTER")
+    target_id = target.json()["data"]["id"]
+    submitted = real_db_client.put(
+        "/api/v1/users/me/identity-verification",
+        json=_submission("reviewer-currentness-target-v1"),
+        headers=_headers(target_id, "member"),
+    )
+    _require_status(submitted, 200, "STAGE_CURRENTNESS_TARGET_SUBMIT")
+
+    application_database.execute(
+        'INSERT INTO public."user" '
+        '(id, phone, password_hash, role, status, verify_status, created_at, updated_at) '
+        f"VALUES ({reviewer_id}, '13900094802', 'synthetic', 'super_admin', "
+        f"'active', 'verified', '{NOW.isoformat()}', '{NOW.isoformat()}')"
+    )
+    application_database.execute(
+        "INSERT INTO public.platform_org "
+        "(id, org_name, org_code, org_type, status, created_at, updated_at) "
+        f"VALUES (94811, 'synthetic-org', 'synthetic-org-94811', 'platform', "
+        f"'active', '{NOW.isoformat()}', '{NOW.isoformat()}')"
+    )
+    application_database.execute(
+        "INSERT INTO public.tenant "
+        "(id, org_id, tenant_code, name, type, province, city, status, created_at, updated_at) "
+        f"VALUES (94812, NULL, 'synthetic-tenant-94812', 'synthetic-tenant', "
+        f"'institution', 'synthetic', 'synthetic', 'active', "
+        f"'{NOW.isoformat()}', '{NOW.isoformat()}'), "
+        f"(94813, 94811, 'synthetic-tenant-94813', 'synthetic-org-tenant', "
+        f"'institution', 'synthetic', 'synthetic', 'active', "
+        f"'{NOW.isoformat()}', '{NOW.isoformat()}')"
+    )
+    stale_headers = _headers(reviewer_id, "super_admin")
+    invalid_states = (
+        ("disabled", "super_admin", "NULL"),
+        ("active", "province_admin", "NULL"),
+        ("active", "super_admin", "94812"),
+        ("active", "super_admin", "94813"),
+    )
+    for index, (status, role, tenant_id) in enumerate(invalid_states, start=1):
+        application_database.execute(
+            'UPDATE public."user" '
+            f"SET status='{status}', role='{role}', tenant_id={tenant_id}, "
+            f"updated_at='{NOW.isoformat()}' WHERE id={reviewer_id}"
+        )
+        responses = (
+            real_db_client.get(
+                "/api/v1/reviews/identity?status=submitted", headers=stale_headers
+            ),
+            real_db_client.get(
+                f"/api/v1/reviews/users/{target_id}/identity?purpose_code=MANUAL_REVIEW",
+                headers=stale_headers,
+            ),
+            real_db_client.post(
+                f"/api/v1/reviews/users/{target_id}/identity/reject",
+                headers=stale_headers,
+                json={
+                    "submission_version": 1,
+                    "idempotency_key": f"stale-reviewer-reject-{index}",
+                    "reason_code": "OFFLINE_CHECK_FAILED",
+                    "decided_at": NOW.isoformat().replace("+00:00", "Z"),
+                },
+            ),
+        )
+        for response in responses:
+            _require_status(response, 403, f"STAGE_CURRENTNESS_STATE_{index}")
+        assert application_database.fetch_value(
+            "SELECT status = 'submitted' FROM public.identity_verification_submission "
+            f"WHERE user_ref={target_id} AND version=1"
+        ), f"STAGE_CURRENTNESS_ZERO_REJECT_{index}"
+        assert application_database.fetch_value(
+            "SELECT count(*) FROM public.operation_log "
+            f"WHERE object_id={target_id} AND action='identity_sensitive_detail_read'"
+        ) == 0, f"STAGE_CURRENTNESS_ZERO_AUDIT_{index}"
