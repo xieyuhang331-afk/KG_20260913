@@ -25,9 +25,13 @@ class _Service:
 
 def _client(service):
     from app.main import create_app
-    from app.modules.review.api import get_platform_identity_submission_review_service
+    from app.modules.review.api import (
+        get_platform_identity_detail_service,
+        get_platform_identity_submission_review_service,
+    )
     app = create_app()
     app.dependency_overrides[get_platform_identity_submission_review_service] = lambda: service
+    app.dependency_overrides[get_platform_identity_detail_service] = lambda: service
     return TestClient(app)
 
 
@@ -44,7 +48,10 @@ def test_审核详情要求用途并仅允许super_admin() -> None:
     service = _Service()
     missing = _client(service).get("/api/v1/reviews/users/42/identity", headers=_headers())
     forbidden = _client(service).get("/api/v1/reviews/users/42/identity?purpose_code=MANUAL_REVIEW", headers=_headers("province_admin"))
-    allowed = _client(service).get("/api/v1/reviews/users/42/identity?purpose_code=MANUAL_REVIEW", headers=_headers())
+    allowed = _client(service).get(
+        "/api/v1/reviews/users/42/identity?purpose_code=MANUAL_REVIEW",
+        headers={**_headers(), "X-Identity-Review-Step-Up": "test-step-up"},
+    )
     assert missing.status_code == 422
     assert forbidden.status_code == 403
     assert allowed.status_code == 200

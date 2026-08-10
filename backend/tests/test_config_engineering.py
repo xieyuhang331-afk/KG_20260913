@@ -18,6 +18,7 @@ class BackendConfigEngineeringTests(unittest.TestCase):
                 "KG_DATABASE_USER",
                 "KG_DATABASE_PASSWORD",
                 "KG_JWT_SECRET_KEY",
+                "KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY",
             ]
         }
         os.environ["KG_DATABASE_PASSWORD"] = secrets.token_urlsafe(24)
@@ -91,6 +92,14 @@ class BackendConfigEngineeringTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "KG_JWT_SECRET_KEY"):
             get_settings()
+
+    def test_missing_step_up_secret_does_not_break_ordinary_app_settings(self):
+        from app.core.config import get_settings
+
+        os.environ.pop("KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY", None)
+        get_settings.cache_clear()
+
+        self.assertIsNone(get_settings().identity_review_step_up_secret_key)
 
     def test_request_id_header_is_added_to_health_response(self):
         from app.main import create_app
