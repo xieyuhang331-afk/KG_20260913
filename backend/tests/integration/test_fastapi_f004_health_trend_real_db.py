@@ -108,7 +108,7 @@ def _get_health_trend(
 
 
 def _assert_database_ready(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260809_0013"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260810_0014"
     assert pg_database.fetch_value(
         """
         SELECT hypertable_name
