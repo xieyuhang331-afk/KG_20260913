@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class TenantReviewQueueQuery(BaseModel):
@@ -106,28 +107,28 @@ class PlatformAdminManualIdentityReviewRequest(BaseModel):
         max_length=128,
         pattern=r"^\S(?:.*\S)?$",
     )
-    decided_at: datetime
-    evidence_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    submission_version: int | None = Field(default=None, ge=1)
-    decision_basis_code: str | None = Field(
-        default=None, pattern=r"^APPROVED_OFFLINE_IDENTITY_CHECK$"
-    )
-
-    @field_validator("decided_at")
-    @classmethod
-    def require_utc(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset().total_seconds() != 0:
-            raise ValueError("decided_at must be an aware UTC datetime")
-        return value
+    submission_version: int = Field(ge=1)
+    decision_basis_code: Literal["APPROVED_OFFLINE_IDENTITY_CHECK"]
 
 
 class PlatformAdminManualIdentityReviewResponse(BaseModel):
     user_id: int
+    submission_version: int
     status: str
-    verification_decision_ref: str
-    registration_event_id: str
-    authority_decision_key: str
+    decision_ref: str
     replayed: bool
+
+
+class PlatformIdentityReviewStepUpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: SecretStr = Field(min_length=1, max_length=256)
+
+
+class PlatformIdentityReviewStepUpResponse(BaseModel):
+    step_up_token: str
+    token_type: Literal["identity_review_step_up"] = "identity_review_step_up"
+    expires_in: Literal[120] = 120
 
 
 class IdentityReviewQueueItem(BaseModel):
@@ -182,15 +183,16 @@ class IdentityReviewRejectRequest(BaseModel):
 
     submission_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=8, max_length=128)
-    reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$")
-    decided_at: datetime
+    reason_code: Literal["OFFLINE_CHECK_FAILED"]
+    decided_at: datetime | None = None
 
-    @field_validator("decided_at")
-    @classmethod
-    def require_reject_utc(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset().total_seconds() != 0:
-            raise ValueError("decided_at must be an aware UTC datetime")
-        return value
+
+class PlatformIdentityReviewRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    submission_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    reason_code: Literal["OFFLINE_CHECK_FAILED"]
 
 
 class IdentityReviewRejectResponse(BaseModel):
@@ -198,3 +200,37 @@ class IdentityReviewRejectResponse(BaseModel):
     submission_version: int
     status: str
     replayed: bool
+
+
+class ReviewErrorResponse(BaseModel):
+    detail: str
+
+
+class PlatformIdentityReviewStepUpEnvelope(BaseModel):
+    code: Literal[0] = 0
+    message: Literal["ok"] = "ok"
+    data: PlatformIdentityReviewStepUpResponse
+
+
+class IdentityReviewQueueEnvelope(BaseModel):
+    code: Literal[0] = 0
+    message: Literal["ok"] = "ok"
+    data: IdentityReviewQueueResponse
+
+
+class IdentityReviewDetailEnvelope(BaseModel):
+    code: Literal[0] = 0
+    message: Literal["ok"] = "ok"
+    data: IdentityReviewDetailResponse
+
+
+class PlatformAdminManualIdentityReviewEnvelope(BaseModel):
+    code: Literal[0] = 0
+    message: Literal["ok"] = "ok"
+    data: PlatformAdminManualIdentityReviewResponse
+
+
+class IdentityReviewRejectEnvelope(BaseModel):
+    code: Literal[0] = 0
+    message: Literal["ok"] = "ok"
+    data: IdentityReviewRejectResponse

@@ -197,6 +197,7 @@ jobs:
               "KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"],
               "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY": secrets.token_urlsafe(64),
               "KG_IDENTITY_PII_KEK_B64": base64.b64encode(
                   secrets.token_bytes(32)
               ).decode(),
@@ -443,6 +444,7 @@ jobs:
           REVOKE CREATE ON SCHEMA public FROM :"application_role", :"readonly_role", :"writer_role", :"worker_role", :"audit_role";
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"application_role";
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"application_role";
+          REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.operation_log FROM :"application_role";
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO :"readonly_role";
           REVOKE INSERT, UPDATE, DELETE ON TABLE public.alembic_version FROM :"application_role";
           GRANT SELECT ON TABLE public.detection_report TO :"application_role", :"readonly_role";
@@ -534,6 +536,7 @@ jobs:
               "pii_kek": os.environ.get("KG_IDENTITY_PII_KEK_B64", ""),
               "pii_hmac": os.environ.get("KG_IDENTITY_PII_HMAC_KEY_B64", ""),
               "jwt_secret": os.environ.get("KG_JWT_SECRET_KEY", ""),
+              "step_up_secret": os.environ.get("KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY", ""),
               "database_password": os.environ.get("KG_DATABASE_PASSWORD", ""),
               "rabbitmq_password": os.environ.get("KG_RABBITMQ_PASSWORD", ""),
               "test_password": "Secret12345",

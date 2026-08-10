@@ -14,6 +14,38 @@ REVIEWER_ID = 94801
 CLASSIFICATION_ID = UUID("01890f3e-7b7d-7cc3-88c8-2f5a12d29801")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _enforce_step_up_operation_log_permissions(pg_database, application_database):
+    application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
+    pg_database.execute(
+        "REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
+        f'ON TABLE public.operation_log FROM "{application_role}"'
+    )
+    privileges = application_database.fetch_rows(
+        "SELECT "
+        "has_table_privilege(current_user, 'public.operation_log', 'SELECT') AS can_select, "
+        "has_table_privilege(current_user, 'public.operation_log', 'INSERT') AS can_insert, "
+        "has_sequence_privilege(current_user, 'public.operation_log_id_seq', 'USAGE') AS can_sequence, "
+        "has_table_privilege(current_user, 'public.operation_log', 'UPDATE') AS can_update, "
+        "has_table_privilege(current_user, 'public.operation_log', 'DELETE') AS can_delete, "
+        "has_table_privilege(current_user, 'public.operation_log', 'TRUNCATE') AS can_truncate, "
+        "has_table_privilege(current_user, 'public.operation_log', 'REFERENCES') AS can_references, "
+        "has_table_privilege(current_user, 'public.operation_log', 'TRIGGER') AS can_trigger, "
+        "pg_try_advisory_xact_lock(94801001) AS can_advisory_lock"
+    )[0]
+    assert privileges == {
+        "can_select": True,
+        "can_insert": True,
+        "can_sequence": True,
+        "can_update": False,
+        "can_delete": False,
+        "can_truncate": False,
+        "can_references": False,
+        "can_trigger": False,
+        "can_advisory_lock": True,
+    }, "STAGE_STEP_UP_PERMISSION_PREFLIGHT"
+
+
 @pytest.fixture(autouse=True)
 def _bind_isolated_runtime_urls(monkeypatch):
     aliases = {
@@ -85,12 +117,15 @@ def _require_absent(text: str, forbidden: str, stage: str) -> None:
 
 
 def _seed_reviewer_and_classification(pg_database, user_id: int) -> None:
+    from app.modules.auth.service import hash_password
+
+    reviewer_password_hash = hash_password("Secret12345")
     _stage_call(
         "STAGE_SEED_REVIEWER",
         lambda: pg_database.execute(
             'INSERT INTO public."user" '
             '(id, phone, password_hash, role, status, verify_status, created_at, updated_at) '
-            f"VALUES ({REVIEWER_ID}, '13900094801', 'synthetic', 'super_admin', "
+            f"VALUES ({REVIEWER_ID}, '13900094801', '{reviewer_password_hash}', 'super_admin', "
             f"'active', 'verified', '{NOW.isoformat()}', '{NOW.isoformat()}')"
         ),
     )
@@ -103,6 +138,20 @@ def _seed_reviewer_and_classification(pg_database, user_id: int) -> None:
             f"'trusted_provisioning', '{NOW.isoformat()}')"
         ),
     )
+
+
+def _step_up_headers(real_db_client, admin_headers, user_id: int) -> dict[str, str]:
+    response = _stage_call(
+        "STAGE_STEP_UP_CALL",
+        lambda: real_db_client.post(
+            f"/api/v1/reviews/users/{user_id}/identity/step-up",
+            headers=admin_headers,
+            json={"password": "Secret12345"},
+        ),
+    )
+    _require_status(response, 200, "STAGE_STEP_UP_STATUS")
+    token = response.json()["data"]["step_up_token"]
+    return {**admin_headers, "X-Identity-Review-Step-Up": token}
 
 
 async def _dispatch_once():
@@ -167,11 +216,12 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
     assert any(item["user_id"] == user_id for item in queue.json()["data"]["items"]), "STAGE_QUEUE_MEMBER"
     _require_absent(queue.text, _submission()["id_card"], "STAGE_QUEUE_REDACTION")
 
+    detail_headers = _step_up_headers(real_db_client, admin_headers, user_id)
     detail = _stage_call(
         "STAGE_DETAIL_CALL",
         lambda: real_db_client.get(
             f"/api/v1/reviews/users/{user_id}/identity?purpose_code=MANUAL_REVIEW",
-            headers=admin_headers,
+            headers=detail_headers,
         ),
     )
     _require_status(detail, 200, "STAGE_DETAIL_STATUS")
@@ -190,7 +240,6 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
                 "idempotency_key": "manual-offline-review-v1",
                 "submission_version": 1,
                 "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
-                "decided_at": NOW.isoformat().replace("+00:00", "Z"),
             },
         ),
     )
@@ -199,8 +248,19 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
             "SELECT count(*) = 1 FROM public.registration_verified_outbox "
             f"WHERE source_ref={user_id}"
         )
+        safe_status = {
+            403: "FORBIDDEN",
+            404: "NOT_FOUND",
+            409: "CONFLICT",
+            422: "INVALID_CONTRACT",
+            503: "UNAVAILABLE",
+        }.get(approved.status_code, "OTHER")
         pytest.fail(
-            "STAGE_APPROVE_AFTER_WRITER" if outbox_exists else "STAGE_APPROVE_BEFORE_WRITER",
+            (
+                f"STAGE_APPROVE_AFTER_WRITER_{safe_status}"
+                if outbox_exists
+                else f"STAGE_APPROVE_BEFORE_WRITER_{safe_status}"
+            ),
             pytrace=False,
         )
     assert approved.json()["data"]["status"] == "verified", "STAGE_APPROVE_RESPONSE"
@@ -290,7 +350,6 @@ def test_拒绝冷却期和权限矩阵保持fail_closed(
             json={
                 "submission_version": 1, "idempotency_key": "reject-second-user-v1",
                 "reason_code": "OFFLINE_CHECK_FAILED",
-                "decided_at": NOW.isoformat().replace("+00:00", "Z"),
             },
         ),
     )
@@ -301,7 +360,10 @@ def test_拒绝冷却期和权限矩阵保持fail_closed(
     _require_status(cooldown, 429, "STAGE_COOLDOWN")
     forbidden_detail = real_db_client.get(
         f"/api/v1/reviews/users/{user_id}/identity?purpose_code=MANUAL_REVIEW",
-        headers=_headers(user_id, "member"),
+        headers={
+            **_headers(user_id, "member"),
+            "X-Identity-Review-Step-Up": "invalid",
+        },
     )
     _require_status(forbidden_detail, 403, "STAGE_FORBIDDEN_DETAIL")
 
@@ -373,7 +435,10 @@ def test_旧JWT声明super_admin但reviewer数据库漂移时全路径fail_close
             ),
             real_db_client.get(
                 f"/api/v1/reviews/users/{target_id}/identity?purpose_code=MANUAL_REVIEW",
-                headers=stale_headers,
+                headers={
+                    **stale_headers,
+                    "X-Identity-Review-Step-Up": "invalid",
+                },
             ),
             real_db_client.post(
                 f"/api/v1/reviews/users/{target_id}/identity/reject",
@@ -382,7 +447,6 @@ def test_旧JWT声明super_admin但reviewer数据库漂移时全路径fail_close
                     "submission_version": 1,
                     "idempotency_key": f"stale-reviewer-reject-{index}",
                     "reason_code": "OFFLINE_CHECK_FAILED",
-                    "decided_at": NOW.isoformat().replace("+00:00", "Z"),
                 },
             ),
         )

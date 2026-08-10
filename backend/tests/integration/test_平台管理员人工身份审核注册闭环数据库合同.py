@@ -10,6 +10,7 @@ pytestmark = pytest.mark.integration
 REVIEWER_REF = 92401
 USER_REF = 92402
 CLASSIFICATION_REF = UUID("01890f3e-7b7d-7cc3-88c8-2f5a12d29401")
+SUBMISSION_REF = UUID("01890f3e-7b7d-7cc3-88c8-2f5a12d29402")
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
 
 
@@ -31,6 +32,19 @@ def _seed(pg_database):
         f"'active', 'verified', '{NOW.isoformat()}', '{NOW.isoformat()}'), "
         f"({USER_REF}, '13900092402', 'synthetic', 'member', "
         f"'active', 'pending', '{NOW.isoformat()}', '{NOW.isoformat()}')"
+    )
+    pg_database.execute(
+        "INSERT INTO public.identity_verification_submission "
+        "(submission_id, user_ref, version, status, real_name_ciphertext, "
+        "real_name_nonce, id_card_ciphertext, id_card_nonce, id_card_masked, "
+        "encryption_key_id, content_digest, id_card_digest, "
+        "idempotency_key_digest, consent_version, submitted_at) VALUES "
+        f"('{SUBMISSION_REF}', {USER_REF}, 1, 'submitted', "
+        "decode('01', 'hex'), decode('000000000000000000000001', 'hex'), "
+        "decode('02', 'hex'), decode('000000000000000000000002', 'hex'), "
+        "'110101********1234', 'ci-contract-key', "
+        f"'{'c' * 64}', '{'d' * 64}', '{'e' * 64}', "
+        f"'identity-consent-v1', '{NOW.isoformat()}')"
     )
     pg_database.execute(
         "INSERT INTO public.user_account_classification_decision "
@@ -59,8 +73,8 @@ def test_平台人工审核经持久发件箱完成注册闭环且稳定重放(
     _seed(pg_database)
     payload = {
         "idempotency_key": "platform-manual-review-92402-v1",
-        "decided_at": NOW.isoformat().replace("+00:00", "Z"),
-        "evidence_digest": "a" * 64,
+        "submission_version": 1,
+        "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
     }
 
     created = real_db_client.post(
@@ -85,9 +99,7 @@ def test_平台人工审核经持久发件箱完成注册闭环且稳定重放(
     assert replayed.status_code == 200
     replayed_result = replayed.json()["data"]
     assert replayed_result["replayed"] is True
-    assert replayed_result["registration_event_id"] == created_result[
-        "registration_event_id"
-    ]
+    assert replayed_result["decision_ref"] == created_result["decision_ref"]
 
     counts = pg_database.fetch_rows(
         "SELECT "
@@ -126,8 +138,8 @@ def test_无权角色在WriterSession创建前拒绝(
         headers=_headers(reviewer_ref, role),
         json={
             "idempotency_key": "forbidden-review",
-            "decided_at": NOW.isoformat().replace("+00:00", "Z"),
-            "evidence_digest": "b" * 64,
+            "submission_version": 1,
+            "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
         },
     )
     assert response.status_code == 403
@@ -143,8 +155,8 @@ def test_自我审核由应用服务拒绝且不产生数据库写入(real_db_cl
         headers=_headers(USER_REF, "super_admin"),
         json={
             "idempotency_key": "self-review",
-            "decided_at": NOW.isoformat().replace("+00:00", "Z"),
-            "evidence_digest": "b" * 64,
+            "submission_version": 1,
+            "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
         },
     )
     assert response.status_code == 403

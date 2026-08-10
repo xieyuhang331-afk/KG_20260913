@@ -895,6 +895,32 @@ def test_backend_integration_runtime_secrets_and_database_targets_are_masked():
     assert violations == []
 
 
+def test_StepUp独立Secret仅在DisposableIntegration生成并先脱敏():
+    backend_unit_job = _workflow_job_block("backend-unit")
+    backend_integration_job = _workflow_job_block("backend-integration")
+    secret_name = "KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY"
+
+    assert secret_name not in backend_unit_job
+    assert backend_integration_job.count(f'"{secret_name}": secrets.token_urlsafe(64)') == 1
+    assert f'os.environ.get("{secret_name}", "")' in backend_integration_job
+    assert backend_integration_job.index(f'"{secret_name}": secrets.token_urlsafe(64)') < backend_integration_job.index(
+        'print(f"::add-mask::{value}")'
+    ) < backend_integration_job.index("GITHUB_ENV")
+
+
+def test_StepUp消费事实权限在CI精确收紧且进入JUnit泄漏扫描():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    revoke = (
+        "REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "
+        "public.operation_log FROM :\"application_role\";"
+    )
+
+    assert backend_integration_job.count(revoke) == 1
+    assert '"step_up_secret": os.environ.get("KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY", "")' in backend_integration_job
+    assert "GRANT UPDATE ON TABLE public.operation_log" not in backend_integration_job
+    assert "GRANT DELETE ON TABLE public.operation_log" not in backend_integration_job
+
+
 def test_VerificationWriterRuntimeURL只在DisposableIntegration注入且先脱敏():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     backend_unit_job = _workflow_job_block("backend-unit")
