@@ -11,6 +11,11 @@ export const platformNavigation: PlatformNavigationItem[] = [
   { label: "首页", path: "/platform/home" },
   { label: "入驻审核", path: "/platform/stores/reviews" },
   {
+    label: "组织治理",
+    path: "/platform/organizations",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin],
+  },
+  {
     label: "实名审核",
     path: "/platform/identity-reviews",
     roles: [USER_ROLES.superAdmin],

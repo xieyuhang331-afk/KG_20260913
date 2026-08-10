@@ -8,6 +8,7 @@ const navigationIcons: Record<string, ReactNode> = {
   首页: <LayoutDashboard size={16} />,
   入驻审核: <ClipboardCheck size={16} />,
   实名审核: <BadgeCheck size={16} />,
+  组织治理: <Building2 size={16} />,
 };
 
 export function PlatformShell() {

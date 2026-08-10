@@ -6,6 +6,7 @@ import { TenantReviewDetailPage } from "./pages/TenantReviewDetailPage";
 import { TenantReviewListPage } from "./pages/TenantReviewListPage";
 import { IdentityReviewListPage } from "./pages/实名认证审核列表页";
 import { IdentityReviewDetailPage } from "./pages/实名认证审核详情页";
+import { PlatformOrganizationPage } from "@/domains/organization/pages/平台组织治理页";
 
 export const platformRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -13,6 +14,13 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
     { path: "home", element: <PlatformHomePage /> },
     { path: "stores/reviews", element: <TenantReviewListPage /> },
     { path: "stores/reviews/:tenantId", element: <TenantReviewDetailPage /> },
+    {
+      element: <ProtectedRoute roles={[USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin]} />,
+      children: [
+        { path: "organizations", element: <PlatformOrganizationPage /> },
+        { path: "organizations/:organizationId", element: <PlatformOrganizationPage /> },
+      ],
+    },
     {
       element: <ProtectedRoute roles={[USER_ROLES.superAdmin]} />,
       children: [
