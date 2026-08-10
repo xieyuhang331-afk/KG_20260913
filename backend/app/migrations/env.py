@@ -15,6 +15,7 @@ from app.modules.auth.registration_outbox_models import (  # noqa: F401
 from app.modules.auth.identity_submission_models import (  # noqa: F401
     IdentityVerificationSubmissionOrmModel,
 )
+from app.modules.health_fact.models import CanonicalHealthFactOrmModel  # noqa: F401
 from app.modules.member.infrastructure.models import MemberOrmModel  # noqa: F401
 from app.modules.models import import_core_models
 from sqlalchemy import pool

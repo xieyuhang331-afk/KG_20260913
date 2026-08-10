@@ -117,4 +117,3 @@ class CanonicalHealthFactOrmModel(Base):
     )
     correction_reason_code: Mapped[str | None] = mapped_column(String(64))
     created_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("user.id"))
-
