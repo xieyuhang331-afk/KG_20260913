@@ -27,6 +27,7 @@ IDENTITY_TABLES = {
     "public.registration_verified_outbox",
     "public.user_account_classification_decision",
 }
+CANONICAL_HEALTH_FACT_TABLES = {"public.canonical_health_fact"}
 
 
 def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
@@ -56,4 +57,4 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
     assert IDENTITY_TABLES <= registered_tables, (
         "Alembic target_metadata is missing an approved identity table"
     )
-    assert registered_tables == CORE_TABLES | IDENTITY_TABLES
+    assert registered_tables == CORE_TABLES | IDENTITY_TABLES | CANONICAL_HEALTH_FACT_TABLES

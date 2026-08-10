@@ -8,12 +8,14 @@ def import_core_models():
     from app.modules.system import models as system_models
     from app.modules.tenant import models as tenant_models
     from app.modules.user_health import models as user_health_models
+    from app.modules.health_fact import models as health_fact_models
 
     return {
         "auth": auth_models,
         "tenant": tenant_models,
         "user_health": user_health_models,
         "system": system_models,
+        "health_fact": health_fact_models,
         "specs": get_core_table_specs(),
     }
 

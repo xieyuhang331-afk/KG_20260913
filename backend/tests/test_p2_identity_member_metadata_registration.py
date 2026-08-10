@@ -29,6 +29,7 @@ IDENTITY_BOOTSTRAP_TABLES = {
     "identity.user_member_self_link",
     "identity.registration_bootstrap_record",
 }
+CANONICAL_HEALTH_FACT_TABLE = "public.canonical_health_fact"
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -64,4 +65,6 @@ def test_alembic_target_metadata_registers_identity_member():
         MEMBER_NO_ALLOCATION_TABLE,
         REGISTRATION_OUTBOX_TABLE,
         IDENTITY_SUBMISSION_TABLE,
-    } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES
+    } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
+        CANONICAL_HEALTH_FACT_TABLE
+    }
