@@ -6,11 +6,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260811_0015"
+EXPECTED_HEAD = "20260812_0016"
 STALE_HEAD = "20260807_0010"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260811_0015; found stale revision 20260810_0014"
+    "20260812_0016; found stale revision 20260811_0015"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -703,6 +703,22 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv(
             "KG_TEST_HEALTH_FACT_WRITER_ROLE",
             "kg_ci_fact_writer_test_run",
+        )
+        monkeypatch.setenv(
+            "KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE",
+            "kg_ci_org_map_test_run",
+        )
+        monkeypatch.setenv(
+            "KG_TEST_HEALTH_MAPPING_WRITER_ROLE",
+            "kg_ci_health_map_test_run",
+        )
+        monkeypatch.setenv(
+            "KG_TEST_MAPPING_AUDIT_ROLE",
+            "kg_ci_map_audit_test_run",
+        )
+        monkeypatch.setenv(
+            "KG_TEST_MAPPING_SHADOW_ROLE",
+            "kg_ci_map_shadow_test_run",
         )
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
