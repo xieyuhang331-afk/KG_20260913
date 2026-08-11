@@ -149,7 +149,7 @@
         </testcase>
         <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; keeps P1 platform and institution routes renderable" time="0.0311979">
             <system-err>
-Warning: Invalid value for prop `action` on &lt;form&gt; tag. Either remove it from the element, or pass a string or number value to keep it in the DOM. For details, see https://reactjs.org/link/attribute-behavior 
+Warning: Invalid value for prop `action` on &lt;form&gt; tag. Either remove it from the element, or pass a string or number value to keep it in the DOM. For details, see https://reactjs.org/link/attribute-behavior
     at form
     at div
     at TenantReviewListPage (E:/nas/JR/SynologyDrive/KG_康邻/研发/平台/工作树/组织前端原型对齐V1/frontend/src/domains/platform/pages/TenantReviewListPage.tsx:9:84)
