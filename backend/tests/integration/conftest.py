@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260811_0015"
+REQUIRED_HEAD_REVISION = "20260812_0016"
 
 
 def pytest_configure(config):
@@ -78,6 +78,22 @@ def _get_outbox_audit_database_url() -> str:
 
 def _get_health_fact_writer_database_url() -> str:
     return _get_role_database_url("KG_TEST_HEALTH_FACT_WRITER_DATABASE_URL")
+
+
+def _get_organization_mapping_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_ORGANIZATION_MAPPING_WRITER_DATABASE_URL")
+
+
+def _get_health_mapping_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_MAPPING_WRITER_DATABASE_URL")
+
+
+def _get_mapping_audit_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MAPPING_AUDIT_DATABASE_URL")
+
+
+def _get_mapping_shadow_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MAPPING_SHADOW_DATABASE_URL")
 
 
 def _get_role_database_url(environment_name: str) -> str:
@@ -290,6 +306,10 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
     audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
     fact_writer_role = _validated_role_name("KG_TEST_HEALTH_FACT_WRITER_ROLE")
+    organization_mapping_role = _validated_role_name("KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE")
+    health_mapping_role = _validated_role_name("KG_TEST_HEALTH_MAPPING_WRITER_ROLE")
+    mapping_audit_role = _validated_role_name("KG_TEST_MAPPING_AUDIT_ROLE")
+    mapping_shadow_role = _validated_role_name("KG_TEST_MAPPING_SHADOW_ROLE")
     runtime_roles = (writer_role, worker_role, audit_role)
     for role in runtime_roles:
         database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
@@ -382,6 +402,77 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(
         f'REVOKE ALL ON TABLE public.alembic_version FROM "{fact_writer_role}"'
     )
+    mapping_tables = "public.organization_legacy_mapping, public.health_indicator_legacy_mapping"
+    for role in (organization_mapping_role, health_mapping_role, mapping_audit_role, mapping_shadow_role):
+        database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+        database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{role}"')
+        database.execute(f'REVOKE ALL ON TABLE public.alembic_version FROM "{role}"')
+    database.execute(
+        'GRANT SELECT (id, org_id, status) ON TABLE public.tenant '
+        f'TO "{organization_mapping_role}"'
+    )
+    database.execute(
+        'GRANT SELECT (id, parent_id, org_type, status, version) ON TABLE public.platform_org '
+        f'TO "{organization_mapping_role}"'
+    )
+    database.execute(
+        'GRANT SELECT, INSERT ON TABLE public.organization_legacy_mapping, public.operation_log '
+        f'TO "{organization_mapping_role}"'
+    )
+    database.execute(
+        'GRANT USAGE, SELECT ON SEQUENCE public.organization_legacy_mapping_id_seq, '
+        f'public.operation_log_id_seq TO "{organization_mapping_role}"'
+    )
+    database.execute(
+        'GRANT SELECT (id, user_id, indicator_type, value, unit, source, recorded_at, created_at, batch_id) '
+        f'ON TABLE public.health_indicator TO "{health_mapping_role}", "{mapping_shadow_role}"'
+    )
+    database.execute(
+        'GRANT SELECT, INSERT ON TABLE public.health_indicator_legacy_mapping, '
+        f'public.canonical_health_fact, public.operation_log TO "{health_mapping_role}"'
+    )
+    database.execute(
+        'GRANT USAGE, SELECT ON SEQUENCE public.health_indicator_legacy_mapping_id_seq, '
+        f'public.canonical_health_fact_id_seq, public.operation_log_id_seq TO "{health_mapping_role}"'
+    )
+    database.execute(
+        f'GRANT SELECT ON TABLE {mapping_tables}, public.operation_log TO "{mapping_audit_role}"'
+    )
+    database.execute(
+        f'GRANT SELECT ON TABLE {mapping_tables} TO "{mapping_shadow_role}"'
+    )
+    database.execute(
+        'GRANT SELECT (id, subject_user_id, indicator_code, numeric_value, unit, '
+        'measured_at, source_type, producer_event_key, received_at) '
+        f'ON TABLE public.canonical_health_fact TO "{mapping_shadow_role}"'
+    )
+    database.execute(
+        'GRANT SELECT (id, org_id, status) ON TABLE public.tenant '
+        f'TO "{mapping_shadow_role}"'
+    )
+    database.execute(
+        'GRANT SELECT (id, parent_id, org_type, status, version) ON TABLE public.platform_org '
+        f'TO "{mapping_shadow_role}"'
+    )
+    for role in (organization_mapping_role, health_mapping_role):
+        database.execute(
+            f'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {mapping_tables}, '
+            f'public.canonical_health_fact, public.operation_log FROM "{role}"'
+        )
+    for role in (mapping_audit_role, mapping_shadow_role):
+        database.execute(
+            f'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {mapping_tables}, '
+            f'public.canonical_health_fact, public.operation_log FROM "{role}"'
+        )
+        database.execute(
+            'REVOKE ALL ON SEQUENCE public.organization_legacy_mapping_id_seq, '
+            'public.health_indicator_legacy_mapping_id_seq, public.canonical_health_fact_id_seq, '
+            f'public.operation_log_id_seq FROM "{role}"'
+        )
+    database.execute(
+        f'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {mapping_tables} '
+        f'FROM "{application_role}", "{readonly_role}", "{fact_writer_role}"'
+    )
 
 
 @pytest.fixture(scope="module")
@@ -400,6 +491,10 @@ def pg_database():
         worker_role = _validated_role_name("KG_TEST_DELIVERY_WORKER_ROLE")
         audit_role = _validated_role_name("KG_TEST_OUTBOX_AUDIT_ROLE")
         fact_writer_role = _validated_role_name("KG_TEST_HEALTH_FACT_WRITER_ROLE")
+        organization_mapping_role = _validated_role_name("KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE")
+        health_mapping_role = _validated_role_name("KG_TEST_HEALTH_MAPPING_WRITER_ROLE")
+        mapping_audit_role = _validated_role_name("KG_TEST_MAPPING_AUDIT_ROLE")
+        mapping_shadow_role = _validated_role_name("KG_TEST_MAPPING_SHADOW_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -409,6 +504,10 @@ def pg_database():
             worker_role,
             audit_role,
             fact_writer_role,
+            organization_mapping_role,
+            health_mapping_role,
+            mapping_audit_role,
+            mapping_shadow_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -529,6 +628,36 @@ def health_fact_writer_database(pg_database):
                 "KG_TEST_HEALTH_FACT_WRITER_ROLE"
             )
     return database
+
+
+@pytest.fixture(scope="module")
+def organization_mapping_writer_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_organization_mapping_writer_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1" and database.fetch_value("SELECT current_user") != _validated_role_name("KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE"):
+        raise RuntimeError("organization mapping writer database role mismatch")
+    return database
+
+
+@pytest.fixture(scope="module")
+def health_mapping_writer_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_health_mapping_writer_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1" and database.fetch_value("SELECT current_user") != _validated_role_name("KG_TEST_HEALTH_MAPPING_WRITER_ROLE"):
+        raise RuntimeError("health mapping writer database role mismatch")
+    return database
+
+
+@pytest.fixture(scope="module")
+def mapping_audit_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_mapping_audit_database_url())
+
+
+@pytest.fixture(scope="module")
+def mapping_shadow_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_mapping_shadow_database_url())
 
 
 @pytest.fixture

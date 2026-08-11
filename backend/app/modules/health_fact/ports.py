@@ -18,6 +18,10 @@ class HealthFactIndicatorCatalogPort(Protocol):
 class HealthFactWriterPort(Protocol):
     async def write(self, draft: CanonicalHealthFactDraft) -> Any: ...
 
+    async def append_in_uow(
+        self, draft: CanonicalHealthFactDraft, *, repository: "HealthFactRepositoryPort"
+    ) -> Any: ...
+
 
 class HealthFactReaderPort(Protocol):
     async def get_by_id(self, fact_id: int) -> CanonicalHealthFact | None: ...

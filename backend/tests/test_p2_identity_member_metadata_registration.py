@@ -30,6 +30,10 @@ IDENTITY_BOOTSTRAP_TABLES = {
     "identity.registration_bootstrap_record",
 }
 CANONICAL_HEALTH_FACT_TABLE = "public.canonical_health_fact"
+LEGACY_MAPPING_TABLES = {
+    "public.organization_legacy_mapping",
+    "public.health_indicator_legacy_mapping",
+}
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -67,4 +71,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
     } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
         CANONICAL_HEALTH_FACT_TABLE
-    }
+    } | LEGACY_MAPPING_TABLES

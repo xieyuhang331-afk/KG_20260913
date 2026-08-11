@@ -156,10 +156,8 @@ class CanonicalHealthFactWriter:
                     if (
                         predecessor is None
                         or successor is not None
-                        or predecessor.subject_user_id
-                        != authorized.subject_user_id
-                        or predecessor.indicator_code
-                        != authorized.indicator_code
+                        or predecessor.subject_user_id != authorized.subject_user_id
+                        or predecessor.indicator_code != authorized.indicator_code
                     ):
                         raise HealthFactCorrectionConflict(
                             "Health fact correction conflict"
@@ -178,6 +176,80 @@ class CanonicalHealthFactWriter:
         except HealthFactCommitOutcomeUnknown:
             await self._confirm_outcome(authorized)
             raise
+
+    async def append_in_uow(
+        self, draft: CanonicalHealthFactDraft, *, repository
+    ) -> HealthFactWriteResult:
+        """Append using a caller-owned transaction; never commit or rollback."""
+        authorized = await self._authorize(draft)
+        return await self._append_authorized(authorized, repository=repository)
+
+    async def _authorize(
+        self, draft: CanonicalHealthFactDraft
+    ) -> CanonicalHealthFactDraft:
+        authority_failed = False
+        authorized = None
+        try:
+            authorized = await self._producer_authority.authorize(draft)
+        except HealthFactError:
+            raise
+        except Exception:
+            authority_failed = True
+        if authority_failed:
+            raise HealthFactSourceForbidden("Health fact source is forbidden")
+        if not isinstance(authorized, CanonicalHealthFactDraft):
+            raise HealthFactSourceForbidden("Health fact source is forbidden")
+        return authorized
+
+    async def _append_authorized(
+        self, authorized: CanonicalHealthFactDraft, *, repository
+    ) -> HealthFactWriteResult:
+        prepared = prepare_fact(authorized, self._keyring)
+        await repository.acquire_semantic_lock(
+            semantic_lock_key(
+                source_type=authorized.source_type,
+                producer_event_key=authorized.producer_event_key,
+            )
+        )
+        digests = source_identity_digests(
+            source_identity=authorized.source_identity,
+            keyring=self._keyring,
+        )
+        existing = await repository.find_by_semantic_identity(
+            source_type=authorized.source_type,
+            producer_event_key=authorized.producer_event_key,
+            source_identity_digests=tuple(digests.values()),
+        )
+        if existing is not None:
+            if not verify_payload(
+                stored=existing, draft=authorized, keyring=self._keyring
+            ):
+                raise HealthFactIdempotencyConflict(
+                    "Health fact idempotency conflict"
+                )
+            return HealthFactWriteResult(existing, "REPLAYED")
+        if authorized.supersedes_fact_id is not None:
+            predecessor = await repository.get_by_id(authorized.supersedes_fact_id)
+            successor = await repository.get_successor(authorized.supersedes_fact_id)
+            if (
+                predecessor is None
+                or successor is not None
+                or predecessor.subject_user_id != authorized.subject_user_id
+                or predecessor.indicator_code != authorized.indicator_code
+            ):
+                raise HealthFactCorrectionConflict(
+                    "Health fact correction conflict"
+                )
+        stored = await repository.add(prepared)
+        await repository.add_audit(
+            fact=stored,
+            action=(
+                "fact_corrected"
+                if authorized.supersedes_fact_id is not None
+                else "fact_appended"
+            ),
+        )
+        return HealthFactWriteResult(stored, "CREATED")
 
     async def _confirm_outcome(self, draft: CanonicalHealthFactDraft) -> bool:
         try:

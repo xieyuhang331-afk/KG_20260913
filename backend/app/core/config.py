@@ -27,6 +27,10 @@ class Settings(BaseModel):
     health_fact_writer_database_url: str | None = None
     health_fact_digest_current_key_id: str | None = None
     health_fact_digest_keyring_json: str | None = None
+    organization_mapping_writer_database_url: str | None = None
+    health_mapping_writer_database_url: str | None = None
+    organization_mapping_digest_current_key_id: str | None = None
+    organization_mapping_digest_keyring_json: str | None = None
     identity_pii_kek_b64: str | None = None
     identity_pii_hmac_key_b64: str | None = None
     identity_pii_key_id: str | None = None
@@ -67,6 +71,18 @@ def get_settings() -> Settings:
         ),
         health_fact_digest_keyring_json=os.getenv(
             "KG_HEALTH_FACT_DIGEST_KEYRING_JSON"
+        ),
+        organization_mapping_writer_database_url=os.getenv(
+            "KG_ORGANIZATION_MAPPING_WRITER_DATABASE_URL"
+        ),
+        health_mapping_writer_database_url=os.getenv(
+            "KG_HEALTH_MAPPING_WRITER_DATABASE_URL"
+        ),
+        organization_mapping_digest_current_key_id=os.getenv(
+            "KG_ORGANIZATION_MAPPING_DIGEST_CURRENT_KEY_ID"
+        ),
+        organization_mapping_digest_keyring_json=os.getenv(
+            "KG_ORGANIZATION_MAPPING_DIGEST_KEYRING_JSON"
         ),
         identity_pii_kek_b64=os.getenv("KG_IDENTITY_PII_KEK_B64"),
         identity_pii_hmac_key_b64=os.getenv("KG_IDENTITY_PII_HMAC_KEY_B64"),
