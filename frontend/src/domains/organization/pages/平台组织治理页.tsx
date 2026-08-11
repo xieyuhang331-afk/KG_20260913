@@ -1,5 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, RotateCw } from "lucide-react";
+import {
+  Archive,
+  Building2,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  Landmark,
+  Map as MapIcon,
+  MapPin,
+  Network,
+  RotateCw,
+  Store,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { isApiError } from "@/shared/api/errors";
@@ -149,6 +161,11 @@ export function PlatformOrganizationPage() {
     setCandidateError(null);
   }
 
+  function openGovernancePanel(nextPanel: "create" | "edit" | "order") {
+    clearCandidateState();
+    setPanel(nextPanel);
+  }
+
   if (treeQuery.isLoading) return <PageMessage>正在加载组织治理树...</PageMessage>;
   if (treeQuery.isError) {
     return <PageError error={treeQuery.error} onRetry={() => void treeQuery.refetch()} />;
@@ -162,18 +179,25 @@ export function PlatformOrganizationPage() {
   }
 
   return (
-    <div className="space-y-5">
-      <header className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-pine">Organization Foundation</p>
-            <h1 className="mt-2 text-2xl font-semibold text-ink">组织治理树</h1>
-            <p className="mt-2 text-sm text-slate-500">总部、省、市、县四级治理树；tenant 仍是门店经营主体。</p>
+    <div className="space-y-4">
+      <header className="flex flex-wrap items-start justify-between gap-4 py-1">
+        <div>
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+            <Network aria-hidden="true" size={14} />
+            总部、省、市、区/县四级治理树
           </div>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">组织架构管理</h1>
+          <p className="mt-1 text-sm text-slate-500">选择组织节点，查看归属门店并执行允许的治理操作。</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="rounded-full bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-700 ring-1 ring-teal-200">
+            真实接口
+          </span>
           {isSuperAdmin ? (
-            <label className="flex items-center gap-2 text-sm text-slate-600">
+            <label className="flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 shadow-sm">
               <input
                 checked={includeArchived}
+                className="h-4 w-4 accent-teal-600"
                 onChange={(event) => {
                   clearCandidateState();
                   setPanel(null);
@@ -188,20 +212,32 @@ export function PlatformOrganizationPage() {
       </header>
 
       {notice ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{notice}</div>
+        <div
+          className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+          role="status"
+        >
+          <CircleAlert aria-hidden="true" className="mt-0.5 shrink-0" size={16} />
+          {notice}
+        </div>
       ) : null}
 
-      <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-3 font-semibold text-ink">四级组织树</h2>
-          <div className="space-y-1">
+      <div className="grid items-start gap-4 min-[1180px]:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel min-[1180px]:sticky min-[1180px]:top-24">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-950">组织树</h2>
+            <p className="mt-0.5 text-xs text-slate-400">总部 / 省 / 市 / 区/县</p>
+          </div>
+          <nav
+            className="max-h-[62vh] space-y-0.5 overflow-y-auto p-3 min-[1180px]:max-h-[calc(100vh-12rem)]"
+            aria-label="四级组织树"
+          >
             {treeQuery.data.map((node) => (
               <TreeBranch key={node.organization_id} node={node} onSelect={selectNode} selectedId={selectedId} />
             ))}
-          </div>
+          </nav>
         </aside>
 
-        <main className="min-w-0 space-y-5">
+        <main className="min-w-0 space-y-4">
           {detailQuery.isLoading ? <PageMessage>正在加载组织详情...</PageMessage> : null}
           {detailQuery.isError ? (
             <PageError error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
@@ -221,7 +257,7 @@ export function PlatformOrganizationPage() {
                   "组织已激活。",
                 )
               }
-              onCreate={() => setPanel("create")}
+              onCreate={() => openGovernancePanel("create")}
               onDeactivate={() =>
                 void runMutation(
                   () =>
@@ -232,10 +268,10 @@ export function PlatformOrganizationPage() {
                   "组织已停用。",
                 )
               }
-              onEdit={() => setPanel("edit")}
+              onEdit={() => openGovernancePanel("edit")}
               onManageAdmin={() => void openAdminPanel()}
               onOrder={() => {
-                if (includeArchived) setPanel("order");
+                if (includeArchived) openGovernancePanel("order");
               }}
               orderReady={includeArchived}
               writable={writable}
@@ -295,13 +331,16 @@ function TreeBranch({
   onSelect: (id: number) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const selected = selectedId === node.organization_id;
   return (
     <div>
       <div
-        className={`flex items-center rounded-md ${selectedId === node.organization_id ? "bg-mint" : "hover:bg-slate-50"}`}
+        className={`group flex items-center rounded-lg transition-colors ${
+          selected ? "bg-teal-50 text-slate-950 ring-1 ring-teal-200" : "text-slate-600 hover:bg-slate-50"
+        }`}
       >
         <button
-          className="p-1 text-slate-400"
+          className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-700"
           onClick={() => setExpanded((value) => !value)}
           type="button"
           aria-label={`${expanded ? "收起" : "展开"}${node.org_name}`}
@@ -317,18 +356,30 @@ function TreeBranch({
           )}
         </button>
         <button
-          className="min-w-0 flex-1 px-1 py-2 text-left"
+          aria-label={node.org_name}
+          aria-current={selected ? "true" : undefined}
+          className="flex min-w-0 flex-1 items-center gap-2 px-1 py-2.5 pr-2 text-left"
           onClick={() => onSelect(node.organization_id)}
           type="button"
         >
-          <span className="block truncate text-sm font-medium text-ink">{node.org_name}</span>
-          <span className="mt-0.5 flex flex-wrap gap-1 text-[11px] text-slate-500">
-            <StateLabel mode={node.compatibility_mode} status={node.status} />
+          <span
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
+              selected ? "bg-white text-teal-700" : "bg-slate-100 text-slate-500"
+            }`}
+          >
+            <OrganizationTypeIcon type={node.org_type} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">{node.org_name}</span>
+            <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
+              <span>{typeLabel(node.org_type)}</span>
+              <StateLabel mode={node.compatibility_mode} status={node.status} />
+            </span>
           </span>
         </button>
       </div>
       {expanded && node.children.length ? (
-        <div className="ml-4 border-l border-slate-100 pl-2">
+        <div className="ml-5 border-l border-slate-200 pl-2">
           {node.children.map((child) => (
             <TreeBranch key={child.organization_id} node={child} onSelect={onSelect} selectedId={selectedId} />
           ))}
@@ -347,11 +398,18 @@ function StateLabel({
 }) {
   return (
     <>
-      {mode === "legacy" ? <span>兼容只读</span> : null}
-      {status === "inactive" ? <span>已停用</span> : null}
-      {status === "archived" ? <span>已归档</span> : null}
+      {mode === "legacy" ? <span className="text-amber-700">兼容只读</span> : null}
+      {status === "inactive" ? <span className="text-amber-700">已停用</span> : null}
+      {status === "archived" ? <span className="text-slate-500">已归档</span> : null}
     </>
   );
+}
+
+function OrganizationTypeIcon({ type }: { type: OrganizationTreeNode["org_type"] }) {
+  if (type === "headquarter" || type === "platform") return <Landmark aria-hidden="true" size={15} />;
+  if (type === "province") return <MapIcon aria-hidden="true" size={15} />;
+  if (type === "city") return <Building2 aria-hidden="true" size={15} />;
+  return <MapPin aria-hidden="true" size={15} />;
 }
 
 function DetailCard({
@@ -381,43 +439,69 @@ function DetailCard({
 }) {
   const stateMutable = writable && detail.org_type !== "headquarter";
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-sm text-slate-500">{detail.path_names.join(" / ")}</div>
-          <h2 className="mt-1 text-xl font-semibold text-ink">{detail.org_name}</h2>
-          <div className="mt-2 flex gap-2 text-xs text-slate-500">
-            <span>{detail.org_code}</span>
-            <span>v{detail.version}</span>
-            <StateLabel mode={detail.compatibility_mode} status={detail.status} />
+    <section
+      className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel"
+      aria-labelledby="selected-organization-title"
+    >
+      <div className="border-b border-slate-100 px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <nav className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400" aria-label="组织层级路径">
+              {detail.path_names.map((name, index) => (
+                <span className="inline-flex items-center gap-1.5" key={name}>
+                  {index ? <ChevronRight aria-hidden="true" size={12} /> : null}
+                  <span>{name}</span>
+                </span>
+              ))}
+            </nav>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <h2 className="text-xl font-semibold tracking-tight text-slate-950" id="selected-organization-title">
+                {detail.org_name}
+              </h2>
+              <StatusBadge status={detail.status} />
+              {detail.compatibility_mode === "legacy" ? <ModeBadge /> : null}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+              <span className="font-mono text-[11px]">{detail.org_code}</span>
+              <span>{typeLabel(detail.org_type)}</span>
+              <span>版本 {detail.version}</span>
+            </div>
           </div>
+          {isSuperAdmin && writable ? (
+            <fieldset className="flex max-w-2xl flex-wrap justify-end gap-2">
+              <legend className="sr-only">组织治理操作</legend>
+              {detail.org_type !== "county" ? (
+                <ActionButton
+                  busy={busy}
+                  label={detail.org_type === "city" ? "新增区/县" : "创建下级组织"}
+                  onClick={onCreate}
+                />
+              ) : null}
+              <ActionButton busy={busy} label="修改组织" onClick={onEdit} />
+              {["province", "city"].includes(detail.org_type) && detail.status === "active" ? (
+                <ActionButton busy={busy} label="管理员绑定" onClick={onManageAdmin} />
+              ) : null}
+              <ActionButton busy={busy || !orderReady} label="调整同级排序" onClick={onOrder} />
+              {stateMutable && detail.status === "active" ? (
+                <ActionButton busy={busy} danger label="停用组织" onClick={onDeactivate} />
+              ) : null}
+              {stateMutable && detail.status === "inactive" ? (
+                <ActionButton busy={busy} label="激活组织" onClick={onActivate} />
+              ) : null}
+            </fieldset>
+          ) : null}
         </div>
-        {isSuperAdmin && writable ? (
-          <div className="flex flex-wrap gap-2">
-            {detail.org_type !== "county" ? <ActionButton busy={busy} label="创建下级组织" onClick={onCreate} /> : null}
-            <ActionButton busy={busy} label="修改组织" onClick={onEdit} />
-            {["province", "city"].includes(detail.org_type) && detail.status === "active" ? (
-              <ActionButton busy={busy} label="管理员绑定" onClick={onManageAdmin} />
-            ) : null}
-            <ActionButton busy={busy || !orderReady} label="调整同级排序" onClick={onOrder} />
-            {stateMutable && detail.status === "active" ? (
-              <ActionButton busy={busy} label="停用组织" onClick={onDeactivate} />
-            ) : null}
-            {stateMutable && detail.status === "inactive" ? (
-              <ActionButton busy={busy} label="激活组织" onClick={onActivate} />
-            ) : null}
-          </div>
-        ) : null}
       </div>
       {isSuperAdmin && writable && !orderReady ? (
-        <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">
+        <p className="mx-5 mt-4 flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2.5 text-sm text-blue-800">
+          <Archive aria-hidden="true" className="mt-0.5 shrink-0" size={15} />
           排序前请先加载已归档历史节点，确保提交完整的直接下级集合。
         </p>
       ) : null}
       {!writable && isSuperAdmin ? (
-        <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">只读节点不允许治理操作</p>
+        <p className="mx-5 mt-4 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-600">只读节点不允许治理操作</p>
       ) : null}
-      <dl className="mt-5 grid gap-4 sm:grid-cols-3">
+      <dl className="grid gap-px bg-slate-100 sm:grid-cols-3 mt-4">
         <Info label="组织类型" value={typeLabel(detail.org_type)} />
         <Info label="状态" value={statusLabel(detail.status)} />
         <Info label="排序" value={String(detail.sort_order)} />
@@ -460,16 +544,29 @@ function GovernancePanel({
   }
 
   return (
-    <section className="rounded-xl border border-pine/20 bg-white p-5 shadow-sm">
+    <section
+      className="rounded-xl border border-teal-200 bg-white p-5 shadow-panel"
+      aria-labelledby="governance-panel-title"
+    >
       <div className="flex items-center justify-between">
-        <h2 className="font-semibold text-ink">{panelTitle(panel)}</h2>
-        <button disabled={busy} onClick={onCancel} type="button">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.12em] text-teal-700">治理操作</div>
+          <h2 className="mt-1 font-semibold text-slate-950" id="governance-panel-title">
+            {panelTitle(panel)}
+          </h2>
+        </div>
+        <button
+          className="rounded-lg px-3 py-2 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-950"
+          disabled={busy}
+          onClick={onCancel}
+          type="button"
+        >
           关闭
         </button>
       </div>
       {panel === "create" ? (
         <form
-          className="mt-4 grid gap-3 sm:grid-cols-2"
+          className="mt-4 grid gap-4 sm:grid-cols-2"
           onSubmit={(event) => {
             event.preventDefault();
             void onRun(
@@ -490,7 +587,7 @@ function GovernancePanel({
           <label className="text-sm text-slate-600">
             组织类型
             <select
-              className="mt-1 block w-full rounded-md border border-slate-200 p-2"
+              className="mt-1.5 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-950"
               value={type}
               onChange={(event) => setType(event.target.value as OrganizationCreateType)}
             >
@@ -502,7 +599,7 @@ function GovernancePanel({
       ) : null}
       {panel === "edit" ? (
         <form
-          className="mt-4 flex gap-3"
+          className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             void onRun(
@@ -534,7 +631,7 @@ function GovernancePanel({
           <label className="text-sm text-slate-600">
             管理员候选
             <select
-              className="mt-1 block w-full rounded-md border border-slate-200 p-2"
+              className="mt-1.5 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-950"
               value={adminValue}
               onChange={(event) => setAdminValue(event.target.value)}
             >
@@ -554,15 +651,25 @@ function GovernancePanel({
           {ordered.length ? (
             ordered.map((child, index) => (
               <div
-                className="flex items-center justify-between rounded-md border border-slate-100 p-2"
+                className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
                 key={child.organization_id}
               >
                 <span>{child.org_name}</span>
                 <div className="flex gap-2">
-                  <button disabled={busy || index === 0} onClick={() => move(index, -1)} type="button">
+                  <button
+                    className="rounded-md px-2 py-1 text-sm text-primary-600 hover:bg-white disabled:text-slate-300"
+                    disabled={busy || index === 0}
+                    onClick={() => move(index, -1)}
+                    type="button"
+                  >
                     上移
                   </button>
-                  <button disabled={busy || index === ordered.length - 1} onClick={() => move(index, 1)} type="button">
+                  <button
+                    className="rounded-md px-2 py-1 text-sm text-primary-600 hover:bg-white disabled:text-slate-300"
+                    disabled={busy || index === ordered.length - 1}
+                    onClick={() => move(index, 1)}
+                    type="button"
+                  >
                     下移
                   </button>
                 </div>
@@ -572,7 +679,7 @@ function GovernancePanel({
             <p className="text-sm text-slate-500">当前节点没有可排序的直接下级。</p>
           )}
           <button
-            className="rounded-md bg-pine px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+            className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-40"
             disabled={busy || ordered.length === 0}
             onClick={() =>
               void onRun(
@@ -614,15 +721,29 @@ function TenantCard({
   onNext: () => void;
 }) {
   return (
-    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <section
+      className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel"
+      aria-labelledby="tenant-list-title"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
         <div>
-          <h2 className="font-semibold text-ink">关联门店经营主体</h2>
-          <p className="mt-1 text-xs text-slate-500">keyset cursor 分批读取，不展示虚构总页数。</p>
+          <div className="flex items-center gap-2">
+            <Store aria-hidden="true" className="text-teal-700" size={17} />
+            <h2 className="font-semibold text-slate-950" id="tenant-list-title">
+              归属门店
+            </h2>
+            {query.data ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                当前批次 {query.data.items.length} 家
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs text-slate-500">按游标分批读取；上一批/下一批不虚构总页数。</p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600">
           <input
             checked={includeDescendants}
+            className="h-4 w-4 accent-teal-600"
             onChange={(event) => onIncludeDescendants(event.target.checked)}
             type="checkbox"
           />
@@ -634,30 +755,39 @@ function TenantCard({
       {query.data?.items.length ? (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 text-xs text-slate-500">
+            <thead className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
               <tr>
-                <th className="px-4 py-3">tenant</th>
-                <th className="px-4 py-3">类型/等级</th>
+                <th className="px-4 py-3 font-medium">机构名称</th>
+                <th className="px-4 py-3 font-medium">类型 / 等级</th>
                 <th className="px-4 py-3">区域</th>
                 <th className="px-4 py-3">状态</th>
-                <th className="px-4 py-3">组织路径编码</th>
+                <th className="px-4 py-3">组织路径</th>
               </tr>
             </thead>
             <tbody>
               {query.data.items.map((item) => (
-                <tr className="border-t border-slate-100" key={item.tenant_id}>
+                <tr className="border-t border-slate-100 transition-colors hover:bg-slate-50/80" key={item.tenant_id}>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-ink">{item.name}</div>
-                    <div className="text-xs text-slate-500">{item.tenant_code}</div>
+                    <div className="font-semibold text-slate-950">{item.name}</div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-400">{item.tenant_code}</div>
                   </td>
                   <td className="px-4 py-3">
-                    {item.type} / {item.grade ?? "-"}
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
+                        {item.type}
+                      </span>
+                      {item.grade ? <GradeBadge grade={item.grade} /> : <span className="text-slate-400">-</span>}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {[item.province, item.city, item.district].filter(Boolean).join(" / ") || "-"}
                   </td>
-                  <td className="px-4 py-3">{item.status}</td>
-                  <td className="px-4 py-3">{item.organization_path_codes.join(" / ")}</td>
+                  <td className="px-4 py-3">
+                    <TenantStatusBadge status={item.status} />
+                  </td>
+                  <td className="px-4 py-3 font-mono text-[11px] text-slate-500">
+                    {item.organization_path_codes.join(" / ")}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -666,23 +796,26 @@ function TenantCard({
       ) : query.isSuccess ? (
         <PageMessage>当前范围暂无关联门店。</PageMessage>
       ) : null}
-      <div className="flex justify-end gap-2 border-t border-slate-100 p-4">
-        <button
-          className="rounded-md border border-slate-200 px-3 py-2 text-sm disabled:opacity-40"
-          disabled={cursorHistory.length === 0}
-          onClick={onPrevious}
-          type="button"
-        >
-          上一批
-        </button>
-        <button
-          className="rounded-md border border-slate-200 px-3 py-2 text-sm disabled:opacity-40"
-          disabled={!query.data?.next_cursor}
-          onClick={onNext}
-          type="button"
-        >
-          下一批
-        </button>
+      <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
+        <span className="text-xs text-slate-400">游标分页</span>
+        <div className="flex gap-2">
+          <button
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:border-teal-200 hover:text-teal-700 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={cursorHistory.length === 0}
+            onClick={onPrevious}
+            type="button"
+          >
+            上一批
+          </button>
+          <button
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:border-teal-200 hover:text-teal-700 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!query.data?.next_cursor}
+            onClick={onNext}
+            type="button"
+          >
+            下一批
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -691,8 +824,10 @@ function TenantCard({
 function PageError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   if (isApiError(error) && error.status === 401) return <PageMessage>登录状态已失效，正在安全退出...</PageMessage>;
   return (
-    <div className="rounded-xl border border-red-200 bg-white p-8 text-center">
-      <p className="text-sm text-red-700">{getSafeErrorMessage(error)}</p>
+    <div className="rounded-xl border border-red-200 bg-white p-8 text-center shadow-panel" role="alert">
+      <CircleAlert aria-hidden="true" className="mx-auto text-red-600" size={24} />
+      <p className="mt-3 text-sm font-medium text-red-700">{getSafeErrorMessage(error)}</p>
+      <p className="mt-1 text-xs text-slate-500">可重试读取；治理操作不会自动重放。</p>
       <RetryButton onClick={onRetry} />
     </div>
   );
@@ -700,8 +835,12 @@ function PageError({ error, onRetry }: { error: unknown; onRetry: () => void }) 
 
 function PageMessage({ children, action }: { children: string; action?: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-      {children}
+    <div
+      className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 shadow-panel"
+      role="status"
+    >
+      <Network aria-hidden="true" className="mx-auto mb-3 text-slate-300" size={24} />
+      <p>{children}</p>
       {action}
     </div>
   );
@@ -710,7 +849,7 @@ function PageMessage({ children, action }: { children: string; action?: React.Re
 function RetryButton({ onClick }: { onClick: () => void }) {
   return (
     <button
-      className="mx-auto mt-4 block rounded-md border border-slate-200 px-4 py-2 text-sm text-ink"
+      className="mx-auto mt-4 block rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-teal-200 hover:text-teal-700"
       onClick={onClick}
       type="button"
     >
@@ -720,10 +859,24 @@ function RetryButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function ActionButton({ label, busy, onClick }: { label: string; busy: boolean; onClick: () => void }) {
+function ActionButton({
+  label,
+  busy,
+  danger = false,
+  onClick,
+}: {
+  label: string;
+  busy: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
-      className="rounded-md border border-slate-200 px-3 py-2 text-sm disabled:opacity-40"
+      className={`rounded-lg border bg-white px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        danger
+          ? "border-red-200 text-red-700 hover:bg-red-50"
+          : "border-slate-200 text-slate-700 hover:border-teal-200 hover:text-teal-700"
+      }`}
       disabled={busy}
       onClick={onClick}
       type="button"
@@ -736,7 +889,7 @@ function ActionButton({ label, busy, onClick }: { label: string; busy: boolean; 
 function Submit({ label, busy }: { label: string; busy: boolean }) {
   return (
     <button
-      className="self-end rounded-md bg-pine px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+      className="self-end rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-40"
       disabled={busy}
       type="submit"
     >
@@ -750,7 +903,7 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
     <label className="text-sm text-slate-600">
       {label}
       <input
-        className="mt-1 block w-full rounded-md border border-slate-200 p-2"
+        className="mt-1.5 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-950"
         onChange={(event) => onChange(event.target.value)}
         required
         value={value}
@@ -761,11 +914,53 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="bg-white px-5 py-4">
       <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="mt-1 text-sm font-medium text-ink">{value}</dd>
+      <dd className="mt-1 text-sm font-semibold text-slate-950">{value}</dd>
     </div>
   );
+}
+
+function StatusBadge({ status }: { status: OrganizationDetail["status"] }) {
+  const tone = {
+    active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    inactive: "bg-amber-50 text-amber-700 ring-amber-200",
+    archived: "bg-slate-100 text-slate-600 ring-slate-200",
+    disabled: "bg-slate-100 text-slate-600 ring-slate-200",
+  }[status];
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${tone}`}>{statusLabel(status)}</span>;
+}
+
+function ModeBadge() {
+  return (
+    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">
+      兼容只读
+    </span>
+  );
+}
+
+function GradeBadge({ grade }: { grade: string }) {
+  const normalized = grade.toLowerCase();
+  const tone =
+    normalized.includes("flag") || normalized === "a"
+      ? "bg-violet-50 text-violet-700 ring-violet-200"
+      : normalized.includes("standard") || normalized === "b"
+        ? "bg-blue-50 text-blue-700 ring-blue-200"
+        : "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  return <span className={`rounded-full px-2 py-1 text-xs font-medium ring-1 ${tone}`}>{grade}</span>;
+}
+
+function TenantStatusBadge({ status }: { status: string }) {
+  const normalized = status.toLowerCase();
+  const active = normalized === "active" || normalized === "normal";
+  const paused = normalized === "inactive" || normalized === "paused";
+  const tone = active
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : paused
+      ? "bg-amber-50 text-amber-700 ring-amber-200"
+      : "bg-slate-100 text-slate-600 ring-slate-200";
+  const label = active ? "正常" : paused ? "暂停" : status;
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${tone}`}>{label}</span>;
 }
 
 function findNode(nodes: OrganizationTreeNode[], id: number | null): OrganizationTreeNode | undefined {
@@ -794,7 +989,7 @@ function typeLabel(type: OrganizationDetail["org_type"]) {
       headquarter: "总部",
       province: "省",
       city: "市",
-      county: "县",
+      county: "区/县",
       platform: "历史平台组织",
       tenant_org: "历史机构组织",
     } as const

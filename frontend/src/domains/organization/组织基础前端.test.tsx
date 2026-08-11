@@ -5,6 +5,8 @@ import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { institutionRoutes } from "@/domains/institution/routes";
 import { platformRoutes } from "@/domains/platform/routes";
+import { InstitutionShell } from "@/shells/InstitutionShell";
+import { PlatformShell } from "@/shells/PlatformShell";
 import { setCurrentUser } from "@/shared/auth/authStore";
 import { USER_ROLES } from "@/shared/constants/roles";
 import {
@@ -20,9 +22,14 @@ import {
 import { InstitutionOrganizationPage } from "./pages/机构组织资料页";
 import { PlatformOrganizationPage } from "./pages/平台组织治理页";
 
-describe("Organization Foundation Frontend V1", () => {
+describe("Organization Frontend Prototype Alignment V1", () => {
   beforeEach(() => {
-    setCurrentUser({ id: 1, role: USER_ROLES.superAdmin, tenant_id: null, org_id: null });
+    setCurrentUser({
+      id: 1,
+      role: USER_ROLES.superAdmin,
+      tenant_id: null,
+      org_id: null,
+    });
   });
 
   afterEach(() => {
@@ -52,20 +59,63 @@ describe("Organization Foundation Frontend V1", () => {
   it.each([USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin])(
     "allows platform read access for %s",
     async (role) => {
-      setCurrentUser({ id: 2, role, tenant_id: null, org_id: role === USER_ROLES.superAdmin ? null : 11 });
+      setCurrentUser({
+        id: 2,
+        role,
+        tenant_id: null,
+        org_id: role === USER_ROLES.superAdmin ? null : 11,
+      });
       mockPlatformReadApis();
       const router = platformRouter("/platform/organizations");
       renderWithClient(<RouterProvider router={router} />);
-      expect(await screen.findByRole("heading", { name: "组织治理树" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "组织架构管理" })).toBeInTheDocument();
     },
   );
 
   it("rejects org_admin at the platform route boundary", async () => {
-    setCurrentUser({ id: 3, role: USER_ROLES.orgAdmin, tenant_id: 9, org_id: 11 });
+    setCurrentUser({
+      id: 3,
+      role: USER_ROLES.orgAdmin,
+      tenant_id: 9,
+      org_id: 11,
+    });
     const router = platformRouter("/platform/organizations");
     renderWithClient(<RouterProvider router={router} />);
     expect(await screen.findByText("FORBIDDEN TARGET")).toBeInTheDocument();
-    expect(screen.queryByText("组织治理树")).not.toBeInTheDocument();
+    expect(screen.queryByText("组织架构管理")).not.toBeInTheDocument();
+  });
+
+  it("renders the aligned platform shell without unavailable prototype metrics", async () => {
+    mockPlatformReadApis();
+    const router = createMemoryRouter(
+      [
+        {
+          path: "/platform",
+          element: <PlatformShell />,
+          children: platformRoutes.protectedChildren,
+        },
+        { path: "/403", element: <div>FORBIDDEN TARGET</div> },
+      ],
+      { initialEntries: ["/platform/organizations"] },
+    );
+    renderWithClient(<RouterProvider router={router} />);
+
+    expect(await screen.findByRole("heading", { name: "组织架构管理" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "平台治理主导航" })).toBeInTheDocument();
+    expect(screen.getByText("真实接口已连接")).toBeInTheDocument();
+    expect(screen.queryByText(/风险\s*\d+/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/待办\s*\d+/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the organization hierarchy operable from the keyboard", async () => {
+    mockPlatformReadApis();
+    renderPlatform();
+
+    const province = await screen.findByRole("button", { name: "浙江省" });
+    province.focus();
+    expect(province).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByRole("button", { name: "浙江省" })).toHaveAttribute("aria-current", "true");
   });
 
   it("renders canonical, legacy, inactive and archived states but no rich prototype fields", async () => {
@@ -79,6 +129,84 @@ describe("Organization Foundation Frontend V1", () => {
     expect(screen.queryByText("forbidden-contact")).not.toBeInTheDocument();
     expect(screen.queryByText("营收")).not.toBeInTheDocument();
     expect(screen.queryByText("删除组织")).not.toBeInTheDocument();
+  });
+
+  it("presents district and county nodes at the same county contract level", async () => {
+    mockPlatformReadApis(
+      treeData(),
+      detailData({
+        id: 31,
+        parent_id: 21,
+        org_code: "ORG-31",
+        org_name: "杭州市",
+        org_type: "city",
+        path_codes: ["ORG-11", "ORG-21", "ORG-31"],
+        path_names: ["华东总部", "浙江省", "杭州市"],
+      }),
+    );
+    renderPlatform();
+
+    expect(await screen.findByRole("heading", { name: "杭州市" })).toBeInTheDocument();
+    expect(await screen.findByText("总部 / 省 / 市 / 区/县")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "滨江区" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "某某县" })).toBeInTheDocument();
+    expect(screen.getAllByText("区/县").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("button", { name: "新增区/县" })).toBeInTheDocument();
+  });
+
+  it("creates a city child as county and never offers another platform level below county", async () => {
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    const fetchMock = mockPlatformReadApis(
+      treeData(),
+      detailData({
+        id: 31,
+        parent_id: 21,
+        org_code: "ORG-31",
+        org_name: "杭州市",
+        org_type: "city",
+        path_codes: ["ORG-11", "ORG-21", "ORG-31"],
+        path_names: ["华东总部", "浙江省", "杭州市"],
+      }),
+    );
+    const view = renderPlatform();
+
+    expect(await screen.findByRole("heading", { name: "杭州市" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "新增区/县" }));
+    await userEvent.clear(screen.getByLabelText("组织名称"));
+    await userEvent.type(screen.getByLabelText("组织名称"), "新增区县节点");
+    await userEvent.type(screen.getByLabelText("组织编码"), "NEW-COUNTY");
+    expect(screen.getByRole("option", { name: "区/县" })).toHaveValue("county");
+    await userEvent.click(screen.getByRole("button", { name: "确认创建" }));
+
+    await waitFor(() => {
+      const createCall = fetchMock.mock.calls.find(
+        ([url, options]) => url === "/api/v1/platform/organizations" && (options as RequestInit).method === "POST",
+      );
+      expect(createCall).toBeDefined();
+      if (!createCall) throw new Error("create request missing");
+      expect(JSON.parse(String(createCall[1]?.body))).toMatchObject({
+        org_type: "county",
+        parent_id: 31,
+      });
+    });
+
+    view.unmount();
+    mockPlatformReadApis(
+      treeData(),
+      detailData({
+        id: 41,
+        parent_id: 31,
+        org_name: "滨江区",
+        org_type: "county",
+      }),
+    );
+    renderPlatform();
+    expect(await screen.findByRole("heading", { name: "滨江区" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新增区/县" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "创建下级组织" })).not.toBeInTheDocument();
   });
 
   it.each([USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin])("keeps %s strictly read-only", async (role) => {
@@ -178,7 +306,10 @@ describe("Organization Foundation Frontend V1", () => {
       version: 8,
       updated_at: "2026-08-10T12:00:00Z",
     });
-    await deactivateOrganization(21, { expected_version: 7, reason_code: "PLATFORM_GOVERNANCE" });
+    await deactivateOrganization(21, {
+      expected_version: 7,
+      reason_code: "PLATFORM_GOVERNANCE",
+    });
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/v1/platform/organizations/21/deactivate");
     expect(JSON.parse(String(options.body))).toEqual({
@@ -227,7 +358,12 @@ describe("Organization Foundation Frontend V1", () => {
       "/api/v1/platform/organizations/21/admin-candidates?page_size=100&cursor=NEXT_CANDIDATE",
     );
     expect(result).toEqual([
-      { user_id: 91, display_name: "虚构候选甲", role: "province_admin", assignment_status: "unassigned" },
+      {
+        user_id: 91,
+        display_name: "虚构候选甲",
+        role: "province_admin",
+        assignment_status: "unassigned",
+      },
       {
         user_id: 92,
         display_name: "虚构候选乙",
@@ -256,7 +392,14 @@ describe("Organization Foundation Frontend V1", () => {
         return candidateCalls === 1 ? first : second;
       }
       return Promise.resolve(
-        apiSuccess(detailData({ id: 21, parent_id: 11, org_name: "浙江省", org_type: "province" })),
+        apiSuccess(
+          detailData({
+            id: 21,
+            parent_id: 11,
+            org_name: "浙江省",
+            org_type: "province",
+          }),
+        ),
       );
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -284,6 +427,59 @@ describe("Organization Foundation Frontend V1", () => {
     expect(screen.queryByText(/过期虚构候选/)).not.toBeInTheDocument();
 
     resolveSecond?.(apiSuccess({ items: [], next_cursor: null }));
+  });
+
+  it.each([
+    ["创建下级组织", "确认创建"],
+    ["修改组织", "确认修改"],
+  ])("clears administrator candidates when switching directly to %s", async (actionName, panelActionName) => {
+    let resolveCandidates: ((response: Response) => void) | undefined;
+    let candidateSignal: AbortSignal | undefined;
+    const pendingCandidates = new Promise<Response>((resolve) => {
+      resolveCandidates = resolve;
+    });
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes("/tree")) return Promise.resolve(apiSuccess({ items: treeData() }));
+      if (url.includes("/tenants")) return Promise.resolve(apiSuccess(tenantPage(null)));
+      if (url.includes("/admin-candidates")) {
+        candidateSignal = init?.signal ?? undefined;
+        return pendingCandidates;
+      }
+      return Promise.resolve(
+        apiSuccess(
+          detailData({
+            id: 21,
+            parent_id: 11,
+            org_name: "浙江省",
+            org_type: "province",
+          }),
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPlatform();
+
+    await screen.findByRole("button", { name: "管理员绑定" });
+    await userEvent.click(screen.getByRole("button", { name: "管理员绑定" }));
+    await userEvent.click(screen.getByRole("button", { name: actionName }));
+
+    expect(candidateSignal?.aborted).toBe(true);
+    expect(screen.getByRole("button", { name: panelActionName })).toBeInTheDocument();
+
+    resolveCandidates?.(
+      apiSuccess({
+        items: [
+          {
+            user_id: 91,
+            display_name: "过期虚构候选",
+            role: "province_admin",
+            assignment_status: "unassigned",
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText(/过期虚构候选/)).not.toBeInTheDocument());
   });
 
   it("maps the real /organizations/me path shape including legacy status", async () => {
@@ -323,7 +519,14 @@ describe("Organization Foundation Frontend V1", () => {
       if (url.includes("/tree")) return Promise.resolve(apiSuccess({ items: treeData() }));
       if (url.includes("/tenants")) return Promise.resolve(apiSuccess(tenantPage("OPAQUE_NEXT")));
       return Promise.resolve(
-        apiSuccess(detailData({ id: 21, parent_id: 11, org_name: "浙江省", org_type: "province" })),
+        apiSuccess(
+          detailData({
+            id: 21,
+            parent_id: 11,
+            org_name: "浙江省",
+            org_type: "province",
+          }),
+        ),
       );
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -359,7 +562,9 @@ describe("Organization Foundation Frontend V1", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderPlatform();
 
-    const orderButton = await screen.findByRole("button", { name: "调整同级排序" });
+    const orderButton = await screen.findByRole("button", {
+      name: "调整同级排序",
+    });
     expect(orderButton).toBeDisabled();
     expect(screen.getByText("排序前请先加载已归档历史节点，确保提交完整的直接下级集合。")).toBeInTheDocument();
 
@@ -402,6 +607,32 @@ describe("Organization Foundation Frontend V1", () => {
     expect(screen.queryByText("forbidden-contact")).not.toBeInTheDocument();
     expect(screen.queryByText("资料完整度")).not.toBeInTheDocument();
     expect(screen.queryByText("安全设置")).not.toBeInTheDocument();
+  });
+
+  it("renders the aligned institution shell and read-only governance path", async () => {
+    setCurrentUser({
+      id: 3,
+      role: USER_ROLES.orgAdmin,
+      tenant_id: 501,
+      org_id: 31,
+    });
+    mockApi(200, institutionData());
+    const institution = createMemoryRouter(
+      [
+        {
+          path: "/institution",
+          element: <InstitutionShell />,
+          children: institutionRoutes.protectedChildren,
+        },
+      ],
+      { initialEntries: ["/institution/organization"] },
+    );
+    renderWithClient(<RouterProvider router={institution} />);
+
+    expect(await screen.findByRole("heading", { name: "机构组织资料" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "机构端主导航" })).toBeInTheDocument();
+    expect(screen.getByText("平台治理归属")).toBeInTheDocument();
+    expect(screen.getByText("只读资料")).toBeInTheDocument();
   });
 
   it("renders the unassigned institution state for null organization and an empty path", async () => {
@@ -493,7 +724,7 @@ function renderWithClient(element: React.ReactElement) {
 }
 
 function mockPlatformReadApis(tree = treeData(), detail = detailData()) {
-  const fetchMock = vi.fn((url: string) => {
+  const fetchMock = vi.fn((url: string, _options?: RequestInit) => {
     if (url.includes("/tree")) return Promise.resolve(apiSuccess({ items: tree }));
     if (url.includes("/tenants")) return Promise.resolve(apiSuccess(tenantPage("OPAQUE_NEXT")));
     return Promise.resolve(apiSuccess(detail));
@@ -504,7 +735,11 @@ function mockPlatformReadApis(tree = treeData(), detail = detailData()) {
 
 function treeData(options: { includeStates?: boolean; rootMode?: string; rootStatus?: string } = {}) {
   const county = node(41, "滨江区", "county", options.includeStates ? "archived" : "active", "canonical", []);
-  const city = node(31, "杭州市", "city", options.includeStates ? "inactive" : "active", "canonical", [county]);
+  const countyPeer = node(42, "某某县", "county", "active", "canonical", []);
+  const city = node(31, "杭州市", "city", options.includeStates ? "inactive" : "active", "canonical", [
+    county,
+    countyPeer,
+  ]);
   const province = node(21, "浙江省", "province", "active", options.includeStates ? "legacy" : "canonical", [city]);
   return [
     node(11, "华东总部", "headquarter", options.rootStatus ?? "active", options.rootMode ?? "canonical", [province]),
@@ -618,5 +853,8 @@ function apiSuccess(data: unknown) {
 }
 
 function apiResponse(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }

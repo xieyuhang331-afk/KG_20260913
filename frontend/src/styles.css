@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  color: #17201c;
-  background: #f7f5ef;
+  color: #111827;
+  background: #eef3f8;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -15,9 +15,38 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #eef3f8;
+  font-family: "PingFang SC", "Microsoft YaHei", "Source Han Sans CN", system-ui, sans-serif;
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
+}
+
+button,
+a,
+input,
+select {
+  outline-color: #00a0a0;
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #00a0a0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
 }
