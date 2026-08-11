@@ -129,3 +129,5 @@ class SqlAlchemyMappingTests(unittest.TestCase):
         self.assertIn("health_indicator", module.target_metadata.tables)
         self.assertIn("operation_log", module.target_metadata.tables)
         self.assertIn("public.canonical_health_fact", module.target_metadata.tables)
+        self.assertIn("public.organization_legacy_mapping", module.target_metadata.tables)
+        self.assertIn("public.health_indicator_legacy_mapping", module.target_metadata.tables)

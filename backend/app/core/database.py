@@ -69,10 +69,16 @@ _VERIFICATION_WRITER_ASYNC_ENGINE = None
 _VERIFICATION_WRITER_SESSION_FACTORY = None
 _HEALTH_FACT_WRITER_ASYNC_ENGINE = None
 _HEALTH_FACT_WRITER_SESSION_FACTORY = None
+_ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE = None
+_ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY = None
+_HEALTH_MAPPING_WRITER_ASYNC_ENGINE = None
+_HEALTH_MAPPING_WRITER_SESSION_FACTORY = None
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
 _HEALTH_FACT_WRITER_RUNTIME_ERROR = "Health fact writer database runtime is unavailable"
+_ORGANIZATION_MAPPING_WRITER_RUNTIME_ERROR = "Organization mapping writer database runtime is unavailable"
+_HEALTH_MAPPING_WRITER_RUNTIME_ERROR = "Health mapping writer database runtime is unavailable"
 
 
 def get_session_factory():
@@ -167,6 +173,84 @@ def get_health_fact_writer_session_factory():
     return _HEALTH_FACT_WRITER_SESSION_FACTORY
 
 
+def _get_mapping_writer_database_url(settings: Settings, *, kind: str) -> str:
+    raw_url = (
+        settings.organization_mapping_writer_database_url
+        if kind == "organization"
+        else settings.health_mapping_writer_database_url
+    )
+    error = (
+        _ORGANIZATION_MAPPING_WRITER_RUNTIME_ERROR
+        if kind == "organization"
+        else _HEALTH_MAPPING_WRITER_RUNTIME_ERROR
+    )
+    try:
+        if (
+            settings.organization_mapping_writer_database_url
+            and settings.organization_mapping_writer_database_url
+            == settings.health_mapping_writer_database_url
+        ):
+            raise ValueError
+        url = make_url(raw_url) if raw_url else None
+        other_urls = (
+            settings.verification_writer_database_url,
+            settings.health_fact_writer_database_url,
+            settings.organization_mapping_writer_database_url,
+            settings.health_mapping_writer_database_url,
+        )
+        forbidden_users = {settings.database_user, "postgres"}
+        for candidate in other_urls:
+            if candidate and candidate != raw_url:
+                parsed = make_url(candidate)
+                if parsed.username:
+                    forbidden_users.add(parsed.username)
+        valid = bool(
+            url is not None
+            and url.drivername == "postgresql+asyncpg"
+            and url.username
+            and url.password
+            and url.username not in forbidden_users
+            and url.host == settings.database_host
+            and url.port == settings.database_port
+            and url.database == settings.database_name
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(error) from None
+    return raw_url
+
+
+def get_organization_mapping_writer_session_factory():
+    global _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE
+    global _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY
+    if _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY is None:
+        url = _get_mapping_writer_database_url(get_settings(), kind="organization")
+        try:
+            engine = create_async_engine(url, pool_pre_ping=True)
+            factory = create_session_factory(engine)
+        except Exception:
+            raise RuntimeError(_ORGANIZATION_MAPPING_WRITER_RUNTIME_ERROR) from None
+        _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE = engine
+        _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY = factory
+    return _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY
+
+
+def get_health_mapping_writer_session_factory():
+    global _HEALTH_MAPPING_WRITER_ASYNC_ENGINE
+    global _HEALTH_MAPPING_WRITER_SESSION_FACTORY
+    if _HEALTH_MAPPING_WRITER_SESSION_FACTORY is None:
+        url = _get_mapping_writer_database_url(get_settings(), kind="health")
+        try:
+            engine = create_async_engine(url, pool_pre_ping=True)
+            factory = create_session_factory(engine)
+        except Exception:
+            raise RuntimeError(_HEALTH_MAPPING_WRITER_RUNTIME_ERROR) from None
+        _HEALTH_MAPPING_WRITER_ASYNC_ENGINE = engine
+        _HEALTH_MAPPING_WRITER_SESSION_FACTORY = factory
+    return _HEALTH_MAPPING_WRITER_SESSION_FACTORY
+
+
 async def dispose_verification_writer_runtime() -> None:
     global _VERIFICATION_WRITER_ASYNC_ENGINE
     global _VERIFICATION_WRITER_SESSION_FACTORY
@@ -187,6 +271,24 @@ async def dispose_health_fact_writer_runtime() -> None:
         await engine.dispose()
 
 
+async def dispose_mapping_writer_runtimes() -> None:
+    global _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE
+    global _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY
+    global _HEALTH_MAPPING_WRITER_ASYNC_ENGINE
+    global _HEALTH_MAPPING_WRITER_SESSION_FACTORY
+    engines = (
+        _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE,
+        _HEALTH_MAPPING_WRITER_ASYNC_ENGINE,
+    )
+    _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE = None
+    _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY = None
+    _HEALTH_MAPPING_WRITER_ASYNC_ENGINE = None
+    _HEALTH_MAPPING_WRITER_SESSION_FACTORY = None
+    for engine in engines:
+        if engine is not None:
+            await engine.dispose()
+
+
 async def dispose_database_runtimes() -> None:
     global _ASYNC_ENGINE
     global _SESSION_FACTORY
@@ -200,7 +302,10 @@ async def dispose_database_runtimes() -> None:
         try:
             await dispose_verification_writer_runtime()
         finally:
-            await dispose_health_fact_writer_runtime()
+            try:
+                await dispose_health_fact_writer_runtime()
+            finally:
+                await dispose_mapping_writer_runtimes()
 
 
 async def get_db_session():

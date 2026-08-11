@@ -9,6 +9,8 @@ def import_core_models():
     from app.modules.tenant import models as tenant_models
     from app.modules.user_health import models as user_health_models
     from app.modules.health_fact import models as health_fact_models
+    from app.modules.health_fact_mapping import models as health_fact_mapping_models
+    from app.modules.organization_mapping import models as organization_mapping_models
 
     return {
         "auth": auth_models,
@@ -16,6 +18,8 @@ def import_core_models():
         "user_health": user_health_models,
         "system": system_models,
         "health_fact": health_fact_models,
+        "health_fact_mapping": health_fact_mapping_models,
+        "organization_mapping": organization_mapping_models,
         "specs": get_core_table_specs(),
     }
 
