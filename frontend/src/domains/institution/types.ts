@@ -38,3 +38,28 @@ export interface TenantApplicationDetail {
   approved_at: string | null;
   reject_reason: string | null;
 }
+
+export interface TenantApplicationCreate {
+  name: string;
+  type: string;
+  credit_code: string;
+  license_no: string | null;
+  license_image: null;
+  legal_person_name: string;
+  province: string;
+  city: string;
+  district: string;
+  address: string;
+  contact_name: string;
+  contact_phone: string;
+  contact_email: string;
+  attachments: [];
+}
+
+export interface TenantApplicationCreated {
+  id: number;
+  tenant_code: string;
+  name: string;
+  status: string;
+  attachment_count: number;
+}
