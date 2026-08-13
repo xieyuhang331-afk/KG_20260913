@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="72" failures="0" errors="0" time="15.4646979">
+    <testsuite name="src/domains/auth/登录流程.test.tsx" timestamp="2026-08-11T04:18:58.805Z" hostname="xyh" tests="2" failures="0" errors="0" skipped="0" time="2.5084309">
+        <testcase classname="src/domains/auth/登录流程.test.tsx" name="Credential-safe login routing &gt; stores a session and routes org_admin to the authorized workspace" time="1.3860877">
+        </testcase>
+        <testcase classname="src/domains/auth/登录流程.test.tsx" name="Credential-safe login routing &gt; stores a session and routes province_admin to the authorized workspace" time="1.1210816">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/domains/organization/组织基础前端.test.tsx" timestamp="2026-08-11T04:18:58.807Z" hostname="xyh" tests="39" failures="0" errors="0" skipped="0" time="2.787235">
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; consumes the four-level governance tree without tenant or administrator PII" time="0.0056203">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps the real tree response envelope and canonical headquarter enum" time="0.000734">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; allows platform read access for super_admin" time="0.1529438">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; allows platform read access for province_admin" time="0.0296228">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; allows platform read access for city_admin" time="0.0286434">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; rejects org_admin at the platform route boundary" time="0.0123144">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders the aligned platform shell without unavailable prototype metrics" time="0.0676024">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; keeps the organization hierarchy operable from the keyboard" time="0.0874869">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders canonical, legacy, inactive and archived states but no rich prototype fields" time="0.028436">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; presents district and county nodes at the same county contract level" time="0.0974302">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; creates a city child as county and never offers another platform level below county" time="0.6640329">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; keeps province_admin strictly read-only" time="0.0298232">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; keeps city_admin strictly read-only" time="0.0363385">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; uses opaque keyset cursors and never invents totals" time="0.0014896">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders current-node tenant fields, descendants toggle, and batch navigation without page counts" time="0.0643481">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; submits the exact create contract including the parent version" time="0.0012381">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; preserves PATCH administrator three-state semantics: omitted" time="0.0006018">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; preserves PATCH administrator three-state semantics: unbind" time="0.0003044">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; preserves PATCH administrator three-state semantics: bind" time="0.0002115">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; sends complete direct children and both parent and child versions for atomic ordering" time="0.0004287">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; sends the fixed deactivate reason_code and exact state payload" time="0.0003704">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; consumes paged administrator candidates without retaining extra PII fields" time="0.0006158">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; ignores a late administrator candidate response after the panel lifecycle changes" time="0.2845599">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; clears administrator candidates when switching directly to 创建下级组织" time="0.2093589">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; clears administrator candidates when switching directly to 修改组织" time="0.2075215">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps the real /organizations/me path shape including legacy status" time="0.0009918">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; does not automatically replay a 409 mutation and refreshes read state" time="0.2015821">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; loads archived siblings before enabling atomic child ordering" time="0.2311634">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; keeps legacy and archived nodes mutation-free" time="0.0523972">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders assigned institution organization information with only approved fields" time="0.0296143">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders the aligned institution shell and read-only governance path" time="0.0303417">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; renders the unassigned institution state for null organization and an empty path" time="0.0267889">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps platform 400 to a safe retryable state" time="0.0329222">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps platform 403 to a safe retryable state" time="0.030475">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps platform 404 to a safe retryable state" time="0.0171821">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps platform 422 to a safe retryable state" time="0.0151887">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; maps platform 503 to a safe retryable state" time="0.0295601">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; clears the session and redirects on platform 401" time="0.0283015">
+        </testcase>
+        <testcase classname="src/domains/organization/组织基础前端.test.tsx" name="Organization Frontend Prototype Alignment V1 &gt; keeps P1 and Identity Review routes renderable" time="0.046823">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/domains/platform/实名认证审核工作台.test.tsx" timestamp="2026-08-11T04:18:58.812Z" hostname="xyh" tests="31" failures="0" errors="0" skipped="0" time="10.169032">
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; requests only the submitted queue and maps only masked identity fields" time="0.0236538">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; renders queue data without rendering unexpected full-value fields" time="0.122605">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; renders an empty state" time="0.0366027">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; handles 503 safely and retries on demand" time="0.327844">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps queue 403 to a safe error" time="0.0361568">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps queue 422 to a safe error" time="0.0291921">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; clears the frontend session and redirects to platform login on queue 401" time="0.0403387">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects non-super-admin role province_admin at the identity route boundary" time="0.0352434">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects non-super-admin role city_admin at the identity route boundary" time="0.0133111">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects non-super-admin role org_admin at the identity route boundary" time="0.0133727">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; keeps sensitive detail hidden and makes no request before step-up" time="0.0981643">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; submits only the current password, consumes the step-up header, and reveals detail temporarily" time="0.5475962">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; keeps password, step-up token, and temporary identity out of React Query caches" time="0.4596278">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; automatically hides the temporary identity when the 120-second window expires" time="0.4593022">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; immediately hides temporary identity on reviewer demand" time="0.4991698">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; removes the temporary identity from the page when the reviewer leaves" time="0.5551831">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 401 without exposing backend detail" time="0.4512888">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 403 without exposing backend detail" time="0.439523">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 404 without exposing backend detail" time="0.4549378">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 422 without exposing backend detail" time="0.4455631">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 429 without exposing backend detail" time="0.4547461">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; maps step-up 503 without exposing backend detail" time="0.45485">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects expired, replayed, or cross-user step-up on detail 401" time="0.4525752">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects expired, replayed, or cross-user step-up on detail 403" time="0.4680474">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; rejects an unexpected step-up response without attempting detail" time="0.4635219">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; sends the exact approve contract and omits client decision time and evidence" time="0.5910696">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; sends the exact reject contract without client-generated decision fields" time="0.3425162">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; clears sensitive state and requires fresh verification after 409" time="0.6038057">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; clears the session and sensitive state on decision 401" time="0.5722101">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; prevents duplicate decisions and reuses the idempotency key for a safe 503 retry" time="0.641331">
+        </testcase>
+        <testcase classname="src/domains/platform/实名认证审核工作台.test.tsx" name="Platform Identity Review Workbench &gt; keeps P1 platform and institution routes renderable" time="0.0311979">
+            <system-err>
+Warning: Invalid value for prop `action` on &lt;form&gt; tag. Either remove it from the element, or pass a string or number value to keep it in the DOM. For details, see https://reactjs.org/link/attribute-behavior
+    at form
+    at div
+    at TenantReviewListPage (E:/nas/JR/SynologyDrive/KG_康邻/研发/平台/工作树/组织前端原型对齐V1/frontend/src/domains/platform/pages/TenantReviewListPage.tsx:9:84)
+    at RenderedRoute (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:6218:26)
+    at RenderedRoute (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:6218:26)
+    at RenderErrorBoundary (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:6130:5)
+    at DataRoutes2 (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:6936:3)
+    at Router (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:7036:13)
+    at RouterProvider (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/react-router/dist/development/chunk-4ZMWKKQ3.mjs:6703:3)
+    at RouterProvider2
+    at QueryClientProvider (file:///E:/nas/JR/SynologyDrive/KG_%E5%BA%B7%E9%82%BB/%E7%A0%94%E5%8F%91/%E5%B9%B3%E5%8F%B0/%E5%B7%A5%E4%BD%9C%E6%A0%91/%E7%BB%84%E7%BB%87%E5%89%8D%E7%AB%AF%E5%8E%9F%E5%9E%8B%E5%AF%B9%E9%BD%90V1/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+            </system-err>
+        </testcase>
+    </testsuite>
+</testsuites>
