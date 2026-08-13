@@ -29,6 +29,13 @@ class Settings(BaseModel):
     health_fact_digest_keyring_json: str | None = None
     organization_mapping_writer_database_url: str | None = None
     health_mapping_writer_database_url: str | None = None
+    organization_projection_builder_database_url: str | None = None
+    health_projection_builder_database_url: str | None = None
+    projection_confirmation_database_url: str | None = None
+    organization_projection_digest_current_key_id: str | None = None
+    organization_projection_digest_keyring_json: str | None = None
+    health_projection_digest_current_key_id: str | None = None
+    health_projection_digest_keyring_json: str | None = None
     organization_mapping_digest_current_key_id: str | None = None
     organization_mapping_digest_keyring_json: str | None = None
     identity_pii_kek_b64: str | None = None
@@ -78,6 +85,13 @@ def get_settings() -> Settings:
         health_mapping_writer_database_url=os.getenv(
             "KG_HEALTH_MAPPING_WRITER_DATABASE_URL"
         ),
+        organization_projection_builder_database_url=os.getenv("KG_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL"),
+        health_projection_builder_database_url=os.getenv("KG_HEALTH_PROJECTION_BUILDER_DATABASE_URL"),
+        projection_confirmation_database_url=os.getenv("KG_PROJECTION_CONFIRMATION_DATABASE_URL"),
+        organization_projection_digest_current_key_id=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_CURRENT_KEY_ID"),
+        organization_projection_digest_keyring_json=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"),
+        health_projection_digest_current_key_id=os.getenv("KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"),
+        health_projection_digest_keyring_json=os.getenv("KG_HEALTH_PROJECTION_DIGEST_KEYRING_JSON"),
         organization_mapping_digest_current_key_id=os.getenv(
             "KG_ORGANIZATION_MAPPING_DIGEST_CURRENT_KEY_ID"
         ),

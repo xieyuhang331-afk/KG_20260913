@@ -1,3 +1,5 @@
+import asyncio
+import weakref
 from urllib.parse import quote_plus
 
 from app.core.config import Settings, get_settings
@@ -73,6 +75,9 @@ _ORGANIZATION_MAPPING_WRITER_ASYNC_ENGINE = None
 _ORGANIZATION_MAPPING_WRITER_SESSION_FACTORY = None
 _HEALTH_MAPPING_WRITER_ASYNC_ENGINE = None
 _HEALTH_MAPPING_WRITER_SESSION_FACTORY = None
+_PROJECTION_RUNTIMES = {}
+_PROJECTION_RUNTIME_LOCKS = {}
+_PROJECTION_RUNTIME_ERROR = "Projection database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -305,7 +310,76 @@ async def dispose_database_runtimes() -> None:
             try:
                 await dispose_health_fact_writer_runtime()
             finally:
-                await dispose_mapping_writer_runtimes()
+                try:
+                    await dispose_mapping_writer_runtimes()
+                finally:
+                    for kind in ("organization", "health", "confirmation"):
+                        await dispose_projection_runtime(kind)
+                    if not invalidate_orphaned_projection_runtimes():
+                        raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+
+
+def _projection_url(settings: Settings, kind: str) -> str:
+    raw = {
+        "organization": settings.organization_projection_builder_database_url,
+        "health": settings.health_projection_builder_database_url,
+        "confirmation": settings.projection_confirmation_database_url,
+    }[kind]
+    try:
+        urls = [settings.organization_projection_builder_database_url, settings.health_projection_builder_database_url, settings.projection_confirmation_database_url]
+        parsed_urls = [make_url(value) for value in urls if value]
+        parsed = make_url(raw) if raw else None
+        users = [value.username for value in parsed_urls]
+        targets = {(value.host, value.port, value.database) for value in parsed_urls}
+        valid = parsed is not None and parsed.drivername == "postgresql+asyncpg" and parsed.username and parsed.password and len(users) == 3 and len(set(users)) == 3 and len(targets) == 1 and next(iter(targets)) == (settings.database_host, settings.database_port, settings.database_name) and parsed.username not in {settings.database_user, "postgres"}
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+    return raw
+
+
+async def get_projection_session_factory(kind: str):
+    if kind not in {"organization", "health", "confirmation"}:
+        raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+    key = (id(loop), kind)
+    lock = _PROJECTION_RUNTIME_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        entry = _PROJECTION_RUNTIMES.get(key)
+        if entry is None:
+            try:
+                engine = create_async_engine(_projection_url(get_settings(), kind), pool_pre_ping=True)
+                entry = (weakref.ref(loop), engine, create_session_factory(engine))
+            except Exception:
+                raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+            _PROJECTION_RUNTIMES[key] = entry
+        return entry[2]
+
+
+async def dispose_projection_runtime(kind: str) -> None:
+    import asyncio
+    loop = asyncio.get_running_loop()
+    entry = _PROJECTION_RUNTIMES.pop((id(loop), kind), None)
+    _PROJECTION_RUNTIME_LOCKS.pop((id(loop), kind), None)
+    if entry is not None:
+        await entry[1].dispose()
+
+
+def invalidate_orphaned_projection_runtimes() -> bool:
+    orphaned = []
+    for key, (loop_ref, engine, _) in tuple(_PROJECTION_RUNTIMES.items()):
+        loop = loop_ref()
+        if loop is None or loop.is_closed():
+            orphaned.append((key, engine))
+    for key, engine in orphaned:
+        _PROJECTION_RUNTIMES.pop(key, None)
+        _PROJECTION_RUNTIME_LOCKS.pop(key, None)
+        engine.sync_engine.dispose(close=False)
+    return not orphaned
 
 
 async def get_db_session():
