@@ -32,6 +32,15 @@ LEGACY_MAPPING_TABLES = {
     "public.organization_legacy_mapping",
     "public.health_indicator_legacy_mapping",
 }
+PROJECTION_BUILDER_TABLES = {
+    "public.organization_projection_generation",
+    "public.organization_projection_checkpoint",
+    "public.organization_projection",
+    "public.health_projection_generation",
+    "public.health_projection_checkpoint",
+    "public.health_projection_fact",
+    "public.health_projection_window_selection",
+}
 
 
 def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
@@ -62,5 +71,9 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
         "Alembic target_metadata is missing an approved identity table"
     )
     assert registered_tables == (
-        CORE_TABLES | IDENTITY_TABLES | CANONICAL_HEALTH_FACT_TABLES | LEGACY_MAPPING_TABLES
+        CORE_TABLES
+        | IDENTITY_TABLES
+        | CANONICAL_HEALTH_FACT_TABLES
+        | LEGACY_MAPPING_TABLES
+        | PROJECTION_BUILDER_TABLES
     )

@@ -184,6 +184,9 @@ jobs:
               "KG_TEST_HEALTH_MAPPING_WRITER_ROLE": f"kg_ci_health_map_{suffix}",
               "KG_TEST_MAPPING_AUDIT_ROLE": f"kg_ci_map_audit_{suffix}",
               "KG_TEST_MAPPING_SHADOW_ROLE": f"kg_ci_map_shadow_{suffix}",
+              "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE": f"kg_ci_org_proj_{suffix}",
+              "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE": f"kg_ci_health_proj_{suffix}",
+              "KG_TEST_PROJECTION_CONFIRMATION_ROLE": f"kg_ci_proj_confirm_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -236,6 +239,18 @@ jobs:
           values["KG_ORGANIZATION_MAPPING_DIGEST_KEYRING_JSON"] = json.dumps(
               organization_mapping_keys, separators=(",", ":"), sort_keys=True
           )
+          organization_projection_keys = {
+              "ci-org-proj-k1": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "ci-org-proj-k2": base64.b64encode(secrets.token_bytes(32)).decode(),
+          }
+          health_projection_keys = {
+              "ci-health-proj-k1": base64.b64encode(secrets.token_bytes(32)).decode(),
+              "ci-health-proj-k2": base64.b64encode(secrets.token_bytes(32)).decode(),
+          }
+          values["KG_ORGANIZATION_PROJECTION_DIGEST_CURRENT_KEY_ID"] = "ci-org-proj-k2"
+          values["KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(organization_projection_keys, separators=(",", ":"), sort_keys=True)
+          values["KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"] = "ci-health-proj-k2"
+          values["KG_HEALTH_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(health_projection_keys, separators=(",", ":"), sort_keys=True)
           url_names = {
               "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
               "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
@@ -248,6 +263,9 @@ jobs:
               "KG_TEST_HEALTH_MAPPING_WRITER_DATABASE_URL": "KG_TEST_HEALTH_MAPPING_WRITER_ROLE",
               "KG_TEST_MAPPING_AUDIT_DATABASE_URL": "KG_TEST_MAPPING_AUDIT_ROLE",
               "KG_TEST_MAPPING_SHADOW_DATABASE_URL": "KG_TEST_MAPPING_SHADOW_ROLE",
+              "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE",
+              "KG_TEST_HEALTH_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE",
+              "KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_CONFIRMATION_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -278,6 +296,9 @@ jobs:
           values["KG_HEALTH_MAPPING_WRITER_DATABASE_URL"] = values[
               "KG_TEST_HEALTH_MAPPING_WRITER_DATABASE_URL"
           ]
+          values["KG_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL"] = values["KG_TEST_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL"]
+          values["KG_HEALTH_PROJECTION_BUILDER_DATABASE_URL"] = values["KG_TEST_HEALTH_PROJECTION_BUILDER_DATABASE_URL"]
+          values["KG_PROJECTION_CONFIRMATION_DATABASE_URL"] = values["KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL"]
           for value in (
               *values.values(),
               *passwords.values(),
@@ -285,6 +306,8 @@ jobs:
               rabbit_password,
               *health_fact_keys.values(),
               *organization_mapping_keys.values(),
+              *organization_projection_keys.values(),
+              *health_projection_keys.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
@@ -408,6 +431,12 @@ jobs:
             --set=mapping_audit_password="$KG_TEST_MAPPING_AUDIT_ROLE_PASSWORD" \
             --set=mapping_shadow_role="$KG_TEST_MAPPING_SHADOW_ROLE" \
             --set=mapping_shadow_password="$KG_TEST_MAPPING_SHADOW_ROLE_PASSWORD" \
+            --set=organization_projection_role="$KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE" \
+            --set=organization_projection_password="$KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE_PASSWORD" \
+            --set=health_projection_role="$KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE" \
+            --set=health_projection_password="$KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE_PASSWORD" \
+            --set=projection_confirmation_role="$KG_TEST_PROJECTION_CONFIRMATION_ROLE" \
+            --set=projection_confirmation_password="$KG_TEST_PROJECTION_CONFIRMATION_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -421,6 +450,9 @@ jobs:
           CREATE ROLE :"health_mapping_role" LOGIN PASSWORD :'health_mapping_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"mapping_audit_role" LOGIN PASSWORD :'mapping_audit_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"mapping_shadow_role" LOGIN PASSWORD :'mapping_shadow_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"organization_projection_role" LOGIN PASSWORD :'organization_projection_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"health_projection_role" LOGIN PASSWORD :'health_projection_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"projection_confirmation_role" LOGIN PASSWORD :'projection_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

@@ -18,8 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260812_0016"
-
+REQUIRED_HEAD_REVISION = "20260813_0017"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -94,6 +93,18 @@ def _get_mapping_audit_database_url() -> str:
 
 def _get_mapping_shadow_database_url() -> str:
     return _get_role_database_url("KG_TEST_MAPPING_SHADOW_DATABASE_URL")
+
+
+def _get_organization_projection_builder_database_url() -> str:
+    return _get_role_database_url("KG_TEST_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL")
+
+
+def _get_health_projection_builder_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_PROJECTION_BUILDER_DATABASE_URL")
+
+
+def _get_projection_confirmation_database_url() -> str:
+    return _get_role_database_url("KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL")
 
 
 def _get_role_database_url(environment_name: str) -> str:
@@ -310,6 +321,9 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     health_mapping_role = _validated_role_name("KG_TEST_HEALTH_MAPPING_WRITER_ROLE")
     mapping_audit_role = _validated_role_name("KG_TEST_MAPPING_AUDIT_ROLE")
     mapping_shadow_role = _validated_role_name("KG_TEST_MAPPING_SHADOW_ROLE")
+    organization_projection_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE")
+    health_projection_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE")
+    projection_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_CONFIRMATION_ROLE")
     runtime_roles = (writer_role, worker_role, audit_role)
     for role in runtime_roles:
         database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
@@ -473,6 +487,26 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
         f'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE {mapping_tables} '
         f'FROM "{application_role}", "{readonly_role}", "{fact_writer_role}"'
     )
+    projection_tables = (
+        "public.organization_projection_generation, public.organization_projection_checkpoint, "
+        "public.organization_projection, public.health_projection_generation, "
+        "public.health_projection_checkpoint, public.health_projection_fact, "
+        "public.health_projection_window_selection"
+    )
+    projection_existing_roles = (
+        application_role, readonly_role, writer_role, worker_role, audit_role,
+        fact_writer_role, organization_mapping_role, health_mapping_role,
+        mapping_audit_role, mapping_shadow_role,
+    )
+    for role in projection_existing_roles:
+        database.execute(
+            'REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
+            f'ON {projection_tables} FROM "{role}"'
+        )
+        database.execute(
+            'REVOKE ALL ON SEQUENCE public.organization_projection_generation_id_seq, '
+            f'public.health_projection_generation_id_seq FROM "{role}"'
+        )
 
 
 @pytest.fixture(scope="module")
@@ -495,6 +529,9 @@ def pg_database():
         health_mapping_role = _validated_role_name("KG_TEST_HEALTH_MAPPING_WRITER_ROLE")
         mapping_audit_role = _validated_role_name("KG_TEST_MAPPING_AUDIT_ROLE")
         mapping_shadow_role = _validated_role_name("KG_TEST_MAPPING_SHADOW_ROLE")
+        organization_projection_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE")
+        health_projection_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE")
+        projection_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_CONFIRMATION_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -508,6 +545,9 @@ def pg_database():
             health_mapping_role,
             mapping_audit_role,
             mapping_shadow_role,
+            organization_projection_role,
+            health_projection_role,
+            projection_confirmation_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -571,6 +611,9 @@ def pg_database():
     database.execute("DROP SCHEMA IF EXISTS identity CASCADE")
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
     database.execute("CREATE SCHEMA public")
+    os.environ["KG_ORGANIZATION_PROJECTION_BUILDER_ROLE"] = organization_projection_role
+    os.environ["KG_HEALTH_PROJECTION_BUILDER_ROLE"] = health_projection_role
+    os.environ["KG_PROJECTION_CONFIRMATION_ROLE"] = projection_confirmation_role
     command.upgrade(_build_alembic_config(migration_database_url), "head")
 
     current_revision = database.fetch_value("SELECT version_num FROM alembic_version")

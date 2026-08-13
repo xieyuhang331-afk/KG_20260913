@@ -34,6 +34,15 @@ LEGACY_MAPPING_TABLES = {
     "public.organization_legacy_mapping",
     "public.health_indicator_legacy_mapping",
 }
+PROJECTION_BUILDER_TABLES = {
+    "public.organization_projection_generation",
+    "public.organization_projection_checkpoint",
+    "public.organization_projection",
+    "public.health_projection_generation",
+    "public.health_projection_checkpoint",
+    "public.health_projection_fact",
+    "public.health_projection_window_selection",
+}
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -71,4 +80,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
     } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
         CANONICAL_HEALTH_FACT_TABLE
-    } | LEGACY_MAPPING_TABLES
+    } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES
