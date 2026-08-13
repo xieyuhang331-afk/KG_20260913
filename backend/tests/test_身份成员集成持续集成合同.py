@@ -980,3 +980,24 @@ def test_CI严格执行注册持久发件箱R2数据库合同并上传独立JUni
     assert workflow.count("pytest-outbox-r2-report.xml") == 2
     assert "echo $KG_TEST_DELIVERY_WORKER_DATABASE_URL" not in workflow
     assert "set -x" not in workflow
+
+
+def test_projection_migration_runtime_roles_are_explicitly_propagated_from_test_roles():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    mappings = (
+        (
+            "KG_ORGANIZATION_PROJECTION_BUILDER_ROLE",
+            "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE",
+        ),
+        (
+            "KG_HEALTH_PROJECTION_BUILDER_ROLE",
+            "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE",
+        ),
+        ("KG_PROJECTION_CONFIRMATION_ROLE", "KG_TEST_PROJECTION_CONFIRMATION_ROLE"),
+    )
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    for runtime_name, test_name in mappings:
+        propagation = f'values["{runtime_name}"] = values["{test_name}"]'
+        assert backend_integration_job.count(propagation) == 1
+        assert backend_integration_job.index(propagation) < export_position
