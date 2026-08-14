@@ -313,7 +313,7 @@ async def dispose_database_runtimes() -> None:
                 try:
                     await dispose_mapping_writer_runtimes()
                 finally:
-                    for kind in ("organization", "health", "confirmation", "organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation"):
+                    for kind in ("organization", "health", "confirmation", "organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation", "organization_reader", "health_reader"):
                         await dispose_projection_runtime(kind)
                     if not invalidate_orphaned_projection_runtimes():
                         raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
@@ -328,17 +328,25 @@ def _projection_url(settings: Settings, kind: str) -> str:
         "health_shadow": settings.health_projection_shadow_database_url,
         "ready_gate": settings.projection_ready_gate_database_url,
         "shadow_confirmation": settings.projection_shadow_confirmation_database_url,
+        "organization_reader": settings.organization_projection_reader_database_url,
+        "health_reader": settings.health_projection_reader_database_url,
     }[kind]
     try:
         urls = [settings.organization_projection_builder_database_url, settings.health_projection_builder_database_url, settings.projection_confirmation_database_url]
-        if kind in {"organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation"}:
+        if kind in {"organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation", "organization_reader", "health_reader"}:
             urls += [settings.organization_projection_shadow_database_url, settings.health_projection_shadow_database_url, settings.projection_ready_gate_database_url, settings.projection_shadow_confirmation_database_url]
+        if kind in {"organization_reader", "health_reader"}:
+            urls += [settings.organization_projection_reader_database_url, settings.health_projection_reader_database_url]
         parsed_urls = [make_url(value) for value in urls if value]
         parsed = make_url(raw) if raw else None
         users = [value.username for value in parsed_urls]
         targets = {(value.host, value.port, value.database) for value in parsed_urls}
-        expected_count = 7 if kind in {"organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation"} else 3
+        expected_count = 9 if kind in {"organization_reader", "health_reader"} else (7 if kind in {"organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation"} else 3)
         valid = parsed is not None and parsed.drivername == "postgresql+asyncpg" and parsed.username and parsed.password and len(users) == expected_count and len(set(users)) == expected_count and len(targets) == 1 and next(iter(targets)) == (settings.database_host, settings.database_port, settings.database_name) and parsed.username not in {settings.database_user, "postgres"}
+        if kind == "organization_reader":
+            valid = valid and parsed.username == settings.organization_projection_reader_role
+        elif kind == "health_reader":
+            valid = valid and parsed.username == settings.health_projection_reader_role
     except Exception:
         valid = False
     if not valid:
@@ -347,7 +355,7 @@ def _projection_url(settings: Settings, kind: str) -> str:
 
 
 async def get_projection_session_factory(kind: str):
-    if kind not in {"organization", "health", "confirmation", "organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation"}:
+    if kind not in {"organization", "health", "confirmation", "organization_shadow", "health_shadow", "ready_gate", "shadow_confirmation", "organization_reader", "health_reader"}:
         raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
     try:
         loop = asyncio.get_running_loop()
