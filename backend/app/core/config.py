@@ -36,6 +36,10 @@ class Settings(BaseModel):
     health_projection_shadow_database_url: str | None = None
     projection_ready_gate_database_url: str | None = None
     projection_shadow_confirmation_database_url: str | None = None
+    organization_projection_reader_database_url: str | None = None
+    health_projection_reader_database_url: str | None = None
+    organization_projection_reader_role: str | None = None
+    health_projection_reader_role: str | None = None
     organization_projection_digest_current_key_id: str | None = None
     organization_projection_digest_keyring_json: str | None = None
     health_projection_digest_current_key_id: str | None = None
@@ -96,6 +100,10 @@ def get_settings() -> Settings:
         health_projection_shadow_database_url=os.getenv("KG_HEALTH_PROJECTION_SHADOW_DATABASE_URL"),
         projection_ready_gate_database_url=os.getenv("KG_PROJECTION_READY_GATE_DATABASE_URL"),
         projection_shadow_confirmation_database_url=os.getenv("KG_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL"),
+        organization_projection_reader_database_url=os.getenv("KG_ORGANIZATION_PROJECTION_READER_DATABASE_URL"),
+        health_projection_reader_database_url=os.getenv("KG_HEALTH_PROJECTION_READER_DATABASE_URL"),
+        organization_projection_reader_role=os.getenv("KG_ORGANIZATION_PROJECTION_READER_ROLE"),
+        health_projection_reader_role=os.getenv("KG_HEALTH_PROJECTION_READER_ROLE"),
         organization_projection_digest_current_key_id=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_CURRENT_KEY_ID"),
         organization_projection_digest_keyring_json=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"),
         health_projection_digest_current_key_id=os.getenv("KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"),

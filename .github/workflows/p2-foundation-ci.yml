@@ -151,6 +151,8 @@ jobs:
 
       - name: Prepare masked ephemeral integration configuration
         shell: bash
+        env:
+          KG_TEST_POSTGRES_PASSWORD: ${{ github.token }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -191,6 +193,8 @@ jobs:
               "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE": f"kg_ci_health_shadow_{suffix}",
               "KG_TEST_PROJECTION_READY_GATE_ROLE": f"kg_ci_proj_ready_{suffix}",
               "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE": f"kg_ci_shadow_confirm_{suffix}",
+              "KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE": f"kg_ci_org_reader_{suffix}",
+              "KG_TEST_HEALTH_PROJECTION_READER_ROLE": f"kg_ci_health_reader_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -274,6 +278,8 @@ jobs:
               "KG_TEST_HEALTH_PROJECTION_SHADOW_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE",
               "KG_TEST_PROJECTION_READY_GATE_DATABASE_URL": "KG_TEST_PROJECTION_READY_GATE_ROLE",
               "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE",
+              "KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE",
+              "KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_READER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -318,6 +324,33 @@ jobs:
           values["KG_HEALTH_PROJECTION_SHADOW_ROLE"] = values["KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE"]
           values["KG_PROJECTION_READY_GATE_ROLE"] = values["KG_TEST_PROJECTION_READY_GATE_ROLE"]
           values["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"] = values["KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE"]
+          values["KG_ORGANIZATION_PROJECTION_READER_DATABASE_URL"] = values["KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL"]
+          values["KG_HEALTH_PROJECTION_READER_DATABASE_URL"] = values["KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL"]
+          values["KG_ORGANIZATION_PROJECTION_READER_ROLE"] = values["KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE"]
+          values["KG_HEALTH_PROJECTION_READER_ROLE"] = values["KG_TEST_HEALTH_PROJECTION_READER_ROLE"]
+          values["KG_TEST_ROLE_ADMIN_DATABASE_URL"] = (
+              f"postgresql+asyncpg://postgres:{quote(os.environ['KG_TEST_POSTGRES_PASSWORD'])}@"
+              f"{host}:{port}/{database}"
+          )
+          role_aliases = {
+              "KG_READONLY_ROLE": "KG_TEST_READONLY_ROLE",
+              "KG_VERIFICATION_WRITER_ROLE": "KG_TEST_VERIFICATION_WRITER_ROLE",
+              "KG_DELIVERY_WORKER_ROLE": "KG_TEST_DELIVERY_WORKER_ROLE",
+              "KG_OUTBOX_AUDIT_ROLE": "KG_TEST_OUTBOX_AUDIT_ROLE",
+              "KG_HEALTH_FACT_WRITER_ROLE": "KG_TEST_HEALTH_FACT_WRITER_ROLE",
+              "KG_ORGANIZATION_MAPPING_WRITER_ROLE": "KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE",
+              "KG_HEALTH_MAPPING_WRITER_ROLE": "KG_TEST_HEALTH_MAPPING_WRITER_ROLE",
+              "KG_MAPPING_AUDIT_ROLE": "KG_TEST_MAPPING_AUDIT_ROLE",
+              "KG_MAPPING_SHADOW_ROLE": "KG_TEST_MAPPING_SHADOW_ROLE",
+          }
+          url_aliases = {
+              "KG_READONLY_DATABASE_URL": "KG_TEST_READONLY_DATABASE_URL",
+              "KG_OUTBOX_AUDIT_DATABASE_URL": "KG_TEST_OUTBOX_AUDIT_DATABASE_URL",
+              "KG_MAPPING_AUDIT_DATABASE_URL": "KG_TEST_MAPPING_AUDIT_DATABASE_URL",
+              "KG_MAPPING_SHADOW_DATABASE_URL": "KG_TEST_MAPPING_SHADOW_DATABASE_URL",
+          }
+          for target, source in (*role_aliases.items(), *url_aliases.items()):
+              values[target] = values[source]
           for value in (
               *values.values(),
               *passwords.values(),
@@ -464,6 +497,10 @@ jobs:
             --set=projection_ready_gate_password="$KG_TEST_PROJECTION_READY_GATE_ROLE_PASSWORD" \
             --set=projection_shadow_confirmation_role="$KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE" \
             --set=projection_shadow_confirmation_password="$KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE_PASSWORD" \
+            --set=organization_projection_reader_role="$KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE" \
+            --set=organization_projection_reader_password="$KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE_PASSWORD" \
+            --set=health_projection_reader_role="$KG_TEST_HEALTH_PROJECTION_READER_ROLE" \
+            --set=health_projection_reader_password="$KG_TEST_HEALTH_PROJECTION_READER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -484,6 +521,8 @@ jobs:
           CREATE ROLE :"health_projection_shadow_role" LOGIN PASSWORD :'health_projection_shadow_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"projection_ready_gate_role" LOGIN PASSWORD :'projection_ready_gate_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"projection_shadow_confirmation_role" LOGIN PASSWORD :'projection_shadow_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"organization_projection_reader_role" LOGIN PASSWORD :'organization_projection_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"health_projection_reader_role" LOGIN PASSWORD :'health_projection_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

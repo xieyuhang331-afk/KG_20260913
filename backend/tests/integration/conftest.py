@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260814_0018"
+REQUIRED_HEAD_REVISION = "20260815_0019"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -121,6 +121,59 @@ def _get_projection_ready_gate_database_url() -> str:
 
 def _get_projection_shadow_confirmation_database_url() -> str:
     return _get_role_database_url("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL")
+
+
+def _get_organization_projection_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL")
+
+
+def _get_health_projection_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL")
+
+
+def _propagate_module_d_role_preflight_environment() -> None:
+    aliases = {
+        "KG_DATABASE_USER": "KG_TEST_APPLICATION_ROLE",
+        "KG_IDENTITY_APPLICATION_DATABASE_URL": "KG_TEST_DATABASE_URL",
+        "KG_READONLY_ROLE": "KG_TEST_READONLY_ROLE",
+        "KG_READONLY_DATABASE_URL": "KG_TEST_READONLY_DATABASE_URL",
+        "KG_VERIFICATION_WRITER_ROLE": "KG_TEST_VERIFICATION_WRITER_ROLE",
+        "KG_VERIFICATION_WRITER_DATABASE_URL": "KG_TEST_VERIFICATION_WRITER_DATABASE_URL",
+        "KG_DELIVERY_WORKER_ROLE": "KG_TEST_DELIVERY_WORKER_ROLE",
+        "KG_DELIVERY_WORKER_DATABASE_URL": "KG_TEST_DELIVERY_WORKER_DATABASE_URL",
+        "KG_OUTBOX_AUDIT_ROLE": "KG_TEST_OUTBOX_AUDIT_ROLE",
+        "KG_OUTBOX_AUDIT_DATABASE_URL": "KG_TEST_OUTBOX_AUDIT_DATABASE_URL",
+        "KG_HEALTH_FACT_WRITER_ROLE": "KG_TEST_HEALTH_FACT_WRITER_ROLE",
+        "KG_HEALTH_FACT_WRITER_DATABASE_URL": "KG_TEST_HEALTH_FACT_WRITER_DATABASE_URL",
+        "KG_ORGANIZATION_MAPPING_WRITER_ROLE": "KG_TEST_ORGANIZATION_MAPPING_WRITER_ROLE",
+        "KG_ORGANIZATION_MAPPING_WRITER_DATABASE_URL": "KG_TEST_ORGANIZATION_MAPPING_WRITER_DATABASE_URL",
+        "KG_HEALTH_MAPPING_WRITER_ROLE": "KG_TEST_HEALTH_MAPPING_WRITER_ROLE",
+        "KG_HEALTH_MAPPING_WRITER_DATABASE_URL": "KG_TEST_HEALTH_MAPPING_WRITER_DATABASE_URL",
+        "KG_MAPPING_AUDIT_ROLE": "KG_TEST_MAPPING_AUDIT_ROLE",
+        "KG_MAPPING_AUDIT_DATABASE_URL": "KG_TEST_MAPPING_AUDIT_DATABASE_URL",
+        "KG_MAPPING_SHADOW_ROLE": "KG_TEST_MAPPING_SHADOW_ROLE",
+        "KG_MAPPING_SHADOW_DATABASE_URL": "KG_TEST_MAPPING_SHADOW_DATABASE_URL",
+        "KG_ORGANIZATION_PROJECTION_BUILDER_ROLE": "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE",
+        "KG_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL",
+        "KG_HEALTH_PROJECTION_BUILDER_ROLE": "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE",
+        "KG_HEALTH_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_BUILDER_DATABASE_URL",
+        "KG_PROJECTION_CONFIRMATION_ROLE": "KG_TEST_PROJECTION_CONFIRMATION_ROLE",
+        "KG_PROJECTION_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL",
+        "KG_ORGANIZATION_PROJECTION_SHADOW_ROLE": "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE",
+        "KG_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL",
+        "KG_HEALTH_PROJECTION_SHADOW_ROLE": "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE",
+        "KG_HEALTH_PROJECTION_SHADOW_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_SHADOW_DATABASE_URL",
+        "KG_PROJECTION_READY_GATE_ROLE": "KG_TEST_PROJECTION_READY_GATE_ROLE",
+        "KG_PROJECTION_READY_GATE_DATABASE_URL": "KG_TEST_PROJECTION_READY_GATE_DATABASE_URL",
+        "KG_PROJECTION_SHADOW_CONFIRMATION_ROLE": "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE",
+        "KG_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL",
+        "KG_ORGANIZATION_PROJECTION_READER_ROLE": "KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE",
+        "KG_ORGANIZATION_PROJECTION_READER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL",
+        "KG_HEALTH_PROJECTION_READER_ROLE": "KG_TEST_HEALTH_PROJECTION_READER_ROLE",
+        "KG_HEALTH_PROJECTION_READER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL",
+    }
+    for target, source in aliases.items():
+        os.environ[target] = os.environ[source]
 
 
 def _get_role_database_url(environment_name: str) -> str:
@@ -244,6 +297,14 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{application_role}"')
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
     database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
+    for view in (
+        "organization_ready_projection_generation_v1",
+        "organization_ready_projection_v1",
+        "health_ready_projection_generation_v1",
+        "health_ready_projection_fact_v1",
+        "health_ready_projection_window_selection_v1",
+    ):
+        database.execute(f'REVOKE ALL PRIVILEGES ON TABLE public."{view}" FROM "{application_role}", "{readonly_role}"')
     database.execute(
         'REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER '
         f'ON TABLE public.platform_org, public.operation_log FROM "{readonly_role}"'
@@ -344,6 +405,8 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     health_shadow_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE")
     ready_gate_role = _validated_role_name("KG_TEST_PROJECTION_READY_GATE_ROLE")
     shadow_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE")
+    organization_reader_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE")
+    health_reader_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_READER_ROLE")
     runtime_roles = (writer_role, worker_role, audit_role)
     for role in runtime_roles:
         database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
@@ -556,6 +619,8 @@ def pg_database():
         health_shadow_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE")
         ready_gate_role = _validated_role_name("KG_TEST_PROJECTION_READY_GATE_ROLE")
         shadow_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE")
+        organization_reader_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE")
+        health_reader_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_READER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -576,6 +641,8 @@ def pg_database():
             health_shadow_role,
             ready_gate_role,
             shadow_confirmation_role,
+            organization_reader_role,
+            health_reader_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -639,13 +706,7 @@ def pg_database():
     database.execute("DROP SCHEMA IF EXISTS identity CASCADE")
     database.execute("DROP SCHEMA IF EXISTS public CASCADE")
     database.execute("CREATE SCHEMA public")
-    os.environ["KG_ORGANIZATION_PROJECTION_BUILDER_ROLE"] = organization_projection_role
-    os.environ["KG_HEALTH_PROJECTION_BUILDER_ROLE"] = health_projection_role
-    os.environ["KG_PROJECTION_CONFIRMATION_ROLE"] = projection_confirmation_role
-    os.environ["KG_ORGANIZATION_PROJECTION_SHADOW_ROLE"] = organization_shadow_role
-    os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"] = health_shadow_role
-    os.environ["KG_PROJECTION_READY_GATE_ROLE"] = ready_gate_role
-    os.environ["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"] = shadow_confirmation_role
+    _propagate_module_d_role_preflight_environment()
     command.upgrade(_build_alembic_config(migration_database_url), "head")
 
     current_revision = database.fetch_value("SELECT version_num FROM alembic_version")
