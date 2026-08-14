@@ -41,9 +41,9 @@ def test_Module_A领域源码仍无数据库运行和门禁入口():
     assert not any(token.lower() in source for token in forbidden)
 
 
-def test_Module_B源码无Module_C与公开入口():
+def test_Module_C仍无ACTIVE与公开入口():
     forbidden = (
-        "shadow", '"ready"', '"active"', "read_cutover", "cutover", "APIRouter",
+        '"active"', "read_cutover", "APIRouter",
     )
     source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -54,12 +54,13 @@ def test_Module_B源码无Module_C与公开入口():
     assert not any(token.lower() in source for token in forbidden)
 
 
-def test_Metadata与Migration_Head仅传播Module_B():
+def test_Metadata与Migration_Head传播至Module_C():
     models = (ROOT / "app/modules/models.py").read_text(encoding="utf-8")
     env = (ROOT / "app/migrations/env.py").read_text(encoding="utf-8")
     assert "organization_projection" in models + env
     assert "health_projection" in models + env
     assert (ROOT / "app/migrations/versions/20260813_0017_p3_basic_projection_builder_foundation.py").exists()
+    assert (ROOT / "app/migrations/versions/20260814_0018_p3_basic_projection_shadow_ready_gate.py").exists()
 
 
 def test_P2健康读取路径没有依赖Module_A():

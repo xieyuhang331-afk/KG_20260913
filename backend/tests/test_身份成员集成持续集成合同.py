@@ -6,7 +6,7 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260813_0017"
+EXPECTED_HEAD = "20260814_0018"
 STALE_HEAD = "20260807_0010"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
@@ -732,6 +732,10 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
             "KG_TEST_PROJECTION_CONFIRMATION_ROLE",
             "kg_ci_proj_confirm_test_run",
         )
+        monkeypatch.setenv("KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE", "kg_ci_org_shadow_test_run")
+        monkeypatch.setenv("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE", "kg_ci_health_shadow_test_run")
+        monkeypatch.setenv("KG_TEST_PROJECTION_READY_GATE_ROLE", "kg_ci_ready_gate_test_run")
+        monkeypatch.setenv("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE", "kg_ci_shadow_confirm_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -994,6 +998,10 @@ def test_projection_migration_runtime_roles_are_explicitly_propagated_from_test_
             "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE",
         ),
         ("KG_PROJECTION_CONFIRMATION_ROLE", "KG_TEST_PROJECTION_CONFIRMATION_ROLE"),
+        ("KG_ORGANIZATION_PROJECTION_SHADOW_ROLE", "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE"),
+        ("KG_HEALTH_PROJECTION_SHADOW_ROLE", "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE"),
+        ("KG_PROJECTION_READY_GATE_ROLE", "KG_TEST_PROJECTION_READY_GATE_ROLE"),
+        ("KG_PROJECTION_SHADOW_CONFIRMATION_ROLE", "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE"),
     )
     export_position = backend_integration_job.index("GITHUB_ENV")
 

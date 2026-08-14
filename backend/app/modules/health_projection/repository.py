@@ -1,15 +1,18 @@
 import asyncio
 
 from sqlalchemy import BigInteger, column, func, insert, select, table, text, update
+from sqlalchemy.orm import load_only
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.health_fact.models import CanonicalHealthFactOrmModel
+from app.modules.health_fact_mapping.models import HealthIndicatorLegacyMappingOrmModel
 from app.modules.system.models import OperationLog
 from .domain import HealthCurrentFact, HealthProjectionFactRow, HealthWindowSelection, build_health_projection_rows
 from app.modules.organization_projection.service import OperationPostimage, ProjectionCheckpointConflict, _digest
 from .models import (
     HealthProjectionCheckpoint, HealthProjectionFactModel,
-    HealthProjectionGeneration, HealthProjectionWindowSelectionModel,
+    HealthProjectionGeneration, HealthProjectionShadowAudit,
+    HealthProjectionShadowRun, HealthProjectionWindowSelectionModel,
 )
 
 
@@ -85,8 +88,27 @@ class HealthProjectionRepository:
         return tuple(HealthCurrentFact(row.id, row.subject_user_id, row.indicator_code, row.numeric_value, row.unit, row.measured_at, row.received_at, row.source_type) for row in result)
 
     async def get_generation(self, generation_id: int, *, lock: bool = False):
-        stmt = select(HealthProjectionGeneration).where(HealthProjectionGeneration.id == generation_id)
+        fields = tuple(getattr(HealthProjectionGeneration, name) for name in (
+            "id", "projection_version", "generation_no", "status", "high_watermark",
+            "digest_key_id", "input_digest", "start_operation_id", "builder_id",
+            "lease_epoch", "lease_expires_at", "created_at", "updated_at",
+            "completed_at", "failure_code", "version",
+        ))
+        stmt = select(HealthProjectionGeneration).options(load_only(*fields)).where(HealthProjectionGeneration.id == generation_id)
         result = await _safe(self.session.execute(stmt.with_for_update() if lock else stmt))
+        return result.scalar_one_or_none()
+
+    async def get_shadow_generation(self, generation_id: int, *, lock: bool = False):
+        fields = tuple(getattr(HealthProjectionGeneration, name) for name in (
+            "id", "projection_version", "status", "high_watermark", "digest_key_id",
+            "input_digest", "completed_at", "updated_at", "version",
+            "current_shadow_run_id", "shadow_success_count", "ready_at",
+            "ready_operation_id",
+        ))
+        statement = select(HealthProjectionGeneration).options(load_only(*fields)).where(
+            HealthProjectionGeneration.id == generation_id
+        )
+        result = await _safe(self.session.execute(statement.with_for_update() if lock else statement))
         return result.scalar_one_or_none()
 
     async def get_checkpoint(self, generation_id: int, *, lock: bool = False):
@@ -269,3 +291,115 @@ class HealthProjectionRepository:
         result = await _safe(self.session.execute(select(func.count()).select_from(HealthProjectionWindowSelectionModel).where(HealthProjectionWindowSelectionModel.generation_id == generation.id)))
         selections = int(result.scalar_one())
         return OperationPostimage(generation.status, generation.version, generation.high_watermark, generation.digest_key_id, checkpoint.checkpoint_digest, checkpoint.version, checkpoint.processed_count, checkpoint.projected_count, checkpoint.skipped_count, checkpoint.remaining_count, rows, selections, audit.get("completion_evidence", ""), generation.builder_id, generation.lease_epoch, generation.lease_expires_at, generation.completed_at, generation.failure_code, checkpoint.last_operation_id)
+
+    async def load_shadow_inputs(self, generation):
+        maximum = generation.high_watermark["max_fact_id"]
+        snapshot = generation.high_watermark["source_snapshot"]
+        facts = await self.load_all_source_facts(maximum, snapshot)
+        mappings = await _safe(self.session.execute(
+            select(HealthIndicatorLegacyMappingOrmModel).options(load_only(*(
+                getattr(HealthIndicatorLegacyMappingOrmModel, name) for name in (
+                    "id", "legacy_indicator_id", "legacy_recorded_at",
+                    "canonical_fact_id", "mapping_version", "source_fingerprint",
+                    "digest_key_id", "disposition", "reason_code", "created_at",
+                )
+            ))).order_by(
+                HealthIndicatorLegacyMappingOrmModel.legacy_recorded_at,
+                HealthIndicatorLegacyMappingOrmModel.legacy_indicator_id,
+                HealthIndicatorLegacyMappingOrmModel.mapping_version,
+            )
+        ))
+        projected = await _safe(self.session.execute(
+            select(HealthProjectionFactModel).options(load_only(*(
+                getattr(HealthProjectionFactModel, name) for name in (
+                    "generation_id", "fact_id", "subject_user_id", "indicator_code",
+                    "numeric_value", "unit", "measured_at", "received_at", "source_type",
+                    "business_day", "window_start_utc", "window_end_utc", "row_digest",
+                    "digest_key_id",
+                )
+            ))).where(
+                HealthProjectionFactModel.generation_id == generation.id
+            ).order_by(HealthProjectionFactModel.fact_id)
+        ))
+        selections = await _safe(self.session.execute(
+            select(HealthProjectionWindowSelectionModel).options(load_only(*(
+                getattr(HealthProjectionWindowSelectionModel, name) for name in (
+                    "generation_id", "subject_user_id", "indicator_code", "business_day",
+                    "winner_fact_id", "rule_version", "selection_digest", "digest_key_id",
+                )
+            ))).where(
+                HealthProjectionWindowSelectionModel.generation_id == generation.id
+            ).order_by(
+                HealthProjectionWindowSelectionModel.subject_user_id,
+                HealthProjectionWindowSelectionModel.indicator_code,
+                HealthProjectionWindowSelectionModel.business_day,
+            )
+        ))
+        visibility = await _safe(self.session.execute(
+            select(
+                self.visibility.c.id.label("fact_id"),
+                self.visibility.c.supersedes_fact_id,
+                self.visibility.c.inserting_xid,
+            ).where(self.visibility.c.id <= maximum).order_by(self.visibility.c.id)
+        ))
+        visibility_rows = tuple(type("Visibility", (), {
+            "fact_id": row.fact_id, "supersedes_fact_id": row.supersedes_fact_id,
+            "inserting_xid": row.inserting_xid,
+            "is_current": any(fact.id == row.fact_id for fact in facts),
+        })() for row in visibility)
+        post_hwm_ids = await _safe(self.session.execute(
+            select(self.source.c.id).where(self.source.c.id > maximum).order_by(self.source.c.id)
+        ))
+        post_hwm = tuple(type("PostHwm", (), {"id": value})() for value in post_hwm_ids.scalars())
+        return (
+            facts, tuple(mappings.scalars()), tuple(projected.scalars()),
+            tuple(selections.scalars()), visibility_rows, post_hwm,
+        )
+
+    async def get_shadow_run(self, run_id: str, *, lock: bool = False):
+        statement = select(HealthProjectionShadowRun).where(
+            HealthProjectionShadowRun.run_id == run_id
+        )
+        result = await _safe(self.session.execute(statement.with_for_update() if lock else statement))
+        return result.scalar_one_or_none()
+
+    async def get_shadow_audit(self, operation_id: str):
+        result = await _safe(self.session.execute(
+            select(HealthProjectionShadowAudit).where(
+                HealthProjectionShadowAudit.operation_id == operation_id
+            )
+        ))
+        return result.scalar_one_or_none()
+
+    async def next_shadow_sequence(self, generation_id: int) -> int:
+        result = await _safe(self.session.execute(select(func.coalesce(
+            func.max(HealthProjectionShadowRun.run_sequence), 0
+        )).where(HealthProjectionShadowRun.generation_id == generation_id)))
+        return int(result.scalar_one()) + 1
+
+    async def add_shadow_run(self, run) -> None:
+        self.session.add(run)
+        await _safe(self.session.flush())
+
+    async def add_shadow_audit(self, audit) -> None:
+        self.session.add(audit)
+        await _safe(self.session.flush())
+
+    async def passed_shadow_runs(self, generation_id: int):
+        result = await _safe(self.session.execute(
+            select(HealthProjectionShadowRun).where(
+                HealthProjectionShadowRun.generation_id == generation_id,
+                HealthProjectionShadowRun.status == "PASSED",
+            ).order_by(HealthProjectionShadowRun.run_sequence.desc()).limit(2)
+        ))
+        return tuple(reversed(tuple(result.scalars())))
+
+    async def heartbeat_shadow(self, *, run_id, validator_id, lease_epoch, expires_at):
+        result = await _safe(self.session.execute(update(HealthProjectionShadowRun).where(
+            HealthProjectionShadowRun.run_id == run_id,
+            HealthProjectionShadowRun.status == "RUNNING",
+            HealthProjectionShadowRun.validator_id == validator_id,
+            HealthProjectionShadowRun.lease_epoch == lease_epoch,
+            HealthProjectionShadowRun.lease_expires_at > func.now(),
+        ).values(lease_expires_at=expires_at, version=HealthProjectionShadowRun.version + 1)))
+        return result.rowcount == 1

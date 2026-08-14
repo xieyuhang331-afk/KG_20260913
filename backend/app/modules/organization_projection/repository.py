@@ -2,14 +2,17 @@ import asyncio
 from datetime import datetime
 
 from sqlalchemy import func, insert, select, text, update
+from sqlalchemy.orm import load_only
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.system.models import OperationLog, PlatformOrg
+from app.modules.organization_mapping.models import OrganizationLegacyMappingOrmModel
 from .domain import OrganizationProjectionRow, OrganizationSourceNode, build_organization_projection_row
 from .service import OperationPostimage, ProjectionCheckpointConflict, _digest
 from .models import (
     OrganizationProjectionCheckpoint, OrganizationProjectionGeneration,
-    OrganizationProjectionModel,
+    OrganizationProjectionModel, OrganizationProjectionShadowAudit,
+    OrganizationProjectionShadowRun,
 )
 
 
@@ -63,8 +66,27 @@ class OrganizationProjectionRepository:
         return tuple(rows)
 
     async def get_generation(self, generation_id: int, *, lock: bool = False):
-        stmt = select(OrganizationProjectionGeneration).where(OrganizationProjectionGeneration.id == generation_id)
+        fields = tuple(getattr(OrganizationProjectionGeneration, name) for name in (
+            "id", "projection_version", "generation_no", "status", "high_watermark",
+            "digest_key_id", "input_digest", "start_operation_id", "builder_id",
+            "lease_epoch", "lease_expires_at", "created_at", "updated_at",
+            "completed_at", "failure_code", "version",
+        ))
+        stmt = select(OrganizationProjectionGeneration).options(load_only(*fields)).where(OrganizationProjectionGeneration.id == generation_id)
         result = await _safe(self.session.execute(stmt.with_for_update() if lock else stmt))
+        return result.scalar_one_or_none()
+
+    async def get_shadow_generation(self, generation_id: int, *, lock: bool = False):
+        fields = tuple(getattr(OrganizationProjectionGeneration, name) for name in (
+            "id", "projection_version", "status", "high_watermark", "digest_key_id",
+            "input_digest", "completed_at", "updated_at", "version",
+            "current_shadow_run_id", "shadow_success_count", "ready_at",
+            "ready_operation_id",
+        ))
+        statement = select(OrganizationProjectionGeneration).options(load_only(*fields)).where(
+            OrganizationProjectionGeneration.id == generation_id
+        )
+        result = await _safe(self.session.execute(statement.with_for_update() if lock else statement))
         return result.scalar_one_or_none()
 
     async def get_checkpoint(self, generation_id: int, *, lock: bool = False):
@@ -112,7 +134,8 @@ class OrganizationProjectionRepository:
                 parent_id=row.parent_id, org_code=row.org_code, org_name=row.org_name,
                 org_type=row.org_type, status=row.status, sort_order=row.sort_order,
                 source_version=row.source_version, path_ids=list(row.path_ids),
-                path_codes=list(row.path_codes), compatibility_mode=row.compatibility_mode,
+                path_codes=list(row.path_codes), path_versions=list(row.path_versions),
+                compatibility_mode=row.compatibility_mode,
                 scope_eligible=row.scope_eligible, row_digest=row.row_digest,
                 digest_key_id=key_id,
             ))
@@ -177,8 +200,8 @@ class OrganizationProjectionRepository:
                 )
             )
         expected = tuple(expected_rows)
-        actual = tuple((row.organization_id, row.parent_id, row.org_code, row.org_name, row.org_type, row.status, row.sort_order, row.source_version, tuple(row.path_ids), tuple(row.path_codes), row.compatibility_mode, row.scope_eligible, row.row_digest, row.digest_key_id) for row in persisted)
-        wanted = tuple((row.organization_id, row.parent_id, row.org_code, row.org_name, row.org_type, row.status, row.sort_order, row.source_version, row.path_ids, row.path_codes, row.compatibility_mode, row.scope_eligible, row.row_digest, key_id) for row in expected)
+        actual = tuple((row.organization_id, row.parent_id, row.org_code, row.org_name, row.org_type, row.status, row.sort_order, row.source_version, tuple(row.path_ids), tuple(row.path_codes), tuple(row.path_versions), row.compatibility_mode, row.scope_eligible, row.row_digest, row.digest_key_id) for row in persisted)
+        wanted = tuple((row.organization_id, row.parent_id, row.org_code, row.org_name, row.org_type, row.status, row.sort_order, row.source_version, row.path_ids, row.path_codes, row.path_versions, row.compatibility_mode, row.scope_eligible, row.row_digest, key_id) for row in expected)
         if ids != tuple(row.organization_id for row in expected) or actual != wanted or len(ids) != checkpoint.projected_count or checkpoint.remaining_count != 0:
             raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
         return _digest({"generation_id": generation_id, "rows": actual, "digest_key_id": key_id})
@@ -196,3 +219,91 @@ class OrganizationProjectionRepository:
     async def operation_postimage(self, generation, checkpoint, audit):
         rows = await self.count_rows(generation.id)
         return OperationPostimage(generation.status, generation.version, generation.high_watermark, generation.digest_key_id, checkpoint.checkpoint_digest, checkpoint.version, checkpoint.processed_count, checkpoint.projected_count, checkpoint.skipped_count, checkpoint.remaining_count, rows, 0, audit.get("completion_evidence", ""), generation.builder_id, generation.lease_epoch, generation.lease_expires_at, generation.completed_at, generation.failure_code, checkpoint.last_operation_id)
+
+    async def load_shadow_inputs(self, generation):
+        maximum = generation.high_watermark["max_organization_id"]
+        ids = await self.list_leaf_ids(after_id=None, max_id=maximum, limit=maximum + 1)
+        chains = tuple([await self.load_chain(source_id) for source_id in ids])
+        mappings = await _safe(self.session.execute(
+            select(OrganizationLegacyMappingOrmModel).options(load_only(*(
+                getattr(OrganizationLegacyMappingOrmModel, name) for name in (
+                    "id", "legacy_tenant_id", "legacy_org_id",
+                    "canonical_organization_id", "mapping_version",
+                    "source_fingerprint", "digest_key_id", "disposition",
+                    "reason_code", "created_at",
+                )
+            ))).order_by(
+                OrganizationLegacyMappingOrmModel.legacy_tenant_id,
+                OrganizationLegacyMappingOrmModel.mapping_version,
+            )
+        ))
+        projections = await _safe(self.session.execute(
+            select(OrganizationProjectionModel).options(load_only(*(
+                getattr(OrganizationProjectionModel, name) for name in (
+                    "generation_id", "organization_id", "parent_id", "org_code",
+                    "org_name", "org_type", "status", "sort_order", "source_version",
+                    "path_ids", "path_codes", "path_versions", "compatibility_mode", "scope_eligible",
+                    "row_digest", "digest_key_id",
+                )
+            ))).where(
+                OrganizationProjectionModel.generation_id == generation.id
+            ).order_by(OrganizationProjectionModel.organization_id)
+        ))
+        post_hwm = await _safe(self.session.execute(
+            select(
+                self.source.c.id, self.source.c.version,
+                self.source.c.updated_at,
+            ).where(
+                (self.source.c.id > maximum)
+                | (self.source.c.updated_at > generation.completed_at)
+            ).order_by(self.source.c.id)
+        ))
+        return chains, tuple(mappings.scalars()), tuple(projections.scalars()), tuple(post_hwm)
+
+    async def get_shadow_run(self, run_id: str, *, lock: bool = False):
+        statement = select(OrganizationProjectionShadowRun).where(
+            OrganizationProjectionShadowRun.run_id == run_id
+        )
+        result = await _safe(self.session.execute(statement.with_for_update() if lock else statement))
+        return result.scalar_one_or_none()
+
+    async def get_shadow_audit(self, operation_id: str):
+        result = await _safe(self.session.execute(
+            select(OrganizationProjectionShadowAudit).where(
+                OrganizationProjectionShadowAudit.operation_id == operation_id
+            )
+        ))
+        return result.scalar_one_or_none()
+
+    async def next_shadow_sequence(self, generation_id: int) -> int:
+        result = await _safe(self.session.execute(select(func.coalesce(
+            func.max(OrganizationProjectionShadowRun.run_sequence), 0
+        )).where(OrganizationProjectionShadowRun.generation_id == generation_id)))
+        return int(result.scalar_one()) + 1
+
+    async def add_shadow_run(self, run) -> None:
+        self.session.add(run)
+        await _safe(self.session.flush())
+
+    async def add_shadow_audit(self, audit) -> None:
+        self.session.add(audit)
+        await _safe(self.session.flush())
+
+    async def passed_shadow_runs(self, generation_id: int):
+        result = await _safe(self.session.execute(
+            select(OrganizationProjectionShadowRun).where(
+                OrganizationProjectionShadowRun.generation_id == generation_id,
+                OrganizationProjectionShadowRun.status == "PASSED",
+            ).order_by(OrganizationProjectionShadowRun.run_sequence.desc()).limit(2)
+        ))
+        return tuple(reversed(tuple(result.scalars())))
+
+    async def heartbeat_shadow(self, *, run_id, validator_id, lease_epoch, expires_at):
+        result = await _safe(self.session.execute(update(OrganizationProjectionShadowRun).where(
+            OrganizationProjectionShadowRun.run_id == run_id,
+            OrganizationProjectionShadowRun.status == "RUNNING",
+            OrganizationProjectionShadowRun.validator_id == validator_id,
+            OrganizationProjectionShadowRun.lease_epoch == lease_epoch,
+            OrganizationProjectionShadowRun.lease_expires_at > func.now(),
+        ).values(lease_expires_at=expires_at, version=OrganizationProjectionShadowRun.version + 1)))
+        return result.rowcount == 1

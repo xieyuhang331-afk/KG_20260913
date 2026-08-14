@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260813_0017"
+REQUIRED_HEAD_REVISION = "20260814_0018"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -105,6 +105,22 @@ def _get_health_projection_builder_database_url() -> str:
 
 def _get_projection_confirmation_database_url() -> str:
     return _get_role_database_url("KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL")
+
+
+def _get_organization_projection_shadow_database_url() -> str:
+    return _get_role_database_url("KG_TEST_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL")
+
+
+def _get_health_projection_shadow_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_PROJECTION_SHADOW_DATABASE_URL")
+
+
+def _get_projection_ready_gate_database_url() -> str:
+    return _get_role_database_url("KG_TEST_PROJECTION_READY_GATE_DATABASE_URL")
+
+
+def _get_projection_shadow_confirmation_database_url() -> str:
+    return _get_role_database_url("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL")
 
 
 def _get_role_database_url(environment_name: str) -> str:
@@ -324,6 +340,10 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     organization_projection_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE")
     health_projection_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE")
     projection_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_CONFIRMATION_ROLE")
+    organization_shadow_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE")
+    health_shadow_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE")
+    ready_gate_role = _validated_role_name("KG_TEST_PROJECTION_READY_GATE_ROLE")
+    shadow_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE")
     runtime_roles = (writer_role, worker_role, audit_role)
     for role in runtime_roles:
         database.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
@@ -532,6 +552,10 @@ def pg_database():
         organization_projection_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE")
         health_projection_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE")
         projection_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_CONFIRMATION_ROLE")
+        organization_shadow_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE")
+        health_shadow_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE")
+        ready_gate_role = _validated_role_name("KG_TEST_PROJECTION_READY_GATE_ROLE")
+        shadow_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -548,6 +572,10 @@ def pg_database():
             organization_projection_role,
             health_projection_role,
             projection_confirmation_role,
+            organization_shadow_role,
+            health_shadow_role,
+            ready_gate_role,
+            shadow_confirmation_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -614,6 +642,10 @@ def pg_database():
     os.environ["KG_ORGANIZATION_PROJECTION_BUILDER_ROLE"] = organization_projection_role
     os.environ["KG_HEALTH_PROJECTION_BUILDER_ROLE"] = health_projection_role
     os.environ["KG_PROJECTION_CONFIRMATION_ROLE"] = projection_confirmation_role
+    os.environ["KG_ORGANIZATION_PROJECTION_SHADOW_ROLE"] = organization_shadow_role
+    os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"] = health_shadow_role
+    os.environ["KG_PROJECTION_READY_GATE_ROLE"] = ready_gate_role
+    os.environ["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"] = shadow_confirmation_role
     command.upgrade(_build_alembic_config(migration_database_url), "head")
 
     current_revision = database.fetch_value("SELECT version_num FROM alembic_version")

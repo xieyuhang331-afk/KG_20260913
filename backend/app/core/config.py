@@ -32,6 +32,10 @@ class Settings(BaseModel):
     organization_projection_builder_database_url: str | None = None
     health_projection_builder_database_url: str | None = None
     projection_confirmation_database_url: str | None = None
+    organization_projection_shadow_database_url: str | None = None
+    health_projection_shadow_database_url: str | None = None
+    projection_ready_gate_database_url: str | None = None
+    projection_shadow_confirmation_database_url: str | None = None
     organization_projection_digest_current_key_id: str | None = None
     organization_projection_digest_keyring_json: str | None = None
     health_projection_digest_current_key_id: str | None = None
@@ -88,6 +92,10 @@ def get_settings() -> Settings:
         organization_projection_builder_database_url=os.getenv("KG_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL"),
         health_projection_builder_database_url=os.getenv("KG_HEALTH_PROJECTION_BUILDER_DATABASE_URL"),
         projection_confirmation_database_url=os.getenv("KG_PROJECTION_CONFIRMATION_DATABASE_URL"),
+        organization_projection_shadow_database_url=os.getenv("KG_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL"),
+        health_projection_shadow_database_url=os.getenv("KG_HEALTH_PROJECTION_SHADOW_DATABASE_URL"),
+        projection_ready_gate_database_url=os.getenv("KG_PROJECTION_READY_GATE_DATABASE_URL"),
+        projection_shadow_confirmation_database_url=os.getenv("KG_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL"),
         organization_projection_digest_current_key_id=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_CURRENT_KEY_ID"),
         organization_projection_digest_keyring_json=os.getenv("KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"),
         health_projection_digest_current_key_id=os.getenv("KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"),

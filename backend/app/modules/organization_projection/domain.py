@@ -48,6 +48,7 @@ class OrganizationProjectionRow:
     source_version: int
     path_ids: tuple[int, ...]
     path_codes: tuple[str, ...]
+    path_versions: tuple[int, ...]
     compatibility_mode: str
     scope_eligible: bool
     row_digest: str
@@ -99,6 +100,7 @@ def build_organization_projection_row(
         "source_version": leaf.version,
         "path_ids": [node.id for node in path],
         "path_codes": [node.org_code for node in path],
+        "path_versions": [node.version for node in path],
         "compatibility_mode": "canonical",
         "scope_eligible": all(node.status == "active" for node in chain),
     }
@@ -117,6 +119,7 @@ def build_organization_projection_row(
         source_version=leaf.version,
         path_ids=tuple(payload["path_ids"]),
         path_codes=tuple(payload["path_codes"]),
+        path_versions=tuple(payload["path_versions"]),
         compatibility_mode="canonical",
         scope_eligible=payload["scope_eligible"],
         row_digest=digest,

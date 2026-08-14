@@ -8,13 +8,13 @@ def test_projection_runtime_requires_running_loop_and_is_per_loop(monkeypatch):
             await database.get_projection_session_factory("unknown")
     asyncio.run(invalid())
 
-def test_projection_modules_have_no_api_or_module_c_entrypoints():
+def test_projection_modules_have_no_api_or_active_entrypoints():
     from pathlib import Path
     root=Path("app/modules")
     for module in ("organization_projection","health_projection"):
         assert not (root/module/"api.py").exists()
         text="\n".join(p.read_text(encoding="utf-8") for p in (root/module).glob("*.py"))
-        for forbidden in ("READY","ACTIVE","Shadow","read_cutover"):
+        for forbidden in ("ACTIVE","read_cutover","APIRouter"):
             assert forbidden not in text
 
 
