@@ -9,8 +9,10 @@ def test_Module_A与Module_B只暴露冻结Port且无Module_C入口():
     assert inspect.isclass(health_ports.HealthProjectionCorePort)
     assert inspect.isclass(organization_ports.OrganizationProjectionBuilderRepositoryPort)
     assert inspect.isclass(health_ports.HealthProjectionBuilderRepositoryPort)
+    assert inspect.isclass(organization_ports.OrganizationProjectionShadowRepositoryPort)
+    assert inspect.isclass(health_ports.HealthProjectionShadowRepositoryPort)
     forbidden = {
-        "Shadow", "READY", "ACTIVE", "Cutover", "PublicApi",
+        "READY", "ACTIVE", "Cutover", "PublicApi",
     }
     symbols = set(dir(organization_ports)) | set(dir(health_ports))
     assert not any(any(token.lower() in symbol.lower() for token in forbidden) for symbol in symbols)

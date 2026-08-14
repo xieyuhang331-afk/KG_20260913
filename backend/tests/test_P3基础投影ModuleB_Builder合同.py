@@ -170,6 +170,7 @@ def test_organization_completion_awaits_each_chain_in_source_order():
         org_code=row.org_code, org_name=row.org_name, org_type=row.org_type,
         status=row.status, sort_order=row.sort_order, source_version=row.source_version,
         path_ids=list(row.path_ids), path_codes=list(row.path_codes),
+        path_versions=list(row.path_versions),
         compatibility_mode=row.compatibility_mode, scope_eligible=row.scope_eligible,
         row_digest=row.row_digest, digest_key_id="k1",
     ) for row in projected)

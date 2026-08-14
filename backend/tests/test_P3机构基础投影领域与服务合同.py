@@ -66,16 +66,17 @@ def test_机构摘要公开向量逐字节匹配():
         "source_version": 3,
         "path_ids": [1, 2, 10, 101],
         "path_codes": ["HQ", "SH", "PD", "CN-SH-PD"],
+        "path_versions": [1, 2, 4, 3],
         "compatibility_mode": "canonical",
         "scope_eligible": True,
     }
     assert json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) == (
         '{"compatibility_mode":"canonical","org_code":"CN-SH-PD","org_name":"Fictional Pudong Org",'
         '"org_type":"county","organization_id":101,"parent_id":10,"path_codes":["HQ","SH","PD",'
-        '"CN-SH-PD"],"path_ids":[1,2,10,101],"scope_eligible":true,"sort_order":7,"source_version":3,'
+        '"CN-SH-PD"],"path_ids":[1,2,10,101],"path_versions":[1,2,4,3],"scope_eligible":true,"sort_order":7,"source_version":3,'
         '"status":"active"}'
     )
-    assert row.row_digest.upper() == "B674F92AC7BFDFA50A28DD5C6E448F4A89702F88BF99602B90466B886E7B0B12"
+    assert row.row_digest.upper() == "3622DC57F985CBBEC20A030C0BBDF76ECC33030F9E445EB42883C15458751F62"
 
 
 @pytest.mark.parametrize("key", [None, "not-bytes", b"short"])

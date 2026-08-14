@@ -43,6 +43,12 @@ PROJECTION_BUILDER_TABLES = {
     "public.health_projection_fact",
     "public.health_projection_window_selection",
 }
+PROJECTION_SHADOW_TABLES = {
+    "public.organization_projection_shadow_run",
+    "public.organization_projection_shadow_audit",
+    "public.health_projection_shadow_run",
+    "public.health_projection_shadow_audit",
+}
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -80,4 +86,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
     } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
         CANONICAL_HEALTH_FACT_TABLE
-    } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES
+    } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES

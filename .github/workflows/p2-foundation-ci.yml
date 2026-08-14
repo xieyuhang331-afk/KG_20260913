@@ -187,6 +187,10 @@ jobs:
               "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE": f"kg_ci_org_proj_{suffix}",
               "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE": f"kg_ci_health_proj_{suffix}",
               "KG_TEST_PROJECTION_CONFIRMATION_ROLE": f"kg_ci_proj_confirm_{suffix}",
+              "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE": f"kg_ci_org_shadow_{suffix}",
+              "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE": f"kg_ci_health_shadow_{suffix}",
+              "KG_TEST_PROJECTION_READY_GATE_ROLE": f"kg_ci_proj_ready_{suffix}",
+              "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE": f"kg_ci_shadow_confirm_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -266,6 +270,10 @@ jobs:
               "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE",
               "KG_TEST_HEALTH_PROJECTION_BUILDER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE",
               "KG_TEST_PROJECTION_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_CONFIRMATION_ROLE",
+              "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE",
+              "KG_TEST_HEALTH_PROJECTION_SHADOW_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE",
+              "KG_TEST_PROJECTION_READY_GATE_DATABASE_URL": "KG_TEST_PROJECTION_READY_GATE_ROLE",
+              "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -302,6 +310,14 @@ jobs:
           values["KG_ORGANIZATION_PROJECTION_BUILDER_ROLE"] = values["KG_TEST_ORGANIZATION_PROJECTION_BUILDER_ROLE"]
           values["KG_HEALTH_PROJECTION_BUILDER_ROLE"] = values["KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE"]
           values["KG_PROJECTION_CONFIRMATION_ROLE"] = values["KG_TEST_PROJECTION_CONFIRMATION_ROLE"]
+          values["KG_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL"] = values["KG_TEST_ORGANIZATION_PROJECTION_SHADOW_DATABASE_URL"]
+          values["KG_HEALTH_PROJECTION_SHADOW_DATABASE_URL"] = values["KG_TEST_HEALTH_PROJECTION_SHADOW_DATABASE_URL"]
+          values["KG_PROJECTION_READY_GATE_DATABASE_URL"] = values["KG_TEST_PROJECTION_READY_GATE_DATABASE_URL"]
+          values["KG_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL"] = values["KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL"]
+          values["KG_ORGANIZATION_PROJECTION_SHADOW_ROLE"] = values["KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE"]
+          values["KG_HEALTH_PROJECTION_SHADOW_ROLE"] = values["KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE"]
+          values["KG_PROJECTION_READY_GATE_ROLE"] = values["KG_TEST_PROJECTION_READY_GATE_ROLE"]
+          values["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"] = values["KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE"]
           for value in (
               *values.values(),
               *passwords.values(),
@@ -440,6 +456,14 @@ jobs:
             --set=health_projection_password="$KG_TEST_HEALTH_PROJECTION_BUILDER_ROLE_PASSWORD" \
             --set=projection_confirmation_role="$KG_TEST_PROJECTION_CONFIRMATION_ROLE" \
             --set=projection_confirmation_password="$KG_TEST_PROJECTION_CONFIRMATION_ROLE_PASSWORD" \
+            --set=organization_projection_shadow_role="$KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE" \
+            --set=organization_projection_shadow_password="$KG_TEST_ORGANIZATION_PROJECTION_SHADOW_ROLE_PASSWORD" \
+            --set=health_projection_shadow_role="$KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE" \
+            --set=health_projection_shadow_password="$KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE_PASSWORD" \
+            --set=projection_ready_gate_role="$KG_TEST_PROJECTION_READY_GATE_ROLE" \
+            --set=projection_ready_gate_password="$KG_TEST_PROJECTION_READY_GATE_ROLE_PASSWORD" \
+            --set=projection_shadow_confirmation_role="$KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE" \
+            --set=projection_shadow_confirmation_password="$KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -456,6 +480,10 @@ jobs:
           CREATE ROLE :"organization_projection_role" LOGIN PASSWORD :'organization_projection_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"health_projection_role" LOGIN PASSWORD :'health_projection_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"projection_confirmation_role" LOGIN PASSWORD :'projection_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"organization_projection_shadow_role" LOGIN PASSWORD :'organization_projection_shadow_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"health_projection_shadow_role" LOGIN PASSWORD :'health_projection_shadow_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"projection_ready_gate_role" LOGIN PASSWORD :'projection_ready_gate_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"projection_shadow_confirmation_role" LOGIN PASSWORD :'projection_shadow_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";
