@@ -9,7 +9,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.modules.organization_projection.models import _FAILURES
+from app.modules.organization_projection.models import (
+    _FAILURES, _module_c_generation_state, _shadow_run_checks,
+)
 
 
 class HealthProjectionGeneration(Base):
@@ -21,8 +23,10 @@ class HealthProjectionGeneration(Base):
         CheckConstraint("projection_version=1 AND generation_no>=1 AND lease_epoch>=0 AND version>=1", name="version"),
         CheckConstraint("input_digest ~ '^[0-9a-f]{64}$' AND length(digest_key_id) BETWEEN 1 AND 64", name="digest"),
         CheckConstraint("jsonb_typeof(high_watermark)='object' AND high_watermark=jsonb_build_object('max_fact_id',high_watermark->'max_fact_id','source_snapshot',high_watermark->'source_snapshot') AND jsonb_typeof(high_watermark->'max_fact_id')='number' AND (high_watermark->>'max_fact_id') ~ '^(0|[1-9][0-9]*)$' AND jsonb_typeof(high_watermark->'source_snapshot')='string' AND length(high_watermark->>'source_snapshot') BETWEEN 3 AND 512", name="high_watermark"),
-        CheckConstraint(f"(status='BUILDING' AND completed_at IS NULL AND failure_code IS NULL AND builder_id IS NOT NULL AND lease_expires_at IS NOT NULL) OR (status='BUILD_COMPLETE' AND completed_at IS NOT NULL AND failure_code IS NULL AND builder_id IS NULL AND lease_expires_at IS NULL) OR (status='FAILED' AND completed_at IS NOT NULL AND failure_code IN ({_FAILURES}) AND builder_id IS NULL AND lease_expires_at IS NULL) OR (status='SUPERSEDED' AND completed_at IS NOT NULL AND failure_code IS NULL AND builder_id IS NULL AND lease_expires_at IS NULL)", name="state"),
+        CheckConstraint(_module_c_generation_state(), name="state"),
+        ForeignKeyConstraint(("current_shadow_run_id",), ("public.health_projection_shadow_run.run_id",), name="fk_health_projection_generation_current_shadow_run", ondelete="RESTRICT", deferrable=True, initially="DEFERRED"),
         Index("idx_health_projection_generation_status", "status", "projection_version", "generation_no"),
+        Index("uq_health_projection_generation_ready_operation", "ready_operation_id", unique=True, postgresql_where=text("ready_operation_id IS NOT NULL")),
         {"schema": "public"},
     )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -41,6 +45,51 @@ class HealthProjectionGeneration(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_code: Mapped[str | None] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("1"))
+    current_shadow_run_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    shadow_success_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default=text("0"))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ready_operation_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+
+
+class HealthProjectionShadowRun(Base):
+    __tablename__ = "health_projection_shadow_run"
+    __table_args__ = (
+        ForeignKeyConstraint(("generation_id",), ("public.health_projection_generation.id",), name="fk_health_projection_shadow_run_generation", ondelete="RESTRICT"),
+        UniqueConstraint("generation_id", "run_sequence", name="uq_health_projection_shadow_run_generation_sequence"),
+        UniqueConstraint("start_operation_id", name="uq_health_projection_shadow_run_start_operation"),
+        *_shadow_run_checks("health"),
+        Index("idx_health_projection_shadow_run_generation_status", "generation_id", "status", "run_sequence"),
+        Index("idx_health_projection_shadow_run_generation_completed", "generation_id", "completed_at"),
+        Index("uq_health_projection_shadow_run_complete_operation", "complete_operation_id", unique=True, postgresql_where=text("complete_operation_id IS NOT NULL")),
+        {"schema":"public"},
+    )
+    run_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    generation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    run_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    projection_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    high_watermark: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    high_watermark_digest: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    digest_key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation_input_digest: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    source_digest: Mapped[str | None] = mapped_column(CHAR(64)); mapping_digest: Mapped[str | None] = mapped_column(CHAR(64)); projection_digest: Mapped[str | None] = mapped_column(CHAR(64)); coverage_digest: Mapped[str | None] = mapped_column(CHAR(64)); currentness_digest: Mapped[str | None] = mapped_column(CHAR(64)); selection_digest: Mapped[str | None] = mapped_column(CHAR(64)); evidence_digest: Mapped[str | None] = mapped_column(CHAR(64))
+    blocker_count: Mapped[int | None] = mapped_column(BigInteger); review_required_count: Mapped[int | None] = mapped_column(BigInteger); informational_count: Mapped[int | None] = mapped_column(BigInteger); category_counts: Mapped[dict | None] = mapped_column(JSONB)
+    source_count: Mapped[int | None] = mapped_column(BigInteger); current_fact_count: Mapped[int | None] = mapped_column(BigInteger); projection_fact_count: Mapped[int | None] = mapped_column(BigInteger); expected_selection_count: Mapped[int | None] = mapped_column(BigInteger); actual_selection_count: Mapped[int | None] = mapped_column(BigInteger); fact_coverage_numerator: Mapped[int | None] = mapped_column(BigInteger); fact_coverage_denominator: Mapped[int | None] = mapped_column(BigInteger); selection_coverage_numerator: Mapped[int | None] = mapped_column(BigInteger); selection_coverage_denominator: Mapped[int | None] = mapped_column(BigInteger)
+    start_operation_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False); complete_operation_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False)); validator_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False); lease_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0")); lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True)); started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()")); completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True)); version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("1"))
+
+
+class HealthProjectionShadowAudit(Base):
+    __tablename__="health_projection_shadow_audit"
+    __table_args__=(
+        ForeignKeyConstraint(("run_id",), ("public.health_projection_shadow_run.run_id",), name="fk_health_projection_shadow_audit_run", ondelete="RESTRICT"),
+        ForeignKeyConstraint(("generation_id",), ("public.health_projection_generation.id",), name="fk_health_projection_shadow_audit_generation", ondelete="RESTRICT"),
+        UniqueConstraint("operation_id",name="uq_health_projection_shadow_audit_operation"),
+        CheckConstraint("action IN ('SHADOW_START','SHADOW_HEARTBEAT','SHADOW_TAKEOVER','SHADOW_COMPLETE','SHADOW_FAIL','GENERATION_READY')", name="action"),
+        Index("idx_health_projection_shadow_audit_generation_created", "generation_id", "created_at"),
+        {"schema":"public"},
+    )
+    id: Mapped[int]=mapped_column(BigInteger,primary_key=True,autoincrement=True); run_id: Mapped[str]=mapped_column(UUID(as_uuid=False),nullable=False); generation_id: Mapped[int]=mapped_column(BigInteger,nullable=False); operation_id: Mapped[str]=mapped_column(UUID(as_uuid=False),nullable=False); action: Mapped[str]=mapped_column(String(32),nullable=False); preimage_digest: Mapped[str]=mapped_column(CHAR(64),nullable=False); postimage_digest: Mapped[str]=mapped_column(CHAR(64),nullable=False); evidence_digest: Mapped[str|None]=mapped_column(CHAR(64)); created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False,server_default=text("now()"))
 
 
 class HealthProjectionCheckpoint(Base):

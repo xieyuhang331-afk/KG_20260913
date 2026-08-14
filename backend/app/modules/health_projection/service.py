@@ -1,5 +1,7 @@
 import hashlib
+import hmac
 from datetime import UTC, datetime, timedelta
+from dataclasses import asdict
 
 from app.modules.organization_projection.service import (
     BuildCheckpoint, BuildState, ConfirmationResult, ProjectionCheckpointConflict,
@@ -8,14 +10,147 @@ from app.modules.organization_projection.service import (
     ProjectionUnitOfWork, ProjectionUnavailable, ProjectionSessionLock,
     _builder_lock_key, _checkpoint_postimage, _digest, _replay_operation,
     _replay_before_heartbeat, _require_live_lease, _validate_checkpoint,
+    ShadowEvidence, _canonical_shadow_payload, _component_payload,
+    _count_categories, _evidence_payload, shadow_component_digest,
 )
-from .domain import build_health_projection_rows
+from .domain import RULE_VERSION, build_health_projection_rows
 from .models import HealthProjectionCheckpoint, HealthProjectionGeneration
 
 
 def _window_lock_key(generation_id, subject_id, indicator, business_day):
     value = f"{generation_id}:{subject_id}:{indicator}:{business_day.isoformat()}".encode()
     return int.from_bytes(hashlib.sha256(value).digest()[:8], "big", signed=True)
+
+
+def classify_health_post_hwm(*, fact_id: int, max_fact_id: int) -> str | None:
+    return "HEALTH_POST_HWM_NEW_FACT" if fact_id > max_fact_id else None
+
+
+_HEALTH_BLOCKERS = {
+    "HEALTH_FACT_MISSING", "HEALTH_FACT_DUPLICATE",
+    "HEALTH_FACT_FIELD_MISMATCH", "HEALTH_FACT_DIGEST_MISMATCH",
+    "HEALTH_WINDOW_INVALID", "HEALTH_SELECTION_MISSING",
+    "HEALTH_SELECTION_DUPLICATE", "HEALTH_WINNER_MISMATCH",
+    "HEALTH_RULE_VERSION_MISMATCH", "HEALTH_MAPPING_TARGET_MISMATCH",
+    "HEALTH_COVERAGE_MISMATCH", "HEALTH_GENERATION_IDENTITY_MISMATCH",
+}
+_HEALTH_REVIEW = {
+    "HEALTH_SOURCE_UNKNOWN", "HEALTH_CURRENTNESS_UNPROVEN",
+    "HEALTH_MAPPING_REVIEW_REQUIRED", "HEALTH_P2_PRIORITY_EXPECTED_DIFFERENCE",
+}
+_HEALTH_INFO = {"HEALTH_POST_HWM_NEW_FACT"}
+
+
+def build_health_shadow_evidence(
+    *, generation_id: int, projection_version: int, high_watermark: dict,
+    digest_key_id: str, generation_input_digest: str, current_facts,
+    mappings, projected_rows, selections, visibility_rows, digest_key: bytes,
+    post_hwm_facts=(),
+) -> ShadowEvidence:
+    if set(high_watermark) != {"max_fact_id", "source_snapshot"}:
+        raise ProjectionUnavailable("Projection shadow evidence is unavailable") from None
+    high_watermark_digest = hashlib.sha256(_canonical_shadow_payload(high_watermark)).hexdigest().upper()
+    categories: list[str] = []
+    expected_rows, expected_selections = build_health_projection_rows(
+        facts=current_facts, digest_key=digest_key
+    )
+    expected = {row.fact_id: row for row in expected_rows}
+    if len(expected) != len(expected_rows):
+        categories.append("HEALTH_FACT_DUPLICATE")
+    projected = {}
+    for row in projected_rows:
+        if row.fact_id in projected:
+            categories.append("HEALTH_FACT_DUPLICATE")
+        projected[row.fact_id] = row
+    for identity in sorted(set(expected) | set(projected)):
+        source = expected.get(identity)
+        actual = projected.get(identity)
+        if source is None or actual is None:
+            categories.append("HEALTH_FACT_MISSING")
+            continue
+        source_value = asdict(source)
+        actual_value = asdict(actual) if hasattr(actual, "__dataclass_fields__") else {
+            key: getattr(actual, key) for key in source_value
+        }
+        if source_value != actual_value:
+            categories.append("HEALTH_FACT_DIGEST_MISMATCH" if source.row_digest != actual.row_digest else "HEALTH_FACT_FIELD_MISMATCH")
+    wanted_selections = {
+        (row.subject_user_id, row.indicator_code, row.business_day): row
+        for row in expected_selections
+    }
+    actual_selections = {}
+    for row in selections:
+        identity = (row.subject_user_id, row.indicator_code, row.business_day)
+        if identity in actual_selections:
+            categories.append("HEALTH_SELECTION_DUPLICATE")
+        actual_selections[identity] = row
+    for identity in sorted(set(wanted_selections) | set(actual_selections)):
+        wanted = wanted_selections.get(identity)
+        actual = actual_selections.get(identity)
+        if wanted is None or actual is None:
+            categories.append("HEALTH_SELECTION_MISSING")
+        elif actual.rule_version != RULE_VERSION:
+            categories.append("HEALTH_RULE_VERSION_MISMATCH")
+        elif wanted.winner_fact_id != actual.winner_fact_id or wanted.selection_digest != actual.selection_digest:
+            categories.append("HEALTH_WINNER_MISMATCH")
+    mapping_items = []
+    for mapping in mappings:
+        payload = {key: getattr(mapping, key) for key in (
+            "legacy_indicator_id", "legacy_recorded_at", "canonical_fact_id",
+            "mapping_version", "source_fingerprint", "digest_key_id",
+            "disposition", "reason_code",
+        )}
+        if mapping.disposition == "MAPPED" and mapping.canonical_fact_id not in expected:
+            categories.append("HEALTH_MAPPING_TARGET_MISMATCH")
+        elif mapping.disposition == "REVIEW_REQUIRED":
+            categories.append("HEALTH_MAPPING_REVIEW_REQUIRED")
+        mapping_items.append(hmac.new(digest_key, b"kg:projection:shadow:health:mapping-item:v1\0" + _canonical_shadow_payload(payload), hashlib.sha256).hexdigest())
+    currentness_items = []
+    for row in visibility_rows:
+        payload = {
+            "fact_id": row.fact_id, "supersedes_fact_id": row.supersedes_fact_id,
+            "is_current": row.is_current, "inserting_xid": row.inserting_xid,
+        }
+        currentness_items.append(hmac.new(digest_key, b"kg:projection:shadow:health:currentness-item:v1\0" + _canonical_shadow_payload(payload), hashlib.sha256).hexdigest())
+        if not isinstance(row.is_current, bool):
+            categories.append("HEALTH_CURRENTNESS_UNPROVEN")
+    categories.extend("HEALTH_POST_HWM_NEW_FACT" for row in post_hwm_facts if row.id > high_watermark["max_fact_id"])
+    counts = {
+        "source_count": len(visibility_rows),
+        "current_fact_count": len(expected),
+        "projection_fact_count": len(projected),
+        "expected_selection_count": len(wanted_selections),
+        "actual_selection_count": len(actual_selections),
+        "fact_coverage_numerator": len(set(expected) & set(projected)),
+        "fact_coverage_denominator": len(expected),
+        "selection_coverage_numerator": len(set(wanted_selections) & set(actual_selections)),
+        "selection_coverage_denominator": len(wanted_selections),
+    }
+    if counts["fact_coverage_numerator"] != counts["fact_coverage_denominator"] or counts["selection_coverage_numerator"] != counts["selection_coverage_denominator"]:
+        categories.append("HEALTH_COVERAGE_MISMATCH")
+    common = dict(generation_id=generation_id, high_watermark_digest=high_watermark_digest, projection_version=projection_version, rule_version=RULE_VERSION)
+    values = {
+        "source_digest": shadow_component_digest(domain="health", component="source", payload=_component_payload(items=[expected[k].row_digest for k in sorted(expected)], **common), key=digest_key),
+        "mapping_digest": shadow_component_digest(domain="health", component="mapping", payload=_component_payload(items=sorted(mapping_items), **common), key=digest_key),
+        "projection_digest": shadow_component_digest(domain="health", component="projection", payload=_component_payload(items=[projected[k].row_digest for k in sorted(projected)], **common), key=digest_key),
+        "currentness_digest": shadow_component_digest(domain="health", component="currentness", payload=_component_payload(items=sorted(currentness_items), **common), key=digest_key),
+        "selection_digest": shadow_component_digest(domain="health", component="selection", payload=_component_payload(items=[actual_selections[k].selection_digest for k in sorted(actual_selections)], **common), key=digest_key),
+        "coverage_digest": shadow_component_digest(domain="health", component="coverage", payload={**common, "counts": counts}, key=digest_key),
+    }
+    category_counts = _count_categories(categories, _HEALTH_BLOCKERS | _HEALTH_REVIEW | _HEALTH_INFO)
+    evidence_values = {
+        "domain": "health", "generation_id": generation_id,
+        "projection_version": projection_version, "rule_version": RULE_VERSION,
+        "high_watermark": high_watermark, "high_watermark_digest": high_watermark_digest,
+        "digest_key_id": digest_key_id, "generation_input_digest": generation_input_digest,
+        **values,
+        "blocker_count": sum(category_counts.get(x, 0) for x in _HEALTH_BLOCKERS),
+        "review_required_count": sum(category_counts.get(x, 0) for x in _HEALTH_REVIEW),
+        "informational_count": sum(category_counts.get(x, 0) for x in _HEALTH_INFO),
+        "category_counts": category_counts,
+    }
+    evidence_digest = shadow_component_digest(domain="health", component="evidence", payload=_evidence_payload(evidence_values), key=digest_key)
+    return ShadowEvidence(**evidence_values, counts=counts, evidence_digest=evidence_digest)
 
 
 class HealthProjectionBuilder:
