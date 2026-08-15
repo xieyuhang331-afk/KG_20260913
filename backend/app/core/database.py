@@ -78,6 +78,8 @@ _HEALTH_MAPPING_WRITER_SESSION_FACTORY = None
 _PROJECTION_RUNTIMES = {}
 _PROJECTION_RUNTIME_LOCKS = {}
 _PROJECTION_RUNTIME_ERROR = "Projection database runtime is unavailable"
+_SLICE1_RUNTIMES = {}
+_SLICE1_RUNTIME_ERROR = "Institution onboarding database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -317,6 +319,10 @@ async def dispose_database_runtimes() -> None:
                         await dispose_projection_runtime(kind)
                     if not invalidate_orphaned_projection_runtimes():
                         raise RuntimeError(_PROJECTION_RUNTIME_ERROR) from None
+                    engines = tuple(_SLICE1_RUNTIMES.values())
+                    _SLICE1_RUNTIMES.clear()
+                    for engine, _ in engines:
+                        await engine.dispose()
 
 
 def _projection_url(settings: Settings, kind: str) -> str:
@@ -400,4 +406,81 @@ def invalidate_orphaned_projection_runtimes() -> bool:
 async def get_db_session():
     session_factory = get_session_factory()
     async with session_factory() as session:
+        yield session
+
+
+def _slice1_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "onboarding_writer": settings.institution_onboarding_writer_database_url,
+        "review_writer": settings.institution_review_writer_database_url,
+        "file_writer": settings.private_file_writer_database_url,
+        "reader": settings.institution_onboarding_reader_database_url,
+    }
+    roles = {
+        "onboarding_writer": settings.institution_onboarding_writer_role,
+        "review_writer": settings.institution_review_writer_role,
+        "file_writer": settings.private_file_writer_role,
+        "reader": settings.institution_onboarding_reader_role,
+    }
+    try:
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            kind in urls and len(parsed) == 4 and len(users) == 4 and len(set(users)) == 4
+            and all(value.drivername == "postgresql+asyncpg" and value.username and value.password for value in parsed.values())
+            and all((value.host, value.port, value.database) == (settings.database_host, settings.database_port, settings.database_name) for value in parsed.values())
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+def get_slice1_session_factory(kind: str):
+    if kind not in {"onboarding_writer", "review_writer", "file_writer", "reader"}:
+        raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
+    entry = _SLICE1_RUNTIMES.get(kind)
+    if entry is None:
+        try:
+            engine = create_async_engine(_slice1_url(get_settings(), kind), pool_pre_ping=True)
+            entry = (engine, create_session_factory(engine))
+        except Exception:
+            raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
+        _SLICE1_RUNTIMES[kind] = entry
+    return entry[1]
+
+
+async def dispose_slice1_runtime(kind: str) -> None:
+    if kind not in {"onboarding_writer", "review_writer", "file_writer", "reader"}:
+        raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
+    entry = _SLICE1_RUNTIMES.pop(kind, None)
+    if entry is not None:
+        await entry[0].dispose()
+
+
+async def _slice1_session(kind: str):
+    async with get_slice1_session_factory(kind)() as session:
+        yield session
+
+
+async def get_institution_onboarding_writer_session():
+    async for session in _slice1_session("onboarding_writer"):
+        yield session
+
+
+async def get_institution_review_writer_session():
+    async for session in _slice1_session("review_writer"):
+        yield session
+
+
+async def get_private_file_writer_session():
+    async for session in _slice1_session("file_writer"):
+        yield session
+
+
+async def get_institution_onboarding_reader_session():
+    async for session in _slice1_session("reader"):
         yield session

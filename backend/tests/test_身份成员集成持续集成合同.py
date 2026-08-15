@@ -6,11 +6,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260815_0019"
-STALE_HEAD = "20260807_0010"
+EXPECTED_HEAD = "20260816_0020"
+STALE_HEAD = "20260815_0019"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260812_0016; found stale revision 20260811_0015"
+    "20260816_0020; found stale revision 20260815_0019"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -738,6 +738,10 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE", "kg_ci_shadow_confirm_test_run")
         monkeypatch.setenv("KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE", "kg_ci_org_reader_test_run")
         monkeypatch.setenv("KG_TEST_HEALTH_PROJECTION_READER_ROLE", "kg_ci_health_reader_test_run")
+        monkeypatch.setenv("KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE", "kg_ci_onboarding_writer_test_run")
+        monkeypatch.setenv("KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE", "kg_ci_review_writer_test_run")
+        monkeypatch.setenv("KG_TEST_PRIVATE_FILE_WRITER_ROLE", "kg_ci_private_file_writer_test_run")
+        monkeypatch.setenv("KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE", "kg_ci_onboarding_reader_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -1013,3 +1017,60 @@ def test_projection_migration_runtime_roles_are_explicitly_propagated_from_test_
         propagation = f'values["{runtime_name}"] = values["{test_name}"]'
         assert backend_integration_job.count(propagation) == 1
         assert backend_integration_job.index(propagation) < export_position
+
+
+def test_slice1_runtime_roles_and_urls_are_additively_propagated_in_ci():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    pairs = (
+        ("KG_INSTITUTION_ONBOARDING_WRITER", "KG_TEST_INSTITUTION_ONBOARDING_WRITER"),
+        ("KG_INSTITUTION_REVIEW_WRITER", "KG_TEST_INSTITUTION_REVIEW_WRITER"),
+        ("KG_PRIVATE_FILE_WRITER", "KG_TEST_PRIVATE_FILE_WRITER"),
+        ("KG_INSTITUTION_ONBOARDING_READER", "KG_TEST_INSTITUTION_ONBOARDING_READER"),
+    )
+    export_position = backend_integration_job.index("GITHUB_ENV")
+    for runtime_prefix, test_prefix in pairs:
+        role_mapping = f'values["{runtime_prefix}_ROLE"] = values["{test_prefix}_ROLE"]'
+        url_mapping = f'values["{runtime_prefix}_DATABASE_URL"] = values["{test_prefix}_DATABASE_URL"]'
+        assert backend_integration_job.count(
+            f'"{test_prefix}_DATABASE_URL": "{test_prefix}_ROLE"'
+        ) == 1
+        assert backend_integration_job.count(role_mapping) == 1
+        assert backend_integration_job.count(url_mapping) == 1
+        assert backend_integration_job.index(role_mapping) < export_position
+        assert backend_integration_job.index(url_mapping) < export_position
+
+
+def test_slice1_ephemeral_crypto_material_is_random_masked_and_exported_only_in_integration():
+    backend_unit_job = _workflow_job_block("backend-unit")
+    backend_integration_job = _workflow_job_block("backend-integration")
+    declarations = (
+        '"KG_ONBOARDING_PII_KEK_B64": base64.b64encode(',
+        '"KG_ONBOARDING_PII_HMAC_KEY_B64": base64.b64encode(',
+        '"KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48)',
+    )
+    mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
+    export_position = backend_integration_job.index("GITHUB_ENV")
+    for declaration in declarations:
+        assert declaration not in backend_unit_job
+        assert backend_integration_job.count(declaration) == 1
+        assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+def test_slice1_database_closure_uses_an_independent_celery_worker_in_ci():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    declaration = '"KG_RUN_SLICE1_CELERY_WORKER": "1"'
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    assert backend_integration_job.count(declaration) == 1
+    assert backend_integration_job.index(declaration) < export_position
+
+
+def test_slice1_async_contracts_install_the_pinned_pytest_plugin_in_both_backend_jobs():
+    dependency = "pytest-asyncio==1.4.0"
+    for job_name in ("backend-unit", "backend-integration"):
+        job = _workflow_job_block(job_name)
+        install_position = job.index("Install test dependencies")
+        pytest_position = job.index("python -m pytest")
+
+        assert job.count(dependency) == 1
+        assert install_position < job.index(dependency) < pytest_position

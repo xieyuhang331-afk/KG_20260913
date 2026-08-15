@@ -23,6 +23,7 @@ class UserRegisterResponse(BaseModel):
 class AuthLoginRequest(BaseModel):
     phone: str = Field(..., pattern=r"^1\d{10}$")
     password: str = Field(..., min_length=8, max_length=128)
+    totp_code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
 class AuthLoginUser(BaseModel):

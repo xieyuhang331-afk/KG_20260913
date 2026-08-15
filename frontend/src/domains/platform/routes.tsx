@@ -7,6 +7,8 @@ import { TenantReviewListPage } from "./pages/TenantReviewListPage";
 import { IdentityReviewListPage } from "./pages/实名认证审核列表页";
 import { IdentityReviewDetailPage } from "./pages/实名认证审核详情页";
 import { PlatformOrganizationPage } from "@/domains/organization/pages/平台组织治理页";
+import { InstitutionInvitationPage } from "./pages/InstitutionInvitationPage";
+import { InstitutionReviewPage } from "./pages/InstitutionReviewPage";
 
 export const platformRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -26,6 +28,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
       children: [
         { path: "identity-reviews", element: <IdentityReviewListPage /> },
         { path: "identity-reviews/:userId", element: <IdentityReviewDetailPage /> },
+        { path: "institution-invitations", element: <InstitutionInvitationPage /> },
+        { path: "institution-reviews", element: <InstitutionReviewPage /> },
       ],
     },
   ],

@@ -70,7 +70,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install test dependencies
-        run: python -m pip install -e . pytest==9.1.1
+        run: python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0
 
       - name: Generate process-only test secrets
         shell: bash
@@ -147,7 +147,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install test dependencies
-        run: python -m pip install -e . pytest==9.1.1
+        run: python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0
 
       - name: Prepare masked ephemeral integration configuration
         shell: bash
@@ -195,6 +195,10 @@ jobs:
               "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE": f"kg_ci_shadow_confirm_{suffix}",
               "KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE": f"kg_ci_org_reader_{suffix}",
               "KG_TEST_HEALTH_PROJECTION_READER_ROLE": f"kg_ci_health_reader_{suffix}",
+              "KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE": f"kg_ci_onboarding_writer_{suffix}",
+              "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE": f"kg_ci_review_writer_{suffix}",
+              "KG_TEST_PRIVATE_FILE_WRITER_ROLE": f"kg_ci_file_writer_{suffix}",
+              "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE": f"kg_ci_onboarding_reader_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -222,6 +226,13 @@ jobs:
                   secrets.token_bytes(32)
               ).decode(),
               "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
+              "KG_ONBOARDING_PII_KEK_B64": base64.b64encode(
+                  secrets.token_bytes(32)
+              ).decode(),
+              "KG_ONBOARDING_PII_HMAC_KEY_B64": base64.b64encode(
+                  secrets.token_bytes(32)
+              ).decode(),
+              "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48),
               "KG_HEALTH_FACT_DIGEST_CURRENT_KEY_ID": "ci-k2",
               "KG_ORGANIZATION_MAPPING_DIGEST_CURRENT_KEY_ID": "ci-org-k2",
               "KG_RABBITMQ_CONTAINER_NAME": f"kg-reg-{rabbit_suffix}",
@@ -230,6 +241,7 @@ jobs:
               "KG_RABBITMQ_USER": rabbit_user,
               "KG_RABBITMQ_PASSWORD": rabbit_password,
               "KG_RUN_RABBITMQ_INTEGRATION": "1",
+              "KG_RUN_SLICE1_CELERY_WORKER": "1",
               "KG_CELERY_TEST_RESULT_BACKEND": "rpc",
               **roles,
           }
@@ -280,6 +292,10 @@ jobs:
               "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_DATABASE_URL": "KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE",
               "KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE",
               "KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_READER_ROLE",
+              "KG_TEST_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE",
+              "KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE",
+              "KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_WRITER_ROLE",
+              "KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -328,6 +344,14 @@ jobs:
           values["KG_HEALTH_PROJECTION_READER_DATABASE_URL"] = values["KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL"]
           values["KG_ORGANIZATION_PROJECTION_READER_ROLE"] = values["KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE"]
           values["KG_HEALTH_PROJECTION_READER_ROLE"] = values["KG_TEST_HEALTH_PROJECTION_READER_ROLE"]
+          values["KG_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"]
+          values["KG_INSTITUTION_REVIEW_WRITER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL"]
+          values["KG_PRIVATE_FILE_WRITER_DATABASE_URL"] = values["KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL"]
+          values["KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL"]
+          values["KG_INSTITUTION_ONBOARDING_WRITER_ROLE"] = values["KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE"]
+          values["KG_INSTITUTION_REVIEW_WRITER_ROLE"] = values["KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE"]
+          values["KG_PRIVATE_FILE_WRITER_ROLE"] = values["KG_TEST_PRIVATE_FILE_WRITER_ROLE"]
+          values["KG_INSTITUTION_ONBOARDING_READER_ROLE"] = values["KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE"]
           values["KG_TEST_ROLE_ADMIN_DATABASE_URL"] = (
               f"postgresql+asyncpg://postgres:{quote(os.environ['KG_TEST_POSTGRES_PASSWORD'])}@"
               f"{host}:{port}/{database}"
@@ -501,6 +525,14 @@ jobs:
             --set=organization_projection_reader_password="$KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE_PASSWORD" \
             --set=health_projection_reader_role="$KG_TEST_HEALTH_PROJECTION_READER_ROLE" \
             --set=health_projection_reader_password="$KG_TEST_HEALTH_PROJECTION_READER_ROLE_PASSWORD" \
+            --set=institution_onboarding_writer_role="$KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE" \
+            --set=institution_onboarding_writer_password="$KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE_PASSWORD" \
+            --set=institution_review_writer_role="$KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE" \
+            --set=institution_review_writer_password="$KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE_PASSWORD" \
+            --set=private_file_writer_role="$KG_TEST_PRIVATE_FILE_WRITER_ROLE" \
+            --set=private_file_writer_password="$KG_TEST_PRIVATE_FILE_WRITER_ROLE_PASSWORD" \
+            --set=institution_onboarding_reader_role="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE" \
+            --set=institution_onboarding_reader_password="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -523,6 +555,10 @@ jobs:
           CREATE ROLE :"projection_shadow_confirmation_role" LOGIN PASSWORD :'projection_shadow_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"organization_projection_reader_role" LOGIN PASSWORD :'organization_projection_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"health_projection_reader_role" LOGIN PASSWORD :'health_projection_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"institution_onboarding_writer_role" LOGIN PASSWORD :'institution_onboarding_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"institution_review_writer_role" LOGIN PASSWORD :'institution_review_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"private_file_writer_role" LOGIN PASSWORD :'private_file_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"institution_onboarding_reader_role" LOGIN PASSWORD :'institution_onboarding_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

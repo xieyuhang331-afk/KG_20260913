@@ -14,7 +14,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_Module_C_migration_and_minimum_privileges(pg_database):
-    assert pg_database.fetch_value("SELECT version_num='20260815_0019' FROM alembic_version")
+    assert pg_database.fetch_value("SELECT version_num='20260816_0020' FROM alembic_version")
     for relation in (
         "organization_projection_shadow_run",
         "organization_projection_shadow_audit",
@@ -147,7 +147,7 @@ def test_Module_C_nonempty_projection_refuses_downgrade_without_data_loss(pg_dat
     try:
         with pytest.raises(RuntimeError, match="organization projection rows exist"):
             command.downgrade(config, "20260813_0017")
-        assert pg_database.fetch_value("SELECT version_num='20260815_0019' FROM alembic_version")
+        assert pg_database.fetch_value("SELECT version_num='20260816_0020' FROM alembic_version")
         assert pg_database.fetch_value(
             f"SELECT path_versions='[1,1,1,1]'::jsonb FROM public.organization_projection WHERE generation_id={generation_id} AND organization_id=4"
         )
@@ -208,7 +208,7 @@ def test_Module_C_Shadow_truth_table与0017_downgrade精确恢复(pg_database):
         ):
             assert code in state
         assert "failure_code IS NOT NULL" not in state
-    command.upgrade(config, "20260815_0019")
+    command.upgrade(config, "20260816_0020")
     names = pg_database.fetch_column(
         "SELECT conname FROM pg_constraint "
         "WHERE conrelid='public.organization_projection'::regclass AND contype='c' "

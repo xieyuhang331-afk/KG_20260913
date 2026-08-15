@@ -175,7 +175,7 @@ def _operation_log_count(pg_database, tenant_id: int) -> int:
 
 def test_f002_real_db_full_user_onboarding_happy_path(real_db_client, pg_database):
     _seed_tenants(pg_database)
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260815_0019"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260816_0020"
 
     user = _register(real_db_client, "13800139401")
     assert user["role"] == "member"

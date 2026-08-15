@@ -3,6 +3,7 @@ import type { CurrentUser } from "@/shared/auth/authStore";
 export interface LoginRequest {
   phone: string;
   password: string;
+  totp_code?: string;
 }
 
 export interface LoginResponse {

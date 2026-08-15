@@ -173,7 +173,7 @@ async def _remove_ready_projection(connection, values):
 
 
 def test_Module_D五个READY视图与最小权限闭环(pg_database):
-    assert pg_database.fetch_value("SELECT version_num='20260815_0019' FROM alembic_version")
+    assert pg_database.fetch_value("SELECT version_num='20260816_0020' FROM alembic_version")
     assert pg_database.fetch_column(
         "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace "
         "AND relname LIKE '%ready_projection%_v1' ORDER BY relname"
@@ -647,7 +647,7 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
 
         command.upgrade(config, "head")
         assert pg_database.fetch_value(
-            "SELECT version_num='20260815_0019' FROM alembic_version"
+            "SELECT version_num='20260816_0020' FROM alembic_version"
         )
         asyncio.run(admin_execute(f'GRANT "{writer}" TO "{organization_reader}"'))
         try:
@@ -655,7 +655,7 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
                 command.downgrade(config, "20260814_0018")
             assert str(error.value) == CONFIGURATION_ERROR
             assert pg_database.fetch_value(
-                "SELECT version_num='20260815_0019' FROM alembic_version"
+                "SELECT version_num='20260816_0020' FROM alembic_version"
             )
             assert sorted(pg_database.fetch_column(
                 "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace "
@@ -664,5 +664,5 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
         finally:
             asyncio.run(admin_execute(f'REVOKE "{writer}" FROM "{organization_reader}"'))
     finally:
-        if pg_database.fetch_value("SELECT version_num FROM alembic_version") != "20260815_0019":
+        if pg_database.fetch_value("SELECT version_num FROM alembic_version") != "20260816_0020":
             command.upgrade(config, "head")

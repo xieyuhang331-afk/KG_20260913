@@ -10,6 +10,8 @@ interface PlatformNavigationItem {
 export const platformNavigation: PlatformNavigationItem[] = [
   { label: "首页", path: "/platform/home" },
   { label: "入驻审核", path: "/platform/stores/reviews" },
+  { label: "机构邀请", path: "/platform/institution-invitations", roles: [USER_ROLES.superAdmin] },
+  { label: "受控入驻审核", path: "/platform/institution-reviews", roles: [USER_ROLES.superAdmin] },
   {
     label: "组织治理",
     path: "/platform/organizations",

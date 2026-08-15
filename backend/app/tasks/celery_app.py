@@ -7,6 +7,8 @@ from kombu import Queue
 REGISTRATION_QUEUE = "registration"
 DISPATCH_TASK_NAME = "identity.registration.dispatch_outbox"
 RECONCILE_TASK_NAME = "identity.registration.reconcile_outbox"
+PRIVATE_FILE_QUEUE = "private-file"
+PRIVATE_FILE_SCAN_TASK_NAME = "phase1.private_file.scan"
 _DECLARED_QUEUES = (
     "ai",
     "judgment",
@@ -15,6 +17,7 @@ _DECLARED_QUEUES = (
     "settlement",
     "notification",
     REGISTRATION_QUEUE,
+    PRIVATE_FILE_QUEUE,
 )
 
 
@@ -29,7 +32,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks",),
+        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks"),
     )
     app.conf.update(
         accept_content=("json",),
@@ -45,6 +48,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         task_routes={
             DISPATCH_TASK_NAME: {"queue": REGISTRATION_QUEUE},
             RECONCILE_TASK_NAME: {"queue": REGISTRATION_QUEUE},
+            PRIVATE_FILE_SCAN_TASK_NAME: {"queue": PRIVATE_FILE_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {

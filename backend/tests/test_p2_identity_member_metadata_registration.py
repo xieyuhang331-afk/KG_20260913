@@ -49,6 +49,14 @@ PROJECTION_SHADOW_TABLES = {
     "public.health_projection_shadow_run",
     "public.health_projection_shadow_audit",
 }
+PHASE1_SLICE1_TABLES = {
+    "public.institution_invitation", "public.institution_onboarding_account",
+    "public.institution_application", "public.institution_application_revision",
+    "public.institution_license", "public.private_file",
+    "public.institution_onboarding_idempotency", "public.institution_onboarding_audit",
+    "public.institution_onboarding_outbox",
+    "public.institution_onboarding_delivery",
+}
 
 
 def test_alembic_target_metadata_registers_identity_member():
@@ -86,4 +94,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
     } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
         CANONICAL_HEALTH_FACT_TABLE
-    } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES
+    } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES
