@@ -13,6 +13,8 @@ def import_core_models():
     from app.modules.organization_mapping import models as organization_mapping_models
     from app.modules.organization_projection import models as organization_projection_models
     from app.modules.health_projection import models as health_projection_models
+    from app.modules.institution_onboarding import models as institution_onboarding_models
+    from app.modules.private_file import models as private_file_models
 
     return {
         "auth": auth_models,
@@ -24,6 +26,8 @@ def import_core_models():
         "organization_mapping": organization_mapping_models,
         "organization_projection": organization_projection_models,
         "health_projection": health_projection_models,
+        "institution_onboarding": institution_onboarding_models,
+        "private_file": private_file_models,
         "specs": get_core_table_specs(),
     }
 

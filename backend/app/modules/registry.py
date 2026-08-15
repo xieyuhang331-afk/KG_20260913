@@ -11,6 +11,8 @@ class ModuleDefinition:
 MODULES: tuple[ModuleDefinition, ...] = (
     ModuleDefinition("auth", "认证与权限", ("/api/v1/auth",)),
     ModuleDefinition("tenant", "组织与门店", ("/api/v1/tenants", "/api/v1/org")),
+    ModuleDefinition("institution_onboarding", "机构受控入驻", ("/api/v1/platform/institution-invitations", "/api/v1/platform/institution-reviews", "/api/v1/institution-onboarding")),
+    ModuleDefinition("private_file", "私有文件", ("/api/v1/private-files",)),
     ModuleDefinition("user_health", "用户与健康档案", ("/api/v1/users", "/api/v1/health", "/api/v1/reports")),
     ModuleDefinition("template", "方案模板", ("/api/v1/templates",)),
     ModuleDefinition("plan", "方案管理", ("/api/v1/plans",)),

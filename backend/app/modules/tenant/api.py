@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 
 from app.core.database import get_db_session
+from app.core.config import get_settings
+from fastapi import HTTPException
 from app.core.permissions import ensure_is_member
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
@@ -21,6 +23,8 @@ async def create_tenant_application(
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_db_session),
 ) -> dict:
+    if get_settings().phase1_pilot_mode:
+        raise HTTPException(status_code=410, detail="LEGACY_DISABLED_FOR_PILOT")
     result = await submit_application(session, current_user, payload)
     return ok_response(result.model_dump())
 

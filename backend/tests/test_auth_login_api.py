@@ -15,7 +15,8 @@ class AuthLoginApiTests(unittest.TestCase):
         app = create_app()
 
         class FakeSession:
-            pass
+            async def execute(self, _statement):
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
 
         async def fake_session():
             yield FakeSession()
@@ -123,6 +124,11 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_controlled_auth_context",
                 return_value={"org_id": 77},
+                create=True,
+            ),
+            patch(
+                "app.modules.auth.service.get_onboarding_account_for_login",
+                new=AsyncMock(return_value=None),
                 create=True,
             ),
         ):

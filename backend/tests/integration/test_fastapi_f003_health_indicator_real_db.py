@@ -101,7 +101,7 @@ def _health_indicator_count(pg_database, user_id: int) -> int:
 
 
 def test_f003_real_db_health_indicator_write_happy_path(real_db_client, pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260815_0019"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260816_0020"
     assert pg_database.fetch_value(
         """
         SELECT hypertable_name

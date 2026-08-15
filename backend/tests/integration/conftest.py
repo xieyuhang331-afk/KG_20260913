@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260815_0019"
+REQUIRED_HEAD_REVISION = "20260816_0020"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -171,6 +171,14 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_ORGANIZATION_PROJECTION_READER_DATABASE_URL": "KG_TEST_ORGANIZATION_PROJECTION_READER_DATABASE_URL",
         "KG_HEALTH_PROJECTION_READER_ROLE": "KG_TEST_HEALTH_PROJECTION_READER_ROLE",
         "KG_HEALTH_PROJECTION_READER_DATABASE_URL": "KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL",
+        "KG_INSTITUTION_ONBOARDING_WRITER_ROLE": "KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE",
+        "KG_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL",
+        "KG_INSTITUTION_REVIEW_WRITER_ROLE": "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE",
+        "KG_INSTITUTION_REVIEW_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL",
+        "KG_PRIVATE_FILE_WRITER_ROLE": "KG_TEST_PRIVATE_FILE_WRITER_ROLE",
+        "KG_PRIVATE_FILE_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL",
+        "KG_INSTITUTION_ONBOARDING_READER_ROLE": "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE",
+        "KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -297,6 +305,14 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
     database.execute(f'REVOKE CREATE ON SCHEMA public FROM "{application_role}"')
     database.execute(f'GRANT USAGE ON SCHEMA public TO "{readonly_role}"')
     database.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{readonly_role}"')
+    slice1_tables = (
+        "institution_invitation", "institution_onboarding_account", "institution_application",
+        "institution_application_revision", "institution_license", "private_file",
+        "institution_onboarding_idempotency", "institution_onboarding_audit", "institution_onboarding_outbox",
+    )
+    for role in (application_role, readonly_role):
+        for table_name in slice1_tables:
+            database.execute(f'REVOKE ALL ON TABLE public."{table_name}" FROM "{role}"')
     for view in (
         "organization_ready_projection_generation_v1",
         "organization_ready_projection_v1",
@@ -621,6 +637,10 @@ def pg_database():
         shadow_confirmation_role = _validated_role_name("KG_TEST_PROJECTION_SHADOW_CONFIRMATION_ROLE")
         organization_reader_role = _validated_role_name("KG_TEST_ORGANIZATION_PROJECTION_READER_ROLE")
         health_reader_role = _validated_role_name("KG_TEST_HEALTH_PROJECTION_READER_ROLE")
+        onboarding_writer_role = _validated_role_name("KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE")
+        institution_review_role = _validated_role_name("KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE")
+        private_file_role = _validated_role_name("KG_TEST_PRIVATE_FILE_WRITER_ROLE")
+        onboarding_reader_role = _validated_role_name("KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -643,6 +663,10 @@ def pg_database():
             shadow_confirmation_role,
             organization_reader_role,
             health_reader_role,
+            onboarding_writer_role,
+            institution_review_role,
+            private_file_role,
+            onboarding_reader_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")

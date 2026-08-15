@@ -4,6 +4,7 @@ import hashlib
 import secrets
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
@@ -30,6 +31,7 @@ from app.modules.auth.schemas import (
     UserRegisterResponse,
 )
 from app.modules.tenant.repository import get_tenant_by_id_for_binding
+from app.modules.tenant.models import Tenant
 
 
 def mask_id_card(id_card: str) -> str:
@@ -80,7 +82,12 @@ def _require_context_value(context: dict, key: str):
     return value
 
 
-def _build_login_claims(user) -> dict:
+async def _tenant_org_id(session, tenant_id: int) -> int | None:
+    result = await session.execute(select(Tenant.org_id).where(Tenant.id == tenant_id))
+    return result.scalar_one_or_none()
+
+
+def _build_login_claims(user, *, dynamic_org_id: int | None = None) -> dict:
     context = get_controlled_auth_context(user)
     claims = {
         "sub": str(user.id),
@@ -89,7 +96,12 @@ def _build_login_claims(user) -> dict:
     }
 
     if user.role == "org_admin":
-        claims["org_id"] = int(_require_context_value(context, "org_id"))
+        if user.tenant_id is not None and dynamic_org_id is not None:
+            claims["org_id"] = int(dynamic_org_id)
+        elif user.tenant_id is not None:
+            raise HTTPException(status_code=403, detail="Login context is not configured")
+        elif context.get("org_id") not in (None, ""):
+            claims["org_id"] = int(context["org_id"])
     elif user.role == "province_admin":
         claims["province"] = _require_context_value(context, "province")
     elif user.role == "city_admin":
@@ -99,6 +111,14 @@ def _build_login_claims(user) -> dict:
     return claims
 
 
+async def get_onboarding_account_for_login(user_id: int):
+    from app.core.database import get_slice1_session_factory
+    from app.modules.institution_onboarding.repository import InstitutionOnboardingRepository
+    factory = get_slice1_session_factory("reader")
+    async with factory() as reader_session:
+        return await InstitutionOnboardingRepository(reader_session).account_for_user(user_id)
+
+
 async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     user = await get_user_by_phone(session, payload.phone)
     if user is None or not verify_password(payload.password, user.password_hash):
@@ -106,7 +126,23 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     if user.status != "active":
         raise HTTPException(status_code=403, detail="User is not active")
 
-    claims = _build_login_claims(user)
+    account = await get_onboarding_account_for_login(user.id) if user.role == "org_admin" else None
+    if account is not None and account.totp_enabled:
+        from app.modules.institution_onboarding.domain import verify_totp
+        from app.modules.institution_onboarding.service import OnboardingSecrets, utcnow
+        if payload.totp_code is None or not verify_totp(
+            OnboardingSecrets().decrypt(account.totp_secret_ciphertext), payload.totp_code, at=utcnow()
+        ):
+            raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
+
+    dynamic_org_id = (
+        await _tenant_org_id(session, user.tenant_id)
+        if user.role == "org_admin" and user.tenant_id is not None
+        else None
+    )
+    claims = _build_login_claims(user, dynamic_org_id=dynamic_org_id)
+    if account is not None:
+        claims["amr"] = ["pwd", "totp"]
     access_token = create_access_token(claims)
     expires_in = get_settings().jwt_access_token_expire_minutes * 60
 

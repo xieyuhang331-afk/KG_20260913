@@ -56,6 +56,15 @@ class Settings(BaseModel):
     auth_context_map: dict[str, dict[str, Any]] = Field(default_factory=dict)
     async_runtime: str = "Celery + RabbitMQ"
     file_storage_backend: str = "MinIO"
+    phase1_pilot_mode: bool = False
+    institution_onboarding_writer_database_url: str | None = None
+    institution_review_writer_database_url: str | None = None
+    private_file_writer_database_url: str | None = None
+    institution_onboarding_reader_database_url: str | None = None
+    institution_onboarding_writer_role: str | None = None
+    institution_review_writer_role: str | None = None
+    private_file_writer_role: str | None = None
+    institution_onboarding_reader_role: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -126,4 +135,13 @@ def get_settings() -> Settings:
             os.getenv("KG_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
         ),
         auth_context_map=json.loads(os.getenv("KG_AUTH_CONTEXT_MAP", "{}")),
+        phase1_pilot_mode=os.getenv("KG_PHASE1_PILOT_MODE", "false").lower() == "true",
+        institution_onboarding_writer_database_url=os.getenv("KG_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"),
+        institution_review_writer_database_url=os.getenv("KG_INSTITUTION_REVIEW_WRITER_DATABASE_URL"),
+        private_file_writer_database_url=os.getenv("KG_PRIVATE_FILE_WRITER_DATABASE_URL"),
+        institution_onboarding_reader_database_url=os.getenv("KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL"),
+        institution_onboarding_writer_role=os.getenv("KG_INSTITUTION_ONBOARDING_WRITER_ROLE"),
+        institution_review_writer_role=os.getenv("KG_INSTITUTION_REVIEW_WRITER_ROLE"),
+        private_file_writer_role=os.getenv("KG_PRIVATE_FILE_WRITER_ROLE"),
+        institution_onboarding_reader_role=os.getenv("KG_INSTITUTION_ONBOARDING_READER_ROLE"),
     )

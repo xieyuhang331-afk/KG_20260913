@@ -33,6 +33,8 @@ class BackendAppContractTests(unittest.TestCase):
             [
                 "auth",
                 "tenant",
+                "institution_onboarding",
+                "private_file",
                 "user_health",
                 "template",
                 "plan",
