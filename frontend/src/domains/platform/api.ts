@@ -24,6 +24,7 @@ export interface InstitutionInvitationView {
   status: string;
   version: number;
   short_code?: string;
+  expires_at?: string | null;
 }
 
 export interface InstitutionReviewView {
