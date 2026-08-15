@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
-const roots = ["src/domains/platform", "src/domains/organization"];
+const roots = ["src/domains/platform", "src/domains/organization", "src/domains/institution"];
 const allowedExtensions = new Set([".ts", ".tsx"]);
 const forbiddenPatterns = [
   ["完整身份证号", /(?<!\d)\d{17}[0-9Xx](?!\w)/g],
@@ -40,7 +40,7 @@ if (findings.length > 0) {
 }
 
 console.log(
-  "PII scan passed: platform and organization frontend source contains no forbidden sensitive values or token literals.",
+  "PII scan passed: platform, organization, and institution frontend source contains no forbidden sensitive values or token literals.",
 );
 
 async function listFiles(directory) {

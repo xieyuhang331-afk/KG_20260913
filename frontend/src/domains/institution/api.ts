@@ -42,6 +42,10 @@ export interface OnboardingApplication {
   institution_type: "HEALTH_STORE" | "LICENSED_CLINIC";
   status: string;
   version: number;
+  tenant_id?: string | null;
+  tenant_active: boolean;
+  service_ready: boolean;
+  current_revision_no?: number;
   correction_fields: string[];
   correction_reason_code?: string | null;
   licenses: LicenseBindingPayload[];

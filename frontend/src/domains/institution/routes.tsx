@@ -6,7 +6,7 @@ import { ControlledOnboardingPage } from "./pages/ControlledOnboardingPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
-    { index: true, element: <Navigate to="/institution/store/applications" replace /> },
+    { index: true, element: <Navigate to="/institution/store/application" replace /> },
     {
       path: "store/applications",
       element: <MyApplicationsPage />,

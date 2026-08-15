@@ -14,7 +14,7 @@ describe("Credential-safe login routing", () => {
   });
 
   it.each([
-    [USER_ROLES.orgAdmin, "/institution/store/applications", "INSTITUTION TARGET"],
+    [USER_ROLES.orgAdmin, "/institution/store/application", "INSTITUTION TARGET"],
     [USER_ROLES.provinceAdmin, "/platform/home", "PLATFORM TARGET"],
   ])("stores a session and routes %s to the authorized workspace", async (role, target, marker) => {
     mockLogin(role);
@@ -33,6 +33,34 @@ describe("Credential-safe login routing", () => {
 
     expect(await screen.findByText(marker)).toBeInTheDocument();
     expect(window.localStorage.getItem("kanglin.access_token") !== null).toBe(true);
+  });
+
+  it.each([
+    ["", undefined],
+    ["000002", "000002"],
+  ])("normalizes optional TOTP at the login request boundary", async (totpCode, expectedTotpCode) => {
+    mockLogin(USER_ROLES.provinceAdmin);
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/platform/home" element={<div>PLATFORM TARGET</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.type(screen.getByLabelText("手机号或账号"), crypto.randomUUID());
+    await userEvent.type(screen.getByLabelText("密码"), crypto.randomUUID());
+    if (totpCode) await userEvent.type(screen.getByLabelText("TOTP（平台及机构人员）"), totpCode);
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+    await screen.findByText("PLATFORM TARGET");
+
+    const requestBody = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    if (expectedTotpCode === undefined) {
+      expect(requestBody).not.toHaveProperty("totp_code");
+    } else {
+      expect(requestBody).toHaveProperty("totp_code", expectedTotpCode);
+    }
   });
 });
 
