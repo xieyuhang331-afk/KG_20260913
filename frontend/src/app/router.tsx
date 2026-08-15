@@ -11,6 +11,7 @@ import { PublicShell } from "@/shells/PublicShell";
 import { TherapistShell } from "@/shells/TherapistShell";
 import { ProtectedRoute } from "./routeGuards";
 import { PLATFORM_REVIEW_ROLES, USER_ROLES } from "@/shared/constants/roles";
+import { InstitutionActivationPage } from "@/domains/institution/pages/InstitutionActivationPage";
 
 function ForbiddenPage() {
   return (
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
       { path: "/login", element: <LoginPage /> },
       { path: "/platform/login", element: <LoginPage /> },
       { path: "/institution/login", element: <LoginPage /> },
+      { path: "/institution/activate", element: <InstitutionActivationPage /> },
       { path: "/family/login", element: <LoginPage /> },
       { path: "/family/register", element: familyRoutes.register }
     ]

@@ -11,7 +11,8 @@ import { PLATFORM_REVIEW_ROLES, USER_ROLES, type UserRole } from "@/shared/const
 
 const loginSchema = z.object({
   phone: z.string().min(1, "请输入手机号或账号"),
-  password: z.string().min(1, "请输入密码")
+  password: z.string().min(1, "请输入密码"),
+  totp_code: z.string().regex(/^\d{6}$/, "请输入 6 位 TOTP").optional().or(z.literal(""))
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
@@ -56,6 +57,10 @@ export function LoginPage() {
             {...register("phone")}
           />
           {errors.phone ? <span className="mt-1 block text-xs text-coral">{errors.phone.message}</span> : null}
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium text-ink">TOTP（平台及机构人员）</span>
+          <input className="mt-2 w-full rounded-md border border-ink/15 px-3 py-2" inputMode="numeric" autoComplete="one-time-code" {...register("totp_code")} />
         </label>
         <label className="block">
           <span className="text-sm font-medium text-ink">密码</span>

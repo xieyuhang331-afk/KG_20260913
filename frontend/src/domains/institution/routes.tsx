@@ -1,8 +1,8 @@
 import { Navigate, type RouteObject } from "react-router-dom";
-import { PlaceholderPage } from "@/shared/ui/PlaceholderPage";
 import { ApplicationDetailPage } from "./pages/ApplicationDetailPage";
 import { MyApplicationsPage } from "./pages/MyApplicationsPage";
 import { InstitutionOrganizationPage } from "@/domains/organization/pages/机构组织资料页";
+import { ControlledOnboardingPage } from "./pages/ControlledOnboardingPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -13,7 +13,7 @@ export const institutionRoutes: { protectedChildren: RouteObject[] } = {
     },
     {
       path: "store/application",
-      element: <PlaceholderPage title="门店入驻申请" description="下一阶段接入 POST /api/v1/tenants。" />,
+      element: <ControlledOnboardingPage />,
     },
     {
       path: "store/application/:tenantId/status",
