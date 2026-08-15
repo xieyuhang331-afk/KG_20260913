@@ -1063,3 +1063,14 @@ def test_slice1_database_closure_uses_an_independent_celery_worker_in_ci():
 
     assert backend_integration_job.count(declaration) == 1
     assert backend_integration_job.index(declaration) < export_position
+
+
+def test_slice1_async_contracts_install_the_pinned_pytest_plugin_in_both_backend_jobs():
+    dependency = "pytest-asyncio==1.4.0"
+    for job_name in ("backend-unit", "backend-integration"):
+        job = _workflow_job_block(job_name)
+        install_position = job.index("Install test dependencies")
+        pytest_position = job.index("python -m pytest")
+
+        assert job.count(dependency) == 1
+        assert install_position < job.index(dependency) < pytest_position
