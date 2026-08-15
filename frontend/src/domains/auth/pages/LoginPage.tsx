@@ -12,7 +12,11 @@ import { PLATFORM_REVIEW_ROLES, USER_ROLES, type UserRole } from "@/shared/const
 const loginSchema = z.object({
   phone: z.string().min(1, "请输入手机号或账号"),
   password: z.string().min(1, "请输入密码"),
-  totp_code: z.string().regex(/^\d{6}$/, "请输入 6 位 TOTP").optional().or(z.literal(""))
+  totp_code: z
+    .string()
+    .regex(/^\d{6}$/, "请输入 6 位 TOTP")
+    .optional()
+    .or(z.literal("")),
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
@@ -23,9 +27,9 @@ export function LoginPage() {
   const {
     register,
     handleSubmit,
-    formState: { errors, isSubmitting }
+    formState: { errors, isSubmitting },
   } = useForm<LoginFormValues>({
-    resolver: zodResolver(loginSchema)
+    resolver: zodResolver(loginSchema),
   });
 
   async function onSubmit(values: LoginFormValues) {
@@ -60,7 +64,12 @@ export function LoginPage() {
         </label>
         <label className="block">
           <span className="text-sm font-medium text-ink">TOTP（平台及机构人员）</span>
-          <input className="mt-2 w-full rounded-md border border-ink/15 px-3 py-2" inputMode="numeric" autoComplete="one-time-code" {...register("totp_code")} />
+          <input
+            className="mt-2 w-full rounded-md border border-ink/15 px-3 py-2"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            {...register("totp_code")}
+          />
         </label>
         <label className="block">
           <span className="text-sm font-medium text-ink">密码</span>
@@ -96,7 +105,7 @@ function getRoleHomePath(role: UserRole): string {
   }
 
   if (role === USER_ROLES.orgAdmin) {
-    return "/institution/store/applications";
+    return "/institution/store/application";
   }
 
   if (PLATFORM_REVIEW_ROLES.includes(role)) {

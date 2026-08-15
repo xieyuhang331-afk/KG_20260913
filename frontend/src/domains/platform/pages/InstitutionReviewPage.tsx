@@ -312,7 +312,7 @@ export function InstitutionReviewPage() {
                     materials.map((material) => (
                       <div
                         className="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between"
-                        key={material.file_id}
+                        key={material.license_type}
                       >
                         <div>
                           <p className="text-sm font-semibold text-slate-950">{licenseLabel(material.license_type)}</p>

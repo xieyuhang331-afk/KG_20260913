@@ -1,5 +1,13 @@
 import type { ReactNode } from "react";
-import { BadgeCheck, Building2, ClipboardCheck, LayoutDashboard, ShieldCheck } from "lucide-react";
+import {
+  BadgeCheck,
+  Building2,
+  ClipboardCheck,
+  ClipboardList,
+  LayoutDashboard,
+  MailPlus,
+  ShieldCheck,
+} from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { platformNavigation } from "@/domains/platform/navigation";
 import { useAuthStore } from "@/shared/auth/authStore";
@@ -7,6 +15,8 @@ import { useAuthStore } from "@/shared/auth/authStore";
 const navigationIcons: Record<string, ReactNode> = {
   首页: <LayoutDashboard aria-hidden="true" size={17} />,
   入驻审核: <ClipboardCheck aria-hidden="true" size={17} />,
+  机构邀请: <MailPlus aria-hidden="true" size={17} />,
+  受控入驻审核: <ClipboardList aria-hidden="true" size={17} />,
   实名审核: <BadgeCheck aria-hidden="true" size={17} />,
   组织治理: <Building2 aria-hidden="true" size={17} />,
 };

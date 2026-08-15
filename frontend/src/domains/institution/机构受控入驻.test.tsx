@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/shared/api/errors";
 import * as platformApi from "../platform/api";
@@ -18,6 +19,10 @@ import controlledOnboardingPageSource from "./pages/ControlledOnboardingPage.tsx
 import { InstitutionInvitationPage } from "../platform/pages/InstitutionInvitationPage";
 import { institutionRoutes } from "./routes";
 import { ConfirmDialog, onboardingErrorMessage } from "./受控入驻界面";
+import { platformNavigation } from "../platform/navigation";
+import { PlatformShell } from "@/shells/PlatformShell";
+import { setCurrentUser } from "@/shared/auth/authStore";
+import { USER_ROLES } from "@/shared/constants/roles";
 
 vi.mock("./api");
 vi.mock("../platform/api");
@@ -37,6 +42,7 @@ const draft: OnboardingApplication = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  setCurrentUser(null);
   vi.mocked(organizationApi.listOrganizationTree).mockResolvedValue([
     {
       organization_id: 1001,
@@ -74,10 +80,31 @@ describe("一期切片1机构受控入驻", () => {
   });
 
   it("机构端与平台端路由使用受控合同", () => {
+    const indexRoute = institutionRoutes.protectedChildren.find((route) => route.index);
+    expect(indexRoute?.element).toMatchObject({ props: { to: "/institution/store/application" } });
     expect(institutionRoutes.protectedChildren.some((route) => route.path === "store/application")).toBe(true);
     const protectedRoutes = platformRoutes.protectedChildren.flatMap((route) => route.children ?? []);
     expect(protectedRoutes.some((route) => route.path === "institution-invitations")).toBe(true);
     expect(protectedRoutes.some((route) => route.path === "institution-reviews")).toBe(true);
+  });
+
+  it("平台全部导航项都渲染实际图标", () => {
+    setCurrentUser({ id: 1, role: USER_ROLES.superAdmin });
+    render(
+      <MemoryRouter initialEntries={["/platform/home"]}>
+        <Routes>
+          <Route path="/platform" element={<PlatformShell />}>
+            <Route path="home" element={<div>平台首页</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const desktopNavigation = screen.getByRole("navigation", { name: "平台治理主导航" });
+    for (const item of platformNavigation) {
+      const link = within(desktopNavigation).getByRole("link", { name: item.label });
+      expect(link.querySelector("svg"), item.label).not.toBeNull();
+    }
   });
 
   it("机构激活将邀请短码与TOTP作为显式受控请求", async () => {
@@ -270,6 +297,28 @@ describe("一期切片1机构受控入驻", () => {
         expect.any(String),
       ),
     );
+  });
+
+  it("平台真实审核队列与详情渲染不产生React列表key错误", async () => {
+    const review = {
+      application_id: "application-1",
+      status: "UNDER_REVIEW",
+      version: 4,
+      draft: { registered_address: "合成注册地址" },
+      materials: [
+        { file_id: "shared-file", license_type: "BUSINESS_LICENSE", status: "CLEAN" },
+        { file_id: "shared-file", license_type: "MEDICAL_INSTITUTION_LICENSE", status: "CLEAN" },
+      ],
+    };
+    vi.mocked(platformApi.listInstitutionReviews).mockResolvedValue([review]);
+    vi.mocked(platformApi.getInstitutionReviewDetail).mockResolvedValue(review);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(<InstitutionReviewPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看详情" }));
+    await screen.findByText("合成注册地址");
+
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it("机构端使用真实文件与提交API完成草稿提交", async () => {
