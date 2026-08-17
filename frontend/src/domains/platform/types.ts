@@ -90,11 +90,12 @@ export interface TherapistReviewItem {
   review_kind: "INITIAL" | "RENEWAL";
   status: "QUEUED" | "UNDER_REVIEW" | "DECIDED";
   created_at: string;
+  claimed_at?: string | null;
   version: number;
 }
 
 export interface TherapistReviewDecisionPayload {
-  decision: "NEEDS_CORRECTION" | "REJECTED" | "APPROVED";
+  decision: "START_REVIEW" | "NEEDS_CORRECTION" | "REJECTED" | "APPROVED";
   reason_code?: string | null;
   profile_fields: string[];
   qualification_targets: string[];
@@ -149,7 +150,33 @@ export interface TherapistMutationResult {
 }
 
 export interface TherapistReviewDecisionResult {
-  review_item: Pick<TherapistReviewItem, "review_item_id" | "status" | "version">;
+  review_item: TherapistReviewItem;
   profile: Pick<TherapistMutationResult, "therapist_id" | "status" | "version">;
   decision_id: string | null;
+}
+
+export interface TherapistRevision {
+  revision_id: string;
+  revision_no: number;
+  created_at: string;
+}
+
+export interface TherapistReviewDetail {
+  profile: TherapistReviewProfile;
+  revisions: TherapistRevision[];
+  qualifications: TherapistReviewQualification[];
+  current_qualification_ids: string[];
+  review_item: TherapistReviewItem;
+}
+
+export interface TherapistReviewPageResponse {
+  items: TherapistReviewItem[];
+  next_cursor?: string | null;
+}
+
+export interface TherapistReviewQuery {
+  kind?: "INITIAL" | "RENEWAL";
+  status?: TherapistReviewItem["status"];
+  cursor?: string;
+  limit?: number;
 }

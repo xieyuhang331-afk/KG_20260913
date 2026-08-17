@@ -90,11 +90,34 @@ export interface TherapistQualification {
   version_no: number;
 }
 
+export type ReadinessReason =
+  | "COMPLIANCE_SUSPENDED"
+  | "INSTITUTION_APPROVAL_SOURCE_INVALID"
+  | "INSTITUTION_LICENSE_INVALID"
+  | "METABOLIC_SCOPE_MISSING"
+  | "NO_APPROVED_ACTIVE_THERAPIST"
+  | "TENANT_NOT_ACTIVE";
+
 export interface ServiceReadiness {
   tenant_id: string;
   readiness_status: "NOT_READY" | "SERVICE_READY";
-  reason_codes: string[];
+  reason_codes: ReadinessReason[];
   qualified_therapist_count: number;
   computed_at: string;
   evidence_version: number;
+}
+
+export interface ServiceReadinessEvidence extends ServiceReadiness {
+  input_digest: string;
+  result_digest: string;
+}
+
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor?: string | null;
+}
+
+export interface CursorParams {
+  cursor?: string;
+  limit?: number;
 }

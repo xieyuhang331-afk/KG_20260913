@@ -8,9 +8,9 @@ import type {
   TenantReviewQueueResponse,
   TherapistReviewDecisionPayload,
   TherapistReviewDecisionResult,
-  TherapistReviewItem,
-  TherapistReviewProfile,
-  TherapistReviewQualification,
+  TherapistReviewDetail,
+  TherapistReviewPageResponse,
+  TherapistReviewQuery,
   TherapistMutationResult,
 } from "./types";
 
@@ -135,19 +135,24 @@ export function rejectTenantReview(tenantId: number, payload: { reason: string }
   });
 }
 
-export const listTherapistReviews = (kind?: "INITIAL" | "RENEWAL") =>
-  apiRequest<{ items: TherapistReviewItem[]; next_cursor?: string }>(
-    `/api/v1/platform/therapist-reviews${kind ? `?kind=${kind}` : ""}`,
-  );
+export const listTherapistReviews = (params: TherapistReviewQuery = {}) =>
+  apiRequest<TherapistReviewPageResponse>(`/api/v1/platform/therapist-reviews${therapistQuery(params)}`);
+export const listTherapistRenewalReviews = (params: Omit<TherapistReviewQuery, "kind"> = {}) =>
+  apiRequest<TherapistReviewPageResponse>(`/api/v1/platform/therapist-renewal-reviews${therapistQuery(params)}`);
 export const getTherapistReview = (therapistId: string) =>
-  apiRequest<{
-    profile: TherapistReviewProfile;
-    qualifications: TherapistReviewQualification[];
-    current_qualification_ids: string[];
-    review_item: TherapistReviewItem | null;
-  }>(`/api/v1/platform/therapist-reviews/${therapistId}`);
+  apiRequest<TherapistReviewDetail>(`/api/v1/platform/therapist-reviews/${therapistId}`);
 export const decideTherapistReview = (therapistId: string, payload: TherapistReviewDecisionPayload, key: string) =>
   apiRequest<TherapistReviewDecisionResult>(`/api/v1/platform/therapist-reviews/${therapistId}/decision`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+export const decideTherapistRenewalReview = (
+  reviewItemId: string,
+  payload: TherapistReviewDecisionPayload,
+  key: string,
+) =>
+  apiRequest<TherapistReviewDecisionResult>(`/api/v1/platform/therapist-renewal-reviews/${reviewItemId}/decision`, {
     method: "POST",
     headers: { "Idempotency-Key": key },
     body: JSON.stringify(payload),
@@ -170,3 +175,12 @@ export const exitTherapist = (id: string, expectedVersion: number, reasonCode: s
     headers: { "Idempotency-Key": key },
     body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
   });
+
+function therapistQuery(params: object) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
