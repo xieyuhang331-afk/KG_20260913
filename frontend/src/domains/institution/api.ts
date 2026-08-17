@@ -2,7 +2,10 @@ import { apiRequest } from "@/shared/api/client";
 import type {
   MyTenantApplicationsParams,
   MyTenantApplicationsResponse,
+  CursorPage,
+  CursorParams,
   ServiceReadiness,
+  ServiceReadinessEvidence,
   TenantApplicationDetail,
   TherapistInvitation,
   TherapistProfile,
@@ -144,22 +147,31 @@ export const createTherapistInvitation = (payload: { phone: string; expires_in_m
     headers: { "Idempotency-Key": key },
     body: JSON.stringify(payload),
   });
-export const listTherapistInvitations = () =>
-  apiRequest<{ items: TherapistInvitation[]; next_cursor?: string }>("/api/v1/institution/therapist-invitations");
+export const listTherapistInvitations = (params: CursorParams & { status?: TherapistInvitation["status"] } = {}) =>
+  apiRequest<CursorPage<TherapistInvitation>>(`/api/v1/institution/therapist-invitations${therapistQuery(params)}`);
 export const revokeTherapistInvitation = (id: string, expectedVersion: number, key: string) =>
   apiRequest<TherapistInvitation>(`/api/v1/institution/therapist-invitations/${id}/revoke`, {
     method: "POST",
     headers: { "Idempotency-Key": key },
     body: JSON.stringify({ expected_version: expectedVersion, reason_code: "INVITE_WITHDRAWN" }),
   });
-export const listTherapists = (status?: TherapistStatus) =>
-  apiRequest<{ items: TherapistProfile[]; next_cursor?: string }>(
-    `/api/v1/institution/therapists${status ? `?status=${status}` : ""}`,
-  );
+export const listTherapists = (params: CursorParams & { status?: TherapistStatus } = {}) =>
+  apiRequest<CursorPage<TherapistProfile>>(`/api/v1/institution/therapists${therapistQuery(params)}`);
 export const getTherapist = (id: string) =>
   apiRequest<{ profile: TherapistProfile; qualifications: TherapistQualification[] }>(
     `/api/v1/institution/therapists/${id}`,
   );
 export const getServiceReadiness = () => apiRequest<ServiceReadiness>("/api/v1/institution/service-readiness");
-export const getServiceReadinessEvidence = () =>
-  apiRequest<{ items: ServiceReadiness[]; next_cursor?: string }>("/api/v1/institution/service-readiness/evidence");
+export const getServiceReadinessEvidence = (params: CursorParams = {}) =>
+  apiRequest<CursorPage<ServiceReadinessEvidence>>(
+    `/api/v1/institution/service-readiness/evidence${therapistQuery(params)}`,
+  );
+
+function therapistQuery(params: object) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
