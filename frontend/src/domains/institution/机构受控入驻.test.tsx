@@ -361,6 +361,8 @@ describe("一期切片1机构受控入驻", () => {
       screen.getByLabelText("营业执照"),
       new File(["safe"], "license.pdf", { type: "application/pdf" }),
     );
+    fireEvent.change(screen.getByLabelText("营业执照有效期起"), { target: { value: "2026-01-01" } });
+    fireEvent.change(screen.getByLabelText("营业执照有效期止"), { target: { value: "2027-01-01" } });
     const form = screen.getByRole("button", { name: "上传材料并提交" }).closest("form");
     expect(form).not.toBeNull();
     if (form === null) throw new Error("controlled onboarding form missing");
@@ -369,7 +371,20 @@ describe("一期切片1机构受控入驻", () => {
     await waitFor(() => expect(institutionApi.saveOnboardingDraft).toHaveBeenCalledOnce());
     await waitFor(() => expect(institutionApi.initiatePrivateFileUpload).toHaveBeenCalledOnce());
     await screen.findByText("申请已提交，等待平台审核。");
-    expect(institutionApi.submitOnboardingApplication).toHaveBeenCalledOnce();
+    expect(institutionApi.submitOnboardingApplication).toHaveBeenCalledWith(
+      {
+        expected_version: 2,
+        licenses: [
+          {
+            license_type: "BUSINESS_LICENSE",
+            private_file_id: "file-1",
+            valid_from: "2026-01-01",
+            valid_until: "2027-01-01",
+          },
+        ],
+      },
+      expect.any(String),
+    );
   });
 
   it("机构端未选择证照时仍可独立保存草稿", async () => {
@@ -410,7 +425,7 @@ describe("一期切片1机构受控入驻", () => {
         contact_email: "slice1@example.invalid",
         service_tags: ["HYPERTENSION"],
       },
-      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1" }],
+      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1", valid_from: "2026-01-01", valid_until: "2027-01-01" }],
     };
     vi.mocked(institutionApi.getOnboardingApplication).mockResolvedValue(correction);
     vi.mocked(institutionApi.resubmitOnboardingApplication).mockResolvedValue({
@@ -440,7 +455,7 @@ describe("一期切片1机构受控入驻", () => {
         contact_phone: "test-contact",
         contact_email: "slice1@example.invalid",
         service_tags: ["HYPERTENSION"],
-        licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1" }],
+        licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1", valid_from: "2026-01-01", valid_until: "2027-01-01" }],
       }),
       expect.any(String),
     );
@@ -465,7 +480,7 @@ describe("一期切片1机构受控入驻", () => {
         contact_email: "slice1@example.invalid",
         service_tags: ["HYPERTENSION"],
       },
-      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "old-file" }],
+      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "old-file", valid_from: "2025-01-01", valid_until: "2026-01-01" }],
     };
     vi.mocked(institutionApi.getOnboardingApplication).mockResolvedValue(correction);
     vi.mocked(institutionApi.initiatePrivateFileUpload).mockResolvedValue({
@@ -484,7 +499,7 @@ describe("一期切片1机构受控入驻", () => {
       ...correction,
       status: "SUBMITTED",
       version: 7,
-      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "new-file" }],
+      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "new-file", valid_from: "2026-01-01", valid_until: "2027-01-01" }],
     });
     render(<ControlledOnboardingPage />);
     await userEvent.upload(
@@ -493,6 +508,8 @@ describe("一期切片1机构受控入驻", () => {
         type: "application/pdf",
       }),
     );
+    fireEvent.change(screen.getByLabelText("营业执照有效期起"), { target: { value: "2026-01-01" } });
+    fireEvent.change(screen.getByLabelText("营业执照有效期止"), { target: { value: "2027-01-01" } });
     const replacementForm = screen.getByRole("button", { name: "补正并重新提交" }).closest("form");
     expect(replacementForm).not.toBeNull();
     if (replacementForm === null) throw new Error("replacement form missing");
@@ -507,6 +524,8 @@ describe("一期切片1机构受控入驻", () => {
               {
                 license_type: "BUSINESS_LICENSE",
                 private_file_id: "new-file",
+                valid_from: "2026-01-01",
+                valid_until: "2027-01-01",
               },
             ],
           }),
