@@ -156,17 +156,27 @@ export function ControlledOnboardingPage() {
         });
         expectedVersion = saved.version;
         const business = validateUploadFile(businessFile, "营业执照");
+        const businessValidFrom = String(data.get("business_license_valid_from") ?? "");
+        const businessValidUntil = String(data.get("business_license_valid_until") ?? "");
+        if (!businessValidFrom || !businessValidUntil) throw new Error("请填写营业执照有效期");
         licenses = [
           {
             license_type: "BUSINESS_LICENSE",
             private_file_id: await uploadCleanFile(business, "BUSINESS_LICENSE"),
+            valid_from: businessValidFrom,
+            valid_until: businessValidUntil,
           },
         ];
         if (currentApplication.institution_type === "LICENSED_CLINIC") {
           const medical = validateUploadFile(medicalFile, "医疗机构执业许可证");
+          const medicalValidFrom = String(data.get("medical_license_valid_from") ?? "");
+          const medicalValidUntil = String(data.get("medical_license_valid_until") ?? "");
+          if (!medicalValidFrom || !medicalValidUntil) throw new Error("请填写医疗机构执业许可证有效期");
           licenses.push({
             license_type: "MEDICAL_INSTITUTION_LICENSE",
             private_file_id: await uploadCleanFile(medical, "MEDICAL_INSTITUTION_LICENSE"),
+            valid_from: medicalValidFrom,
+            valid_until: medicalValidUntil,
           });
         }
         setApplication(
@@ -175,18 +185,28 @@ export function ControlledOnboardingPage() {
       } else if (currentApplication.status === "NEEDS_CORRECTION") {
         if (currentApplication.correction_fields?.includes("business_license")) {
           const business = validateUploadFile(businessFile, "新的营业执照");
+          const businessValidFrom = String(data.get("business_license_valid_from") ?? "");
+          const businessValidUntil = String(data.get("business_license_valid_until") ?? "");
+          if (!businessValidFrom || !businessValidUntil) throw new Error("请填写营业执照有效期");
           licenses = licenses.filter((value) => value.license_type !== "BUSINESS_LICENSE");
           licenses.push({
             license_type: "BUSINESS_LICENSE",
             private_file_id: await uploadCleanFile(business, "BUSINESS_LICENSE"),
+            valid_from: businessValidFrom,
+            valid_until: businessValidUntil,
           });
         }
         if (currentApplication.correction_fields?.includes("medical_institution_license")) {
           const medical = validateUploadFile(medicalFile, "新的医疗机构执业许可证");
+          const medicalValidFrom = String(data.get("medical_license_valid_from") ?? "");
+          const medicalValidUntil = String(data.get("medical_license_valid_until") ?? "");
+          if (!medicalValidFrom || !medicalValidUntil) throw new Error("请填写医疗机构执业许可证有效期");
           licenses = licenses.filter((value) => value.license_type !== "MEDICAL_INSTITUTION_LICENSE");
           licenses.push({
             license_type: "MEDICAL_INSTITUTION_LICENSE",
             private_file_id: await uploadCleanFile(medical, "MEDICAL_INSTITUTION_LICENSE"),
+            valid_from: medicalValidFrom,
+            valid_until: medicalValidUntil,
           });
         }
         setApplication(
@@ -219,7 +239,6 @@ export function ControlledOnboardingPage() {
       setConfirming(false);
     }
   }
-
   if (loading) return <LoadingPanel label="正在读取机构入驻申请…" />;
   if (loadError || !application)
     return (
@@ -334,24 +353,42 @@ export function ControlledOnboardingPage() {
               </div>
               <div className="mt-4 space-y-4">
                 {application.status === "DRAFT" || application.correction_fields?.includes("business_license") ? (
-                  <FileField
-                    busy={busy}
-                    label={application.status === "DRAFT" ? "营业执照 *" : "重新上传营业执照 *"}
-                    name="business_license"
-                    onChange={setBusinessFile}
-                  />
+                  <>
+                    <FileField
+                      busy={busy}
+                      label={application.status === "DRAFT" ? "营业执照 *" : "重新上传营业执照 *"}
+                      name="business_license"
+                      onChange={setBusinessFile}
+                    />
+                    <LicenseDateFields
+                      busy={busy}
+                      label="营业执照"
+                      name="business_license"
+                      validFrom={application.licenses?.find((value) => value.license_type === "BUSINESS_LICENSE")?.valid_from}
+                      validUntil={application.licenses?.find((value) => value.license_type === "BUSINESS_LICENSE")?.valid_until}
+                    />
+                  </>
                 ) : (
                   <ExistingMaterial label="营业执照" />
                 )}
                 {application.institution_type === "LICENSED_CLINIC" ? (
                   application.status === "DRAFT" ||
                   application.correction_fields?.includes("medical_institution_license") ? (
-                    <FileField
-                      busy={busy}
-                      label={application.status === "DRAFT" ? "医疗机构执业许可证 *" : "重新上传医疗机构执业许可证 *"}
-                      name="medical_license"
-                      onChange={setMedicalFile}
-                    />
+                    <>
+                      <FileField
+                        busy={busy}
+                        label={application.status === "DRAFT" ? "医疗机构执业许可证 *" : "重新上传医疗机构执业许可证 *"}
+                        name="medical_license"
+                        onChange={setMedicalFile}
+                      />
+                      <LicenseDateFields
+                        busy={busy}
+                        label="医疗机构执业许可证"
+                        name="medical_license"
+                        validFrom={application.licenses?.find((value) => value.license_type === "MEDICAL_INSTITUTION_LICENSE")?.valid_from}
+                        validUntil={application.licenses?.find((value) => value.license_type === "MEDICAL_INSTITUTION_LICENSE")?.valid_until}
+                      />
+                    </>
                   ) : (
                     <ExistingMaterial label="医疗机构执业许可证" />
                   )
@@ -456,6 +493,47 @@ function FileField({
         type="file"
       />
     </label>
+  );
+}
+
+function LicenseDateFields({
+  label,
+  name,
+  busy,
+  validFrom,
+  validUntil,
+}: {
+  label: string;
+  name: "business_license" | "medical_license";
+  busy: boolean;
+  validFrom?: string;
+  validUntil?: string;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className="block text-sm font-medium text-slate-700">
+        {label}有效期起
+        <input
+          aria-label={`${label}有效期起`}
+          className={fieldClassName}
+          defaultValue={validFrom}
+          disabled={busy}
+          name={`${name}_valid_from`}
+          type="date"
+        />
+      </label>
+      <label className="block text-sm font-medium text-slate-700">
+        {label}有效期止
+        <input
+          aria-label={`${label}有效期止`}
+          className={fieldClassName}
+          defaultValue={validUntil}
+          disabled={busy}
+          name={`${name}_valid_until`}
+          type="date"
+        />
+      </label>
+    </div>
   );
 }
 

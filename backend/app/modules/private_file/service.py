@@ -280,7 +280,7 @@ async def authorize_file_access(
     row = await PrivateFileRepository(session).access_snapshot(file_id)
     permitted = row is not None and (
         row["owner_user_id"] == user_id
-        or (reviewer and row["bound_application_id"] is not None)
+        or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
     )
     if not permitted or row["status"] != "CLEAN":
         raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
@@ -311,7 +311,7 @@ async def read_authorized_content(
     row = await PrivateFileRepository(session).metadata(file_id)
     permitted = row is not None and (
         row["owner_user_id"] == user_id
-        or (reviewer and row["bound_application_id"] is not None)
+        or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
     )
     if not permitted or row["status"] != "CLEAN":
         raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
@@ -331,7 +331,9 @@ async def read_authorized_content(
 async def delete_temporary(session, user_id: int, file_id: str) -> None:
     row = await PrivateFileRepository(session).get(file_id, for_update=True)
     if row is None or row.owner_user_id != user_id: raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
-    if row.bound_application_id is not None: raise HTTPException(409, "PRIVATE_FILE_BOUND")
+    snapshot = await PrivateFileRepository(session).access_snapshot(file_id)
+    if row.bound_application_id is not None or (snapshot and snapshot["qualification_bound"]):
+        raise HTTPException(409, "PRIVATE_FILE_BOUND")
     path = _path(row.object_key)
     row.status = "DELETED"; row.deleted_at = datetime.now(timezone.utc)
     await _commit_private_file(session, row.file_id, {"status": row.status, "deleted_at": row.deleted_at})
@@ -347,6 +349,9 @@ async def cleanup_orphan_private_file(session, file_id: str) -> bool:
         if path.exists():
             await asyncio.to_thread(path.unlink)
             return True
+        return False
+    snapshot = await PrivateFileRepository(session).access_snapshot(file_id)
+    if snapshot is not None and snapshot["qualification_bound"]:
         return False
     value = _domain(row)
     if not value.is_orphan_expired(datetime.now(timezone.utc)):

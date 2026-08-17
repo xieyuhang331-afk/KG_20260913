@@ -199,6 +199,10 @@ jobs:
               "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE": f"kg_ci_review_writer_{suffix}",
               "KG_TEST_PRIVATE_FILE_WRITER_ROLE": f"kg_ci_file_writer_{suffix}",
               "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE": f"kg_ci_onboarding_reader_{suffix}",
+              "KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE": f"kg_ci_therapist_onboarding_{suffix}",
+              "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE": f"kg_ci_therapist_review_{suffix}",
+              "KG_TEST_THERAPIST_READINESS_WORKER_ROLE": f"kg_ci_therapist_worker_{suffix}",
+              "KG_TEST_THERAPIST_READER_ROLE": f"kg_ci_therapist_reader_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -233,6 +237,13 @@ jobs:
                   secrets.token_bytes(32)
               ).decode(),
               "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48),
+              "KG_THERAPIST_PII_ENCRYPTION_CURRENT_KEY_ID": f"ci-therapist-pii-{secrets.token_hex(6)}",
+              "KG_THERAPIST_PII_DIGEST_CURRENT_KEY_ID": f"ci-therapist-digest-{secrets.token_hex(6)}",
+              "KG_THERAPIST_TOTP_ENCRYPTION_CURRENT_KEY_ID": f"ci-therapist-totp-{secrets.token_hex(6)}",
+              "KG_THERAPIST_INVITATION_CODE_HMAC_CURRENT_KEY_ID": f"ci-therapist-code-{secrets.token_hex(6)}",
+              "KG_THERAPIST_REPLAY_ENCRYPTION_CURRENT_KEY_ID": f"ci-therapist-replay-{secrets.token_hex(6)}",
+              "KG_THERAPIST_READINESS_DIGEST_CURRENT_KEY_ID": f"ci-therapist-ready-{secrets.token_hex(6)}",
+              "KG_THERAPIST_DELIVERY_TARGET_HMAC_CURRENT_KEY_ID": f"ci-therapist-delivery-{secrets.token_hex(6)}",
               "KG_HEALTH_FACT_DIGEST_CURRENT_KEY_ID": "ci-k2",
               "KG_ORGANIZATION_MAPPING_DIGEST_CURRENT_KEY_ID": "ci-org-k2",
               "KG_RABBITMQ_CONTAINER_NAME": f"kg-reg-{rabbit_suffix}",
@@ -296,6 +307,10 @@ jobs:
               "KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE",
               "KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_WRITER_ROLE",
               "KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE",
+              "KG_TEST_THERAPIST_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE",
+              "KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE",
+              "KG_TEST_THERAPIST_READINESS_WORKER_DATABASE_URL": "KG_TEST_THERAPIST_READINESS_WORKER_ROLE",
+              "KG_TEST_THERAPIST_READER_DATABASE_URL": "KG_TEST_THERAPIST_READER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -352,6 +367,25 @@ jobs:
           values["KG_INSTITUTION_REVIEW_WRITER_ROLE"] = values["KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE"]
           values["KG_PRIVATE_FILE_WRITER_ROLE"] = values["KG_TEST_PRIVATE_FILE_WRITER_ROLE"]
           values["KG_INSTITUTION_ONBOARDING_READER_ROLE"] = values["KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE"]
+          values["KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"] = values["KG_TEST_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"]
+          values["KG_THERAPIST_REVIEW_WRITER_DATABASE_URL"] = values["KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL"]
+          values["KG_THERAPIST_READINESS_WORKER_DATABASE_URL"] = values["KG_TEST_THERAPIST_READINESS_WORKER_DATABASE_URL"]
+          values["KG_THERAPIST_READER_DATABASE_URL"] = values["KG_TEST_THERAPIST_READER_DATABASE_URL"]
+          values["KG_THERAPIST_ONBOARDING_WRITER_ROLE"] = values["KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE"]
+          values["KG_THERAPIST_REVIEW_WRITER_ROLE"] = values["KG_TEST_THERAPIST_REVIEW_WRITER_ROLE"]
+          values["KG_THERAPIST_READINESS_WORKER_ROLE"] = values["KG_TEST_THERAPIST_READINESS_WORKER_ROLE"]
+          values["KG_THERAPIST_READER_ROLE"] = values["KG_TEST_THERAPIST_READER_ROLE"]
+          for prefix in (
+              "KG_THERAPIST_PII_ENCRYPTION", "KG_THERAPIST_PII_DIGEST",
+              "KG_THERAPIST_TOTP_ENCRYPTION", "KG_THERAPIST_INVITATION_CODE_HMAC",
+              "KG_THERAPIST_REPLAY_ENCRYPTION", "KG_THERAPIST_READINESS_DIGEST",
+              "KG_THERAPIST_DELIVERY_TARGET_HMAC",
+          ):
+              key_id = values[f"{prefix}_CURRENT_KEY_ID"]
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: base64.b64encode(secrets.token_bytes(32)).decode()},
+                  separators=(",", ":"), sort_keys=True,
+              )
           values["KG_TEST_ROLE_ADMIN_DATABASE_URL"] = (
               f"postgresql+asyncpg://postgres:{quote(os.environ['KG_TEST_POSTGRES_PASSWORD'])}@"
               f"{host}:{port}/{database}"
@@ -533,6 +567,14 @@ jobs:
             --set=private_file_writer_password="$KG_TEST_PRIVATE_FILE_WRITER_ROLE_PASSWORD" \
             --set=institution_onboarding_reader_role="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE" \
             --set=institution_onboarding_reader_password="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE_PASSWORD" \
+            --set=therapist_onboarding_role="$KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE" \
+            --set=therapist_onboarding_password="$KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE_PASSWORD" \
+            --set=therapist_review_role="$KG_TEST_THERAPIST_REVIEW_WRITER_ROLE" \
+            --set=therapist_review_password="$KG_TEST_THERAPIST_REVIEW_WRITER_ROLE_PASSWORD" \
+            --set=therapist_worker_role="$KG_TEST_THERAPIST_READINESS_WORKER_ROLE" \
+            --set=therapist_worker_password="$KG_TEST_THERAPIST_READINESS_WORKER_ROLE_PASSWORD" \
+            --set=therapist_reader_role="$KG_TEST_THERAPIST_READER_ROLE" \
+            --set=therapist_reader_password="$KG_TEST_THERAPIST_READER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -559,6 +601,10 @@ jobs:
           CREATE ROLE :"institution_review_writer_role" LOGIN PASSWORD :'institution_review_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"private_file_writer_role" LOGIN PASSWORD :'private_file_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"institution_onboarding_reader_role" LOGIN PASSWORD :'institution_onboarding_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"therapist_onboarding_role" LOGIN PASSWORD :'therapist_onboarding_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"therapist_review_role" LOGIN PASSWORD :'therapist_review_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"therapist_worker_role" LOGIN PASSWORD :'therapist_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"therapist_reader_role" LOGIN PASSWORD :'therapist_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

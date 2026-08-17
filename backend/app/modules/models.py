@@ -15,6 +15,7 @@ def import_core_models():
     from app.modules.health_projection import models as health_projection_models
     from app.modules.institution_onboarding import models as institution_onboarding_models
     from app.modules.private_file import models as private_file_models
+    from app.modules.therapist_qualification import models as therapist_qualification_models
 
     return {
         "auth": auth_models,
@@ -28,6 +29,7 @@ def import_core_models():
         "health_projection": health_projection_models,
         "institution_onboarding": institution_onboarding_models,
         "private_file": private_file_models,
+        "therapist_qualification": therapist_qualification_models,
         "specs": get_core_table_specs(),
     }
 

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,7 +73,7 @@ async def _seed_closure_sources(application_database) -> None:
 
 
 def test_0020对象与四身份最小权限(pg_database, application_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260816_0020"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260817_0021"
     assert pg_database.fetch_value("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('institution_invitation','institution_onboarding_account','institution_application','institution_application_revision','institution_license','private_file','institution_onboarding_idempotency','institution_onboarding_audit','institution_onboarding_outbox','institution_onboarding_delivery')") == 10
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
@@ -424,7 +425,7 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
         assert rolled_back.value.detail == "ONBOARDING_COMMIT_ROLLED_BACK"
     _mark_stage("SUBMIT")
     async with writer() as session:
-        submitted = await submit_application(session, user_id, ApplicationSubmitRequest(expected_version=2, licenses=(LicenseBinding(license_type="BUSINESS_LICENSE", private_file_id=upload["file_id"]),)), "idem-submit-0001")
+        submitted = await submit_application(session, user_id, ApplicationSubmitRequest(expected_version=2, licenses=(LicenseBinding(license_type="BUSINESS_LICENSE", private_file_id=upload["file_id"], valid_from=date(2026, 1, 1), valid_until=date(2027, 1, 1)),)), "idem-submit-0001")
         assert submitted["status"] == "SUBMITTED"
 
     reviewer = get_slice1_session_factory("review_writer")
@@ -500,7 +501,7 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
                 contact_email="slice1@example.invalid",
                 service_tags=("HYPERTENSION",),
                 expected_version=5,
-                licenses=(LicenseBinding(license_type="BUSINESS_LICENSE", private_file_id=replacement["file_id"]),),
+                licenses=(LicenseBinding(license_type="BUSINESS_LICENSE", private_file_id=replacement["file_id"], valid_from=date(2026, 1, 1), valid_until=date(2027, 1, 1)),),
             ),
             "idem-resubmit-0001",
         )

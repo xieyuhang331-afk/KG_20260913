@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260816_0020"
+REQUIRED_HEAD_REVISION = "20260817_0021"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -179,6 +179,14 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_PRIVATE_FILE_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL",
         "KG_INSTITUTION_ONBOARDING_READER_ROLE": "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE",
         "KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL",
+        "KG_THERAPIST_ONBOARDING_WRITER_ROLE": "KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE",
+        "KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_ONBOARDING_WRITER_DATABASE_URL",
+        "KG_THERAPIST_REVIEW_WRITER_ROLE": "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE",
+        "KG_THERAPIST_REVIEW_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL",
+        "KG_THERAPIST_READINESS_WORKER_ROLE": "KG_TEST_THERAPIST_READINESS_WORKER_ROLE",
+        "KG_THERAPIST_READINESS_WORKER_DATABASE_URL": "KG_TEST_THERAPIST_READINESS_WORKER_DATABASE_URL",
+        "KG_THERAPIST_READER_ROLE": "KG_TEST_THERAPIST_READER_ROLE",
+        "KG_THERAPIST_READER_DATABASE_URL": "KG_TEST_THERAPIST_READER_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -641,6 +649,10 @@ def pg_database():
         institution_review_role = _validated_role_name("KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE")
         private_file_role = _validated_role_name("KG_TEST_PRIVATE_FILE_WRITER_ROLE")
         onboarding_reader_role = _validated_role_name("KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE")
+        therapist_onboarding_role = _validated_role_name("KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE")
+        therapist_review_role = _validated_role_name("KG_TEST_THERAPIST_REVIEW_WRITER_ROLE")
+        therapist_worker_role = _validated_role_name("KG_TEST_THERAPIST_READINESS_WORKER_ROLE")
+        therapist_reader_role = _validated_role_name("KG_TEST_THERAPIST_READER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -667,6 +679,10 @@ def pg_database():
             institution_review_role,
             private_file_role,
             onboarding_reader_role,
+            therapist_onboarding_role,
+            therapist_review_role,
+            therapist_worker_role,
+            therapist_reader_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")

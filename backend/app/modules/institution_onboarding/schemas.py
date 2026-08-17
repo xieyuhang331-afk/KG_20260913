@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import date
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class InvitationCreate(BaseModel):
@@ -64,6 +65,14 @@ class LicenseBinding(BaseModel):
     license_type: Literal["BUSINESS_LICENSE", "MEDICAL_INSTITUTION_LICENSE"]
     private_file_id: UUID
     license_no: str | None = Field(default=None, max_length=64)
+    valid_from: date
+    valid_until: date
+
+    @model_validator(mode="after")
+    def validate_validity(self):
+        if self.valid_from > self.valid_until:
+            raise ValueError("license validity range is invalid")
+        return self
 
 
 class ApplicationSubmitRequest(BaseModel):

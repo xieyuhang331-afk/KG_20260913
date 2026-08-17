@@ -119,6 +119,15 @@ async def get_onboarding_account_for_login(user_id: int):
         return await InstitutionOnboardingRepository(reader_session).account_for_user(user_id)
 
 
+async def get_therapist_account_for_login(session, user_id: int):
+    from sqlalchemy import text
+    result = await session.execute(
+        text("SELECT * FROM public.therapist_totp_for_login_v1(:user_id)"),
+        {"user_id": user_id},
+    )
+    return result.mappings().one_or_none()
+
+
 async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     user = await get_user_by_phone(session, payload.phone)
     if user is None or not verify_password(payload.password, user.password_hash):
@@ -135,6 +144,25 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
         ):
             raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
 
+    therapist_account = await get_therapist_account_for_login(session, user.id) if user.role == "therapist" else None
+    if user.role == "therapist":
+        if (
+            therapist_account is None
+            or therapist_account["therapist_status"] not in {"ACTIVATED", "DRAFT", "SUBMITTED", "UNDER_REVIEW", "NEEDS_CORRECTION", "RESUBMITTED", "APPROVED_ACTIVE", "SUSPENDED"}
+            or therapist_account["tenant_id"] != user.tenant_id
+        ):
+            raise HTTPException(status_code=403, detail="Login context is not configured")
+        from app.modules.institution_onboarding.domain import verify_totp
+        from app.modules.therapist_qualification.service import TherapistSecrets, utcnow
+        secret = TherapistSecrets().decrypt_totp(
+            therapist_account["totp_secret_ciphertext"],
+            therapist_account["totp_encryption_key_id"],
+            therapist_account["tenant_public_id"],
+            therapist_account["therapist_id"],
+        )
+        if payload.totp_code is None or not verify_totp(secret, payload.totp_code, at=utcnow()):
+            raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
+
     dynamic_org_id = (
         await _tenant_org_id(session, user.tenant_id)
         if user.role == "org_admin" and user.tenant_id is not None
@@ -143,6 +171,9 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     claims = _build_login_claims(user, dynamic_org_id=dynamic_org_id)
     if account is not None:
         claims["amr"] = ["pwd", "totp"]
+    if therapist_account is not None:
+        claims["amr"] = ["pwd", "totp"]
+        claims["therapist_id"] = str(therapist_account["therapist_id"])
     access_token = create_access_token(claims)
     expires_in = get_settings().jwt_access_token_expire_minutes * 60
 

@@ -47,6 +47,18 @@ PROJECTION_SHADOW_TABLES = {
     "public.health_projection_shadow_run",
     "public.health_projection_shadow_audit",
 }
+PHASE1_SLICE2_TABLES = {
+    f"public.{name}"
+    for name in (
+        "therapist_invitation", "therapist_profile", "therapist_profile_revision",
+        "therapist_profile_revision_qualification", "therapist_qualification_version",
+        "therapist_qualification_attachment", "therapist_review_item",
+        "therapist_review_decision", "therapist_status_decision",
+        "institution_service_readiness", "readiness_evidence",
+        "therapist_workflow_idempotency", "therapist_workflow_audit",
+        "therapist_workflow_outbox", "therapist_workflow_delivery",
+    )
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -91,5 +103,6 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
         | LEGACY_MAPPING_TABLES
         | PROJECTION_BUILDER_TABLES
             | PROJECTION_SHADOW_TABLES
-            | PHASE1_SLICE1_TABLES
+                | PHASE1_SLICE1_TABLES
+                | PHASE1_SLICE2_TABLES
         )

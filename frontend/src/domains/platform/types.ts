@@ -81,3 +81,75 @@ export interface TenantReviewQueueParams {
   province?: string;
   city?: string;
 }
+
+export interface TherapistReviewItem {
+  review_item_id: string;
+  therapist_id: string;
+  revision_id: string;
+  qualification_version_id?: string | null;
+  review_kind: "INITIAL" | "RENEWAL";
+  status: "QUEUED" | "UNDER_REVIEW" | "DECIDED";
+  created_at: string;
+  version: number;
+}
+
+export interface TherapistReviewDecisionPayload {
+  decision: "NEEDS_CORRECTION" | "REJECTED" | "APPROVED";
+  reason_code?: string | null;
+  profile_fields: string[];
+  qualification_targets: string[];
+  qualification_outcomes: Record<string, "APPROVED" | "REJECTED">;
+  expected_version: number;
+}
+
+export interface TherapistReviewProfile {
+  therapist_id: string;
+  tenant_id: string;
+  display_name: string | null;
+  practice_summary: string | null;
+  status:
+    | "ACTIVATED"
+    | "DRAFT"
+    | "SUBMITTED"
+    | "UNDER_REVIEW"
+    | "NEEDS_CORRECTION"
+    | "RESUBMITTED"
+    | "APPROVED_ACTIVE"
+    | "SUSPENDED"
+    | "EXITED"
+    | "REJECTED";
+  service_tags: Array<"HYPERTENSION" | "GLUCOSE_METABOLISM" | "DYSLIPIDEMIA" | "OBESITY"> | null;
+  capacity_limit: 30;
+  active_case_count: number;
+  qualification_valid_until: string | null;
+  current_revision_no: number;
+  version: number;
+  updated_at: string;
+}
+
+export interface TherapistReviewQualification {
+  qualification_version_id: string;
+  qualification_type: "METABOLIC_HEALTH_PRACTICE";
+  masked_certificate_no: string;
+  issuer_name: string;
+  valid_from: string;
+  valid_until: string;
+  derived_review_status: "SUBMITTED" | "APPROVED" | "REJECTED" | "SUPERSEDED";
+  attachment_count: number;
+  version_no: number;
+}
+
+export interface TherapistMutationResult {
+  therapist_id: string;
+  status: string;
+  version: number;
+  revision_id?: string | null;
+  revision_no?: number | null;
+  review_item_id?: string | null;
+}
+
+export interface TherapistReviewDecisionResult {
+  review_item: Pick<TherapistReviewItem, "review_item_id" | "status" | "version">;
+  profile: Pick<TherapistMutationResult, "therapist_id" | "status" | "version">;
+  decision_id: string | null;
+}
