@@ -13,6 +13,12 @@ from app.modules.health_analysis.api import router as health_analysis_router
 from app.modules.organization.api import router as organization_router
 from app.modules.institution_onboarding.api import onboarding_router, platform_router
 from app.modules.private_file.api import router as private_file_router
+from app.modules.therapist_qualification.api import (
+    institution_router as therapist_institution_router,
+    platform_router as therapist_platform_router,
+    strip_therapist_validation_responses,
+    therapist_router,
+)
 from app.modules.registry import get_module_registry
 from app.modules.review.api import router as review_router
 from app.modules.tenant.api import router as tenant_router
@@ -51,6 +57,15 @@ def create_app() -> FastAPI:
     app.include_router(platform_router)
     app.include_router(onboarding_router)
     app.include_router(private_file_router)
+    app.include_router(therapist_institution_router)
+    app.include_router(therapist_router)
+    app.include_router(therapist_platform_router)
+    default_openapi = app.openapi
+
+    def therapist_aware_openapi():
+        return strip_therapist_validation_responses(default_openapi())
+
+    app.openapi = therapist_aware_openapi
 
     @app.get("/health", tags=["system"])
     async def health_check() -> dict:

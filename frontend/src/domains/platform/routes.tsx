@@ -9,6 +9,8 @@ import { IdentityReviewDetailPage } from "./pages/实名认证审核详情页";
 import { PlatformOrganizationPage } from "@/domains/organization/pages/平台组织治理页";
 import { InstitutionInvitationPage } from "./pages/InstitutionInvitationPage";
 import { InstitutionReviewPage } from "./pages/InstitutionReviewPage";
+import { TherapistReviewPage } from "./pages/TherapistReviewPage";
+import { TherapistStatusPage } from "./pages/TherapistStatusPage";
 
 export const platformRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -30,6 +32,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
         { path: "identity-reviews/:userId", element: <IdentityReviewDetailPage /> },
         { path: "institution-invitations", element: <InstitutionInvitationPage /> },
         { path: "institution-reviews", element: <InstitutionReviewPage /> },
+        { path: "therapist-reviews", element: <TherapistReviewPage /> },
+        { path: "therapist-status", element: <TherapistStatusPage /> },
       ],
     },
   ],

@@ -1,5 +1,14 @@
 import { apiRequest } from "@/shared/api/client";
-import type { MyTenantApplicationsParams, MyTenantApplicationsResponse, TenantApplicationDetail } from "./types";
+import type {
+  MyTenantApplicationsParams,
+  MyTenantApplicationsResponse,
+  ServiceReadiness,
+  TenantApplicationDetail,
+  TherapistInvitation,
+  TherapistProfile,
+  TherapistQualification,
+  TherapistStatus,
+} from "./types";
 
 export interface InstitutionActivationPayload {
   invitation_id: string;
@@ -26,6 +35,8 @@ export interface LicenseBindingPayload {
   license_type: "BUSINESS_LICENSE" | "MEDICAL_INSTITUTION_LICENSE";
   private_file_id: string;
   license_no?: string;
+  valid_from: string;
+  valid_until: string;
 }
 
 export interface OnboardingSubmitPayload {
@@ -126,3 +137,29 @@ export const completePrivateFileUpload = (
   });
 export const getPrivateFileMetadata = (fileId: string) =>
   apiRequest<{ status: string }>(`/api/v1/private-files/${fileId}`);
+
+export const createTherapistInvitation = (payload: { phone: string; expires_in_minutes: number }, key: string) =>
+  apiRequest<TherapistInvitation>("/api/v1/institution/therapist-invitations", {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+export const listTherapistInvitations = () =>
+  apiRequest<{ items: TherapistInvitation[]; next_cursor?: string }>("/api/v1/institution/therapist-invitations");
+export const revokeTherapistInvitation = (id: string, expectedVersion: number, key: string) =>
+  apiRequest<TherapistInvitation>(`/api/v1/institution/therapist-invitations/${id}/revoke`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: "INVITE_WITHDRAWN" }),
+  });
+export const listTherapists = (status?: TherapistStatus) =>
+  apiRequest<{ items: TherapistProfile[]; next_cursor?: string }>(
+    `/api/v1/institution/therapists${status ? `?status=${status}` : ""}`,
+  );
+export const getTherapist = (id: string) =>
+  apiRequest<{ profile: TherapistProfile; qualifications: TherapistQualification[] }>(
+    `/api/v1/institution/therapists/${id}`,
+  );
+export const getServiceReadiness = () => apiRequest<ServiceReadiness>("/api/v1/institution/service-readiness");
+export const getServiceReadinessEvidence = () =>
+  apiRequest<{ items: ServiceReadiness[]; next_cursor?: string }>("/api/v1/institution/service-readiness/evidence");

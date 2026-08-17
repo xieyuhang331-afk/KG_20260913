@@ -6,6 +6,12 @@ import type {
   TenantReviewDetailResponse,
   TenantReviewQueueParams,
   TenantReviewQueueResponse,
+  TherapistReviewDecisionPayload,
+  TherapistReviewDecisionResult,
+  TherapistReviewItem,
+  TherapistReviewProfile,
+  TherapistReviewQualification,
+  TherapistMutationResult,
 } from "./types";
 
 export interface InstitutionInvitationPayload {
@@ -128,3 +134,39 @@ export function rejectTenantReview(tenantId: number, payload: { reason: string }
     body: JSON.stringify(payload),
   });
 }
+
+export const listTherapistReviews = (kind?: "INITIAL" | "RENEWAL") =>
+  apiRequest<{ items: TherapistReviewItem[]; next_cursor?: string }>(
+    `/api/v1/platform/therapist-reviews${kind ? `?kind=${kind}` : ""}`,
+  );
+export const getTherapistReview = (therapistId: string) =>
+  apiRequest<{
+    profile: TherapistReviewProfile;
+    qualifications: TherapistReviewQualification[];
+    current_qualification_ids: string[];
+    review_item: TherapistReviewItem | null;
+  }>(`/api/v1/platform/therapist-reviews/${therapistId}`);
+export const decideTherapistReview = (therapistId: string, payload: TherapistReviewDecisionPayload, key: string) =>
+  apiRequest<TherapistReviewDecisionResult>(`/api/v1/platform/therapist-reviews/${therapistId}/decision`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+export const suspendTherapist = (id: string, expectedVersion: number, reasonCode: string, key: string) =>
+  apiRequest<TherapistMutationResult>(`/api/v1/platform/therapists/${id}/suspend`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
+  });
+export const resumeTherapist = (id: string, expectedVersion: number, key: string) =>
+  apiRequest<TherapistMutationResult>(`/api/v1/platform/therapists/${id}/resume`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  });
+export const exitTherapist = (id: string, expectedVersion: number, reasonCode: string, key: string) =>
+  apiRequest<TherapistMutationResult>(`/api/v1/platform/therapists/${id}/exit`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
+  });

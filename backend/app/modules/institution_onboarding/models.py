@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -94,6 +94,7 @@ class InstitutionLicenseModel(Base):
     __table_args__ = (
         UniqueConstraint("application_id", "license_type", name="uq_institution_license_application_type"),
         CheckConstraint("license_type IN ('BUSINESS_LICENSE','MEDICAL_INSTITUTION_LICENSE')", name="license_type"),
+        CheckConstraint("(valid_from IS NULL AND valid_until IS NULL) OR (valid_from IS NOT NULL AND valid_until IS NOT NULL AND valid_from<=valid_until)", name="validity"),
         {"schema": "public"},
     )
     license_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
@@ -102,6 +103,8 @@ class InstitutionLicenseModel(Base):
     license_no_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
     license_no_digest: Mapped[str | None] = mapped_column(String(64))
     private_file_id: Mapped[str] = mapped_column(ForeignKey("public.private_file.file_id", name="fk_institution_license_private_file"), nullable=False)
+    valid_from: Mapped[date | None] = mapped_column()
+    valid_until: Mapped[date | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 
 class UploadInitiateRequest(BaseModel):
-    purpose: Literal["BUSINESS_LICENSE", "MEDICAL_INSTITUTION_LICENSE"]
+    purpose: Literal["BUSINESS_LICENSE", "MEDICAL_INSTITUTION_LICENSE", "THERAPIST_QUALIFICATION"]
     size: int = Field(ge=1, le=10 * 1024 * 1024)
     mime_type: Literal["application/pdf", "image/jpeg", "image/png"]
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -4,8 +4,10 @@ import {
   Building2,
   ClipboardCheck,
   ClipboardList,
+  HeartPulse,
   LayoutDashboard,
   MailPlus,
+  UserRoundCheck,
   ShieldCheck,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -17,6 +19,8 @@ const navigationIcons: Record<string, ReactNode> = {
   入驻审核: <ClipboardCheck aria-hidden="true" size={17} />,
   机构邀请: <MailPlus aria-hidden="true" size={17} />,
   受控入驻审核: <ClipboardList aria-hidden="true" size={17} />,
+  健管师资质审核: <UserRoundCheck aria-hidden="true" size={17} />,
+  健管师状态: <HeartPulse aria-hidden="true" size={17} />,
   实名审核: <BadgeCheck aria-hidden="true" size={17} />,
   组织治理: <Building2 aria-hidden="true" size={17} />,
 };

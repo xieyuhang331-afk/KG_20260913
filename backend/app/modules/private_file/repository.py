@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 
 from app.modules.private_file.models import PrivateFileModel
 
@@ -30,7 +30,11 @@ class PrivateFileRepository:
             PrivateFileModel.created_at, PrivateFileModel.expires_at,
             PrivateFileModel.scanned_at, PrivateFileModel.bound_at,
         ).where(PrivateFileModel.file_id == file_id))
-        return result.mappings().one_or_none()
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        relation = await self.qualification_relation(file_id)
+        return {**row, **relation}
 
     async def access_snapshot(self, file_id: str):
         result = await self.session.execute(select(
@@ -39,7 +43,25 @@ class PrivateFileRepository:
             PrivateFileModel.actual_sha256, PrivateFileModel.bound_application_id,
             PrivateFileModel.created_at,
         ).where(PrivateFileModel.file_id == file_id))
-        return result.mappings().one_or_none()
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        relation = await self.qualification_relation(file_id)
+        return {**row, **relation}
+
+    async def qualification_relation(self, file_id: str):
+        result = await self.session.execute(
+            text(
+                "SELECT qualification_bound,reviewer_access "
+                "FROM public.therapist_qualification_file_relation_v1(:file_id)"
+            ),
+            {"file_id": file_id},
+        )
+        row = result.mappings().one()
+        return {
+            "qualification_bound": bool(row["qualification_bound"]),
+            "reviewer_access": bool(row["reviewer_access"]),
+        }
 
     async def persistence_snapshot(self, file_id: str):
         result = await self.session.execute(select(
@@ -75,4 +97,9 @@ class PrivateFileRepository:
             )
             .limit(limit)
         )
-        return tuple(result.scalars())
+        candidates = tuple(result.scalars())
+        safe: list[str] = []
+        for file_id in candidates:
+            if not (await self.qualification_relation(file_id))["qualification_bound"]:
+                safe.append(file_id)
+        return tuple(safe)

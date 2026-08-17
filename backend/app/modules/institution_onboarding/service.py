@@ -131,6 +131,8 @@ def _public_application(row: InstitutionApplicationModel, licenses=()) -> dict:
             {
                 "license_type": value.license_type,
                 "private_file_id": value.private_file_id,
+                "valid_from": value.valid_from.isoformat() if value.valid_from else None,
+                "valid_until": value.valid_until.isoformat() if value.valid_until else None,
             }
             for value in licenses
         ],
@@ -694,7 +696,7 @@ async def _submit(session, user_id: int, payload: ApplicationSubmitRequest, *, r
             if existing.private_file_id != str(item.private_file_id):
                 raise HTTPException(409, "PRIVATE_FILE_BIND_CONFLICT")
             continue
-        await repo.add(InstitutionLicenseModel(license_id=str(Uuid7Generator().generate()), application_id=row.application_id, license_type=item.license_type, license_no_ciphertext=secrets_box.encrypt(item.license_no) if item.license_no else None, license_no_digest=secrets_box.digest(item.license_no) if item.license_no else None, private_file_id=str(item.private_file_id), created_at=now))
+        await repo.add(InstitutionLicenseModel(license_id=str(Uuid7Generator().generate()), application_id=row.application_id, license_type=item.license_type, license_no_ciphertext=secrets_box.encrypt(item.license_no) if item.license_no else None, license_no_digest=secrets_box.digest(item.license_no) if item.license_no else None, private_file_id=str(item.private_file_id), valid_from=item.valid_from, valid_until=item.valid_until, created_at=now))
     response = await _record_idempotency(repo, str(user_id), operation, idempotency_key, request_digest, _public_application(row), now)
     return await _commit_operation(
         session, scope=str(user_id), operation=operation, key=idempotency_key,
@@ -834,6 +836,8 @@ async def _submit_existing(
             license_row.license_no_digest = (
                 secrets_box.digest(item.license_no) if item.license_no else None
             )
+        license_row.valid_from = item.valid_from
+        license_row.valid_until = item.valid_until
     response = await _record_idempotency(
         repo, str(user_id), "APPLICATION_RESUBMIT", idempotency_key,
         request_digest, _public_application(row), now,

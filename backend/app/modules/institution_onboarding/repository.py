@@ -166,6 +166,8 @@ class InstitutionOnboardingRepository:
             select(
                 InstitutionLicenseModel.license_type,
                 InstitutionLicenseModel.private_file_id,
+                InstitutionLicenseModel.valid_from,
+                InstitutionLicenseModel.valid_until,
                 PrivateFileModel.status,
                 PrivateFileModel.scanned_at,
             )
@@ -209,11 +211,13 @@ class InstitutionOnboardingRepository:
                     InstitutionLicenseModel.license_no_ciphertext,
                     InstitutionLicenseModel.license_no_digest,
                     InstitutionLicenseModel.private_file_id,
+                    InstitutionLicenseModel.valid_from,
+                    InstitutionLicenseModel.valid_until,
                 )
             )
             .where(InstitutionLicenseModel.application_id == application_id)
             .order_by(InstitutionLicenseModel.license_type)
-            .with_for_update()
+            .with_for_update(read=True)
         )
         return tuple(result.scalars())
 
@@ -222,6 +226,8 @@ class InstitutionOnboardingRepository:
             select(
                 InstitutionLicenseModel.license_type,
                 InstitutionLicenseModel.private_file_id,
+                InstitutionLicenseModel.valid_from,
+                InstitutionLicenseModel.valid_until,
             )
             .where(InstitutionLicenseModel.application_id == application_id)
             .order_by(InstitutionLicenseModel.license_type)

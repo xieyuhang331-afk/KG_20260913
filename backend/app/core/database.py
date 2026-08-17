@@ -80,6 +80,8 @@ _PROJECTION_RUNTIME_LOCKS = {}
 _PROJECTION_RUNTIME_ERROR = "Projection database runtime is unavailable"
 _SLICE1_RUNTIMES = {}
 _SLICE1_RUNTIME_ERROR = "Institution onboarding database runtime is unavailable"
+_SLICE2_RUNTIMES = {}
+_SLICE2_RUNTIME_ERROR = "Therapist qualification database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -323,6 +325,10 @@ async def dispose_database_runtimes() -> None:
                     _SLICE1_RUNTIMES.clear()
                     for engine, _ in engines:
                         await engine.dispose()
+                    slice2_engines = tuple(_SLICE2_RUNTIMES.values())
+                    _SLICE2_RUNTIMES.clear()
+                    for engine, _ in slice2_engines:
+                        await engine.dispose()
 
 
 def _projection_url(settings: Settings, kind: str) -> str:
@@ -483,4 +489,85 @@ async def get_private_file_writer_session():
 
 async def get_institution_onboarding_reader_session():
     async for session in _slice1_session("reader"):
+        yield session
+
+
+def _slice2_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "onboarding_writer": settings.therapist_onboarding_writer_database_url,
+        "review_writer": settings.therapist_review_writer_database_url,
+        "readiness_worker": settings.therapist_readiness_worker_database_url,
+        "reader": settings.therapist_reader_database_url,
+    }
+    roles = {
+        "onboarding_writer": settings.therapist_onboarding_writer_role,
+        "review_writer": settings.therapist_review_writer_role,
+        "readiness_worker": settings.therapist_readiness_worker_role,
+        "reader": settings.therapist_reader_role,
+    }
+    try:
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            kind in urls
+            and len(parsed) == 4
+            and len(users) == 4
+            and len(set(users)) == 4
+            and all(value.drivername == "postgresql+asyncpg" and value.username and value.password for value in parsed.values())
+            and all((value.host, value.port, value.database) == (settings.database_host, settings.database_port, settings.database_name) for value in parsed.values())
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users
+            and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE2_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+def get_slice2_session_factory(kind: str):
+    if kind not in {"onboarding_writer", "review_writer", "readiness_worker", "reader"}:
+        raise RuntimeError(_SLICE2_RUNTIME_ERROR) from None
+    entry = _SLICE2_RUNTIMES.get(kind)
+    if entry is None:
+        try:
+            engine = create_async_engine(_slice2_url(get_settings(), kind), pool_pre_ping=True)
+            entry = (engine, create_session_factory(engine))
+        except Exception:
+            raise RuntimeError(_SLICE2_RUNTIME_ERROR) from None
+        _SLICE2_RUNTIMES[kind] = entry
+    return entry[1]
+
+
+async def dispose_slice2_runtime(kind: str) -> None:
+    if kind not in {"onboarding_writer", "review_writer", "readiness_worker", "reader"}:
+        raise RuntimeError(_SLICE2_RUNTIME_ERROR) from None
+    entry = _SLICE2_RUNTIMES.pop(kind, None)
+    if entry is not None:
+        await entry[0].dispose()
+
+
+async def _slice2_session(kind: str):
+    async with get_slice2_session_factory(kind)() as session:
+        yield session
+
+
+async def get_therapist_onboarding_writer_session():
+    async for session in _slice2_session("onboarding_writer"):
+        yield session
+
+
+async def get_therapist_review_writer_session():
+    async for session in _slice2_session("review_writer"):
+        yield session
+
+
+async def get_therapist_readiness_worker_session():
+    async for session in _slice2_session("readiness_worker"):
+        yield session
+
+
+async def get_therapist_reader_session():
+    async for session in _slice2_session("reader"):
         yield session

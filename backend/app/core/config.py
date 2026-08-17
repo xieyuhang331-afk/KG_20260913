@@ -65,6 +65,14 @@ class Settings(BaseModel):
     institution_review_writer_role: str | None = None
     private_file_writer_role: str | None = None
     institution_onboarding_reader_role: str | None = None
+    therapist_onboarding_writer_database_url: str | None = None
+    therapist_review_writer_database_url: str | None = None
+    therapist_readiness_worker_database_url: str | None = None
+    therapist_reader_database_url: str | None = None
+    therapist_onboarding_writer_role: str | None = None
+    therapist_review_writer_role: str | None = None
+    therapist_readiness_worker_role: str | None = None
+    therapist_reader_role: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -144,4 +152,12 @@ def get_settings() -> Settings:
         institution_review_writer_role=os.getenv("KG_INSTITUTION_REVIEW_WRITER_ROLE"),
         private_file_writer_role=os.getenv("KG_PRIVATE_FILE_WRITER_ROLE"),
         institution_onboarding_reader_role=os.getenv("KG_INSTITUTION_ONBOARDING_READER_ROLE"),
+        therapist_onboarding_writer_database_url=os.getenv("KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"),
+        therapist_review_writer_database_url=os.getenv("KG_THERAPIST_REVIEW_WRITER_DATABASE_URL"),
+        therapist_readiness_worker_database_url=os.getenv("KG_THERAPIST_READINESS_WORKER_DATABASE_URL"),
+        therapist_reader_database_url=os.getenv("KG_THERAPIST_READER_DATABASE_URL"),
+        therapist_onboarding_writer_role=os.getenv("KG_THERAPIST_ONBOARDING_WRITER_ROLE"),
+        therapist_review_writer_role=os.getenv("KG_THERAPIST_REVIEW_WRITER_ROLE"),
+        therapist_readiness_worker_role=os.getenv("KG_THERAPIST_READINESS_WORKER_ROLE"),
+        therapist_reader_role=os.getenv("KG_THERAPIST_READER_ROLE"),
     )

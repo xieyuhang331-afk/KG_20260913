@@ -9,6 +9,7 @@ DISPATCH_TASK_NAME = "identity.registration.dispatch_outbox"
 RECONCILE_TASK_NAME = "identity.registration.reconcile_outbox"
 PRIVATE_FILE_QUEUE = "private-file"
 PRIVATE_FILE_SCAN_TASK_NAME = "phase1.private_file.scan"
+THERAPIST_WORKFLOW_QUEUE = "therapist-workflow"
 _DECLARED_QUEUES = (
     "ai",
     "judgment",
@@ -18,6 +19,7 @@ _DECLARED_QUEUES = (
     "notification",
     REGISTRATION_QUEUE,
     PRIVATE_FILE_QUEUE,
+    THERAPIST_WORKFLOW_QUEUE,
 )
 
 
@@ -32,7 +34,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks"),
+        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks"),
     )
     app.conf.update(
         accept_content=("json",),
@@ -49,6 +51,13 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             DISPATCH_TASK_NAME: {"queue": REGISTRATION_QUEUE},
             RECONCILE_TASK_NAME: {"queue": REGISTRATION_QUEUE},
             PRIVATE_FILE_SCAN_TASK_NAME: {"queue": PRIVATE_FILE_QUEUE},
+            "phase1.therapist.dispatch_outbox": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.consume_outbox": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.recover_workflow": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.expire_qualifications": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.expire_invitations": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.recompute_readiness": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.therapist.sweep_readiness": {"queue": THERAPIST_WORKFLOW_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {
@@ -60,6 +69,26 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
                 "task": RECONCILE_TASK_NAME,
                 "schedule": 60.0,
                 "options": {"queue": REGISTRATION_QUEUE},
+            },
+            "therapist-workflow-dispatch": {
+                "task": "phase1.therapist.dispatch_outbox",
+                "schedule": 5.0,
+                "options": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            },
+            "therapist-workflow-recover": {
+                "task": "phase1.therapist.recover_workflow",
+                "schedule": 60.0,
+                "options": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            },
+            "therapist-invitation-expiry": {
+                "task": "phase1.therapist.expire_invitations",
+                "schedule": 60.0,
+                "options": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            },
+            "therapist-readiness-sweep": {
+                "task": "phase1.therapist.sweep_readiness",
+                "schedule": 60.0,
+                "options": {"queue": THERAPIST_WORKFLOW_QUEUE},
             },
         },
     )
