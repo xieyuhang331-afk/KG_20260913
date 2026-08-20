@@ -1212,3 +1212,33 @@ def test_slice3_runtime_roles_and_urls_are_created_and_propagated_before_export(
         assert backend_integration_job.index(role_mapping) < export_position
         assert backend_integration_job.index(url_mapping) < export_position
         assert backend_integration_job.count(f'CREATE ROLE :"{role_variable}" LOGIN') == 1
+
+
+def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    prefixes = {
+        "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
+        "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
+        "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",
+        "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST": "consent",
+        "KG_MEMBER_ENROLLMENT_DELIVERY": "delivery",
+    }
+    mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    assert "member_enrollment_key_purposes = {" in backend_integration_job
+    assert "member_enrollment_key_materials = {" in backend_integration_job
+    assert "base64.b64encode(secrets.token_bytes(32)).decode()" in backend_integration_job
+    assert 'values["KG_IDENTITY_PII_HMAC_KEY_B64"]' in backend_integration_job
+    assert "Member enrollment key material is not isolated" in backend_integration_job
+    assert "*member_enrollment_key_materials.values()," in backend_integration_job
+    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 2
+    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 2
+    assert backend_integration_job.count(
+        'key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"'
+    ) == 1
+
+    for prefix, purpose in prefixes.items():
+        declaration = f'"{prefix}": "{purpose}"'
+        assert backend_integration_job.count(declaration) == 1
+        assert backend_integration_job.index(declaration) < mask_position < export_position

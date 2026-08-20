@@ -287,6 +287,31 @@ jobs:
           values["KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(organization_projection_keys, separators=(",", ":"), sort_keys=True)
           values["KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"] = "ci-health-proj-k2"
           values["KG_HEALTH_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(health_projection_keys, separators=(",", ":"), sort_keys=True)
+          member_enrollment_key_purposes = {
+              "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
+              "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
+              "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",
+              "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST": "consent",
+              "KG_MEMBER_ENROLLMENT_DELIVERY": "delivery",
+          }
+          member_enrollment_key_materials = {
+              prefix: base64.b64encode(secrets.token_bytes(32)).decode()
+              for prefix in member_enrollment_key_purposes
+          }
+          if len(
+              {
+                  *member_enrollment_key_materials.values(),
+                  values["KG_IDENTITY_PII_HMAC_KEY_B64"],
+              }
+          ) != len(member_enrollment_key_materials) + 1:
+              raise RuntimeError("Member enrollment key material is not isolated")
+          for prefix, purpose in member_enrollment_key_purposes.items():
+              key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"
+              values[f"{prefix}_CURRENT_KEY_ID"] = key_id
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: member_enrollment_key_materials[prefix]},
+                  separators=(",", ":"), sort_keys=True,
+              )
           url_names = {
               "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
               "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
@@ -438,6 +463,7 @@ jobs:
               *organization_mapping_keys.values(),
               *organization_projection_keys.values(),
               *health_projection_keys.values(),
+              *member_enrollment_key_materials.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
