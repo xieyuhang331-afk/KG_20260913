@@ -196,7 +196,7 @@ def test_B3读取合同(parameter: str) -> None:
             api.institution_enrollment,
             api.family_enrollment,
             api.identity_review,
-            api.therapist_assignment,
+                api.get_primary_therapist_assignment,
             api.institution_case,
             api.therapist_case,
         ):

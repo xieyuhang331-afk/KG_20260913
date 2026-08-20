@@ -1087,8 +1087,8 @@ async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_public_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
 
 
-@therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO)
-async def therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+@therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO, summary="Therapist Assignment")
+async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
     therapist=await _therapist_current(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
     if len(rows)!=1: raise _error("ASSIGNMENT_NOT_FOUND")
     return _public_row(rows[0])

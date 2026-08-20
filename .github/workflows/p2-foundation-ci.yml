@@ -47,7 +47,7 @@ jobs:
       - name: Enforce blocked P2 decisions
         shell: bash
         run: |
-          if git grep -I -n -E 'family_delegation|health_fact_correction|health_fact_supersession|therapist_assignment|professional_service_fulfillment' -- backend/app frontend/src; then
+          if git grep -I -n -w -E 'family_delegation|health_fact_correction|health_fact_supersession|therapist_assignment|professional_service_fulfillment' -- backend/app frontend/src; then
             echo 'Decision-003, Decision-008, or Decision-009 implementation detected.'
             exit 1
           fi

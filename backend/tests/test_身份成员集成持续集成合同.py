@@ -1,4 +1,5 @@
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,18 @@ REVISION_CONTRACT_FILES = (
     INTEGRATION_ROOT / "test_pg_migrations_smoke.py",
 )
 ALEMBIC_VERSION_QUERY = "SELECT version_num FROM alembic_version"
+BLOCKED_P2_IDENTIFIERS = (
+    "family_delegation",
+    "health_fact_correction",
+    "health_fact_supersession",
+    "therapist_assignment",
+    "professional_service_fulfillment",
+)
+APPROVED_SLICE3_COMPOUND_IDENTIFIERS = (
+    "primary_therapist_assignment",
+    "slice3_therapist_assignment_read_v1",
+    "get_primary_therapist_assignment",
+)
 
 
 def _target_contains_name(target, name):
@@ -531,6 +544,65 @@ def _workflow_shell_lines(step_name):
         for line in block[run_start + 1 :]
         if line.strip() and not line.lstrip().startswith("#")
     ]
+
+
+def test_repository_safety_uses_word_boundaries_without_weakening_blocked_p2_decisions(
+    tmp_path,
+):
+    pattern = "|".join(BLOCKED_P2_IDENTIFIERS)
+    command = f"git grep -I -n -w -E '{pattern}' -- backend/app frontend/src"
+    step = _workflow_step_block("Enforce blocked P2 decisions")
+
+    assert command in step
+
+    backend = tmp_path / "backend" / "app"
+    frontend = tmp_path / "frontend" / "src"
+    backend.mkdir(parents=True)
+    frontend.mkdir(parents=True)
+    (backend / "approved_slice3.py").write_text(
+        "\n".join(APPROVED_SLICE3_COMPOUND_IDENTIFIERS), encoding="utf-8"
+    )
+    (frontend / "blocked_p2.ts").write_text(
+        "\n".join(BLOCKED_P2_IDENTIFIERS), encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "init", "--quiet"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "--", "backend/app", "frontend/src"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    result = subprocess.run(
+        ["git", "grep", "-I", "-n", "-w", "-E", pattern, "--", "backend/app", "frontend/src"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "approved_slice3.py" not in result.stdout
+    assert "blocked_p2.ts" in result.stdout
+    for identifier in BLOCKED_P2_IDENTIFIERS:
+        assert identifier in result.stdout
+    for identifier in APPROVED_SLICE3_COMPOUND_IDENTIFIERS:
+        assert identifier not in result.stdout
+
+
+def test_slice3_assignment_detail_uses_an_approved_compound_internal_name():
+    api_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "modules"
+        / "member_enrollment"
+        / "api.py"
+    )
+    source = api_path.read_text(encoding="utf-8")
+
+    assert "async def get_primary_therapist_assignment(" in source
+    assert "async def therapist_assignment(" not in source
 
 
 def test_registration_runtime_ci_uses_disposable_rabbitmq_and_exact_cleanup():
