@@ -65,7 +65,14 @@ class MemberEnrollmentRepository:
             return str(value)
         if isinstance(value, bytes):
             return "\\x" + value.hex()
-        if isinstance(value, (datetime, date)):
+        if isinstance(value, datetime):
+            if value.microsecond == 0:
+                return value.isoformat(timespec="seconds")
+            rendered = value.isoformat(timespec="microseconds")
+            fraction_start = rendered.index(".") + 1
+            fraction = rendered[fraction_start : fraction_start + 6].rstrip("0")
+            return rendered[:fraction_start] + fraction + rendered[fraction_start + 6 :]
+        if isinstance(value, date):
             return value.isoformat()
         if isinstance(value, dict):
             return {
@@ -1115,7 +1122,9 @@ class MemberEnrollmentRepository:
                 "idempotency_key": idempotency_key,
                 "request_digest": request_digest,
                 "expected_postimage": json.dumps(
-                    expected_postimage, sort_keys=True, separators=(",", ":"), default=str
+                    self._json_value(expected_postimage),
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ),
             },
         )
@@ -1152,7 +1161,9 @@ class MemberEnrollmentRepository:
                 "idempotency_key": idempotency_key,
                 "request_digest": request_digest,
                 "expected_postimage": json.dumps(
-                    expected_postimage,sort_keys=True,separators=(",",":"),default=str
+                    self._json_value(expected_postimage),
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ),
             },
         )

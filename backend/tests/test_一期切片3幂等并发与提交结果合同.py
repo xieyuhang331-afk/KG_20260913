@@ -1,7 +1,11 @@
 import ast
 import asyncio
+from datetime import date, datetime, timezone
+from enum import Enum
+import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -9,6 +13,7 @@ from app.modules.member_enrollment.service import (
     CommitOutcome,
     commit_with_confirmation,
 )
+from app.modules.member_enrollment.repository import MemberEnrollmentRepository
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +28,98 @@ MUTATION_FUNCTIONS = {
     "pii_access", "platform_decision", "create_document", "publish_document",
     "retire_document", "accept_assignment", "decline_assignment",
 }
+
+
+@pytest.mark.parametrize(
+    ("microsecond", "expected"),
+    (
+        (0, "2026-08-20T12:34:56+00:00"),
+        (100000, "2026-08-20T12:34:56.1+00:00"),
+        (120000, "2026-08-20T12:34:56.12+00:00"),
+        (123000, "2026-08-20T12:34:56.123+00:00"),
+        (123456, "2026-08-20T12:34:56.123456+00:00"),
+    ),
+)
+def test_PostgreSQL_timestamp后像固定样本规范化(microsecond: int, expected: str) -> None:
+    value = datetime(2026, 8, 20, 12, 34, 56, microsecond, tzinfo=timezone.utc)
+    assert MemberEnrollmentRepository._json_value(value) == expected
+
+
+def test_timestamp嵌套规范与date_UUID_bytes_Enum保持兼容() -> None:
+    class Sample(Enum):
+        VALUE = "value"
+
+    timestamp = datetime(2026, 8, 20, 12, 34, 56, 120000, tzinfo=timezone.utc)
+    identifier = UUID("018f7e2a-4f5c-7a91-8c21-123456789abc")
+    value = {
+        "nested": [timestamp, {"again": timestamp}],
+        "date": date(2026, 8, 20),
+        "uuid": identifier,
+        "bytes": b"\x00\xff",
+        "enum": Sample.VALUE,
+    }
+    assert MemberEnrollmentRepository._json_value(value) == {
+        "nested": [
+            "2026-08-20T12:34:56.12+00:00",
+            {"again": "2026-08-20T12:34:56.12+00:00"},
+        ],
+        "date": "2026-08-20",
+        "uuid": str(identifier),
+        "bytes": "\\x00ff",
+        "enum": "value",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method_name", ("expected_mutation_postimage", "confirm_mutation_outcome")
+)
+async def test_ExpectedEnvelope两个数据库边界统一规范receipt时间(
+    method_name: str,
+) -> None:
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one.return_value = "a" * 64
+    result.mappings.return_value.one.return_value = {
+        "outcome": "COMMITTED",
+        "confirmed_postimage_digest": "a" * 64,
+    }
+    session.execute.return_value = result
+    repository = MemberEnrollmentRepository(session)
+    target_id = UUID("018f7e2a-4f5c-7a91-8c21-123456789abc")
+    expected = {
+        "receipt": {
+            "created_at": datetime(
+                2026, 8, 20, 12, 34, 56, 120000, tzinfo=timezone.utc
+            )
+        }
+    }
+    await getattr(repository, method_name)(
+        "enrollment_writer",
+        actor_scope="user:1",
+        operation="INVITATION_CREATE",
+        target_id=target_id,
+        idempotency_key="timestamp-contract",
+        request_digest="b" * 64,
+        expected_postimage=expected,
+    )
+    parameters = session.execute.await_args.args[1]
+    serialized = json.loads(parameters["expected_postimage"])
+    assert serialized["receipt"]["created_at"] == "2026-08-20T12:34:56.12+00:00"
+
+
+def test_API_receipt保留原始datetime并交由Repository规范化() -> None:
+    source = API.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_finish_mutation"
+    )
+    body = ast.get_source_segment(source, function) or ""
+    assert '"created_at": receipt_created_at,' in body
+    assert "receipt_created_at.isoformat()" not in body
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,20 @@ def _synthetic_prc_identity(birth_date: str = "19800101") -> str:
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("microsecond", (0, 100000, 120000, 123000, 123456))
+async def test_PostgreSQL_to_jsonb_timestamp与MutationPlan固定样本一致(
+    pg_database, microsecond: int
+) -> None:
+    from app.modules.member_enrollment.repository import MemberEnrollmentRepository
+
+    value = datetime(2026, 8, 20, 12, 34, 56, microsecond, tzinfo=timezone.utc)
+    actual = await pg_database._fetch_value(
+        "SELECT to_jsonb($1::timestamptz)#>>'{}'", value
+    )
+    assert MemberEnrollmentRepository._json_value(value) == actual
+
+
 def test_0022对象与五身份最小权限(
     pg_database,
     member_enrollment_writer_database,
@@ -833,7 +847,7 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                     "response_ciphertext_sha256": hashlib.sha256(
                         response_ciphertext
                     ).hexdigest(),
-                    "created_at": receipt_created_at.isoformat(),
+                    "created_at": receipt_created_at,
                     "expected_confirmed_digest": None,
                 },
             }
@@ -955,7 +969,11 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                 invitation_id,
                 create_context.idempotency_key,
                 request_digest,
-                json.dumps(missing_row, sort_keys=True, separators=(",", ":")),
+                json.dumps(
+                    MemberEnrollmentRepository._json_value(missing_row),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
             )
 
         tampered = copy.deepcopy(expected)
@@ -975,7 +993,11 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             invitation_id,
             create_context.idempotency_key,
             request_digest,
-            json.dumps(tampered, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                MemberEnrollmentRepository._json_value(tampered),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
         tampered["receipt"]["expected_confirmed_digest"] = tampered_digest
         assert await member_enrollment_writer_database._fetch_value(
@@ -986,7 +1008,11 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             invitation_id,
             create_context.idempotency_key,
             request_digest,
-            json.dumps(tampered, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                MemberEnrollmentRepository._json_value(tampered),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         ) == "UNKNOWN"
 
         extra_event_id = uuid4()
@@ -1007,7 +1033,11 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             invitation_id,
             create_context.idempotency_key,
             request_digest,
-            json.dumps(expected, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                MemberEnrollmentRepository._json_value(expected),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         ) == "UNKNOWN"
         await pg_database._execute(
             f"DELETE FROM public.member_enrollment_outbox WHERE event_id='{extra_event_id}'"

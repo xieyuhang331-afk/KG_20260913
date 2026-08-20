@@ -603,7 +603,7 @@ async def _finish_mutation(
             "request_digest": request_digest,
             "response_key_id": key_id,
             "response_ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
-            "created_at": receipt_created_at.isoformat(),
+            "created_at": receipt_created_at,
             "expected_confirmed_digest": None,
         }
     )
