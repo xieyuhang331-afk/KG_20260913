@@ -82,6 +82,9 @@ _SLICE1_RUNTIMES = {}
 _SLICE1_RUNTIME_ERROR = "Institution onboarding database runtime is unavailable"
 _SLICE2_RUNTIMES = {}
 _SLICE2_RUNTIME_ERROR = "Therapist qualification database runtime is unavailable"
+_SLICE3_RUNTIMES = {}
+_SLICE3_RUNTIME_LOCKS = {}
+_SLICE3_RUNTIME_ERROR = "Member enrollment database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -329,6 +332,11 @@ async def dispose_database_runtimes() -> None:
                     _SLICE2_RUNTIMES.clear()
                     for engine, _ in slice2_engines:
                         await engine.dispose()
+                    slice3_entries = tuple(_SLICE3_RUNTIMES.values())
+                    _SLICE3_RUNTIMES.clear()
+                    _SLICE3_RUNTIME_LOCKS.clear()
+                    for _, engine, _ in slice3_entries:
+                        await engine.dispose()
 
 
 def _projection_url(settings: Settings, kind: str) -> str:
@@ -570,4 +578,119 @@ async def get_therapist_readiness_worker_session():
 
 async def get_therapist_reader_session():
     async for session in _slice2_session("reader"):
+        yield session
+
+
+_SLICE3_KINDS = {
+    "enrollment_writer",
+    "identity_review_writer",
+    "case_writer",
+    "workflow_worker",
+    "reader",
+}
+
+
+def _slice3_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "enrollment_writer": settings.member_enrollment_writer_database_url,
+        "identity_review_writer": settings.member_identity_review_writer_database_url,
+        "case_writer": settings.member_case_writer_database_url,
+        "workflow_worker": settings.member_workflow_worker_database_url,
+        "reader": settings.member_enrollment_reader_database_url,
+    }
+    roles = {
+        "enrollment_writer": settings.member_enrollment_writer_role,
+        "identity_review_writer": settings.member_identity_review_writer_role,
+        "case_writer": settings.member_case_writer_role,
+        "workflow_worker": settings.member_workflow_worker_role,
+        "reader": settings.member_enrollment_reader_role,
+    }
+    try:
+        if kind not in _SLICE3_KINDS:
+            raise ValueError
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            len(parsed) == 5
+            and len(users) == 5
+            and len(set(users)) == 5
+            and all(value.drivername == "postgresql+asyncpg" and value.username and value.password for value in parsed.values())
+            and all((value.host, value.port, value.database) == (settings.database_host, settings.database_port, settings.database_name) for value in parsed.values())
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users
+            and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+async def get_slice3_session_factory(kind: str):
+    if kind not in _SLICE3_KINDS:
+        raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+    key = (id(loop), kind)
+    lock = _SLICE3_RUNTIME_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        entry = _SLICE3_RUNTIMES.get(key)
+        if entry is None:
+            try:
+                engine = create_async_engine(_slice3_url(get_settings(), kind), pool_pre_ping=True)
+                entry = (weakref.ref(loop), engine, create_session_factory(engine))
+            except Exception:
+                raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+            _SLICE3_RUNTIMES[key] = entry
+        return entry[2]
+
+
+async def dispose_slice3_runtime(kind: str) -> None:
+    if kind not in _SLICE3_KINDS:
+        raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    entry = _SLICE3_RUNTIMES.pop((id(loop), kind), None)
+    _SLICE3_RUNTIME_LOCKS.pop((id(loop), kind), None)
+    if entry is not None:
+        owner = entry[0]()
+        if owner is not loop:
+            raise RuntimeError(_SLICE3_RUNTIME_ERROR) from None
+        await entry[1].dispose()
+
+
+async def _slice3_session(kind: str):
+    factory = await get_slice3_session_factory(kind)
+    async with factory() as session:
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()
+
+
+async def get_member_enrollment_writer_session():
+    async for session in _slice3_session("enrollment_writer"):
+        yield session
+
+
+async def get_member_identity_review_writer_session():
+    async for session in _slice3_session("identity_review_writer"):
+        yield session
+
+
+async def get_member_case_writer_session():
+    async for session in _slice3_session("case_writer"):
+        yield session
+
+
+async def get_member_workflow_worker_session():
+    async for session in _slice3_session("workflow_worker"):
+        yield session
+
+
+async def get_member_enrollment_reader_session():
+    async for session in _slice3_session("reader"):
         yield session

@@ -73,6 +73,16 @@ class Settings(BaseModel):
     therapist_review_writer_role: str | None = None
     therapist_readiness_worker_role: str | None = None
     therapist_reader_role: str | None = None
+    member_enrollment_writer_database_url: str | None = None
+    member_identity_review_writer_database_url: str | None = None
+    member_case_writer_database_url: str | None = None
+    member_workflow_worker_database_url: str | None = None
+    member_enrollment_reader_database_url: str | None = None
+    member_enrollment_writer_role: str | None = None
+    member_identity_review_writer_role: str | None = None
+    member_case_writer_role: str | None = None
+    member_workflow_worker_role: str | None = None
+    member_enrollment_reader_role: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -160,4 +170,14 @@ def get_settings() -> Settings:
         therapist_review_writer_role=os.getenv("KG_THERAPIST_REVIEW_WRITER_ROLE"),
         therapist_readiness_worker_role=os.getenv("KG_THERAPIST_READINESS_WORKER_ROLE"),
         therapist_reader_role=os.getenv("KG_THERAPIST_READER_ROLE"),
+        member_enrollment_writer_database_url=os.getenv("KG_MEMBER_ENROLLMENT_WRITER_DATABASE_URL"),
+        member_identity_review_writer_database_url=os.getenv("KG_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL"),
+        member_case_writer_database_url=os.getenv("KG_MEMBER_CASE_WRITER_DATABASE_URL"),
+        member_workflow_worker_database_url=os.getenv("KG_MEMBER_WORKFLOW_WORKER_DATABASE_URL"),
+        member_enrollment_reader_database_url=os.getenv("KG_MEMBER_ENROLLMENT_READER_DATABASE_URL"),
+        member_enrollment_writer_role=os.getenv("KG_MEMBER_ENROLLMENT_WRITER_ROLE"),
+        member_identity_review_writer_role=os.getenv("KG_MEMBER_IDENTITY_REVIEW_WRITER_ROLE"),
+        member_case_writer_role=os.getenv("KG_MEMBER_CASE_WRITER_ROLE"),
+        member_workflow_worker_role=os.getenv("KG_MEMBER_WORKFLOW_WORKER_ROLE"),
+        member_enrollment_reader_role=os.getenv("KG_MEMBER_ENROLLMENT_READER_ROLE"),
     )
