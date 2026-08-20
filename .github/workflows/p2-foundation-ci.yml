@@ -288,6 +288,11 @@ jobs:
           values["KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"] = "ci-health-proj-k2"
           values["KG_HEALTH_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(health_projection_keys, separators=(",", ":"), sort_keys=True)
           member_enrollment_key_purposes = {
+              "KG_MEMBER_ENROLLMENT_PII": "pii",
+              "KG_MEMBER_ENROLLMENT_LOOKUP": "lookup",
+              "KG_MEMBER_ENROLLMENT_CODE": "code",
+              "KG_MEMBER_ENROLLMENT_REPLAY": "replay",
+              "KG_MEMBER_ENROLLMENT_COORDINATION": "coordination",
               "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
               "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
               "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",

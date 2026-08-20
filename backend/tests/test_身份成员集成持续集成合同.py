@@ -1,4 +1,7 @@
 import ast
+import base64
+import json
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -1217,6 +1220,11 @@ def test_slice3_runtime_roles_and_urls_are_created_and_propagated_before_export(
 def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
     backend_integration_job = _workflow_job_block("backend-integration")
     prefixes = {
+        "KG_MEMBER_ENROLLMENT_PII": "pii",
+        "KG_MEMBER_ENROLLMENT_LOOKUP": "lookup",
+        "KG_MEMBER_ENROLLMENT_CODE": "code",
+        "KG_MEMBER_ENROLLMENT_REPLAY": "replay",
+        "KG_MEMBER_ENROLLMENT_COORDINATION": "coordination",
         "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
         "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
         "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",
@@ -1242,3 +1250,65 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
         declaration = f'"{prefix}": "{purpose}"'
         assert backend_integration_job.count(declaration) == 1
         assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+SLICE3_RUNTIME_KEYRING_PREFIXES = (
+    "KG_MEMBER_ENROLLMENT_PII",
+    "KG_MEMBER_ENROLLMENT_LOOKUP",
+    "KG_MEMBER_ENROLLMENT_CODE",
+    "KG_MEMBER_ENROLLMENT_REPLAY",
+    "KG_MEMBER_ENROLLMENT_DELIVERY",
+    "KG_MEMBER_ENROLLMENT_COORDINATION",
+    "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST",
+    "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST",
+    "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST",
+    "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST",
+)
+
+
+def _install_complete_slice3_runtime_keyrings(monkeypatch: pytest.MonkeyPatch) -> None:
+    materials: list[bytes] = []
+    while len(materials) != len(SLICE3_RUNTIME_KEYRING_PREFIXES) + 1:
+        candidate = secrets.token_bytes(32)
+        if candidate not in materials:
+            materials.append(candidate)
+    monkeypatch.setenv("KG_IDENTITY_PII_KEY_ID", "test-identity-current")
+    monkeypatch.setenv(
+        "KG_IDENTITY_PII_HMAC_KEY_B64", base64.b64encode(materials[0]).decode()
+    )
+    for index, prefix in enumerate(SLICE3_RUNTIME_KEYRING_PREFIXES, start=1):
+        key_id = f"test-runtime-{index}"
+        monkeypatch.setenv(f"{prefix}_CURRENT_KEY_ID", key_id)
+        monkeypatch.setenv(
+            f"{prefix}_KEYRING_JSON",
+            json.dumps(
+                {key_id: base64.b64encode(materials[index]).decode()},
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+
+def test_complete_slice3_runtime_keyrings_construct_member_enrollment_secrets(monkeypatch):
+    from app.modules.member_enrollment.service import MemberEnrollmentSecrets
+
+    _install_complete_slice3_runtime_keyrings(monkeypatch)
+
+    secrets_box = MemberEnrollmentSecrets()
+
+    assert secrets_box.pii_key_id == "test-runtime-1"
+    assert secrets_box.consent_digest_key_id == "test-runtime-10"
+
+
+@pytest.mark.parametrize("prefix", SLICE3_RUNTIME_KEYRING_PREFIXES)
+@pytest.mark.parametrize("missing_suffix", ("CURRENT_KEY_ID", "KEYRING_JSON"))
+def test_member_enrollment_secrets_fail_closed_when_any_runtime_keyring_value_is_missing(
+    monkeypatch, prefix: str, missing_suffix: str
+):
+    from app.modules.member_enrollment.service import MemberEnrollmentSecrets
+
+    _install_complete_slice3_runtime_keyrings(monkeypatch)
+    monkeypatch.delenv(f"{prefix}_{missing_suffix}")
+
+    with pytest.raises(RuntimeError, match="^MEMBER_ENROLLMENT_DEPENDENCY_UNAVAILABLE$"):
+        MemberEnrollmentSecrets()
