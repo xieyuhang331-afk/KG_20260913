@@ -61,6 +61,28 @@ PHASE1_SLICE2_TABLES = {
         "therapist_workflow_outbox", "therapist_workflow_delivery",
     )
 }
+PHASE1_SLICE3_TABLES = {
+    "identity.identity_claim_algorithm_state",
+    "identity.identity_subject_claim_registry",
+    "public.slice3_digest_algorithm_state",
+    "public.member_service_invitation",
+    "public.service_enrollment",
+    "public.controlled_member_bootstrap",
+    "public.member_identity_verification",
+    "public.member_identity_revision",
+    "public.member_identity_review_decision",
+    "public.member_identity_pii_access",
+    "public.proxy_grant",
+    "public.consent_document_version",
+    "public.consent_document_rendition",
+    "public.consent_record",
+    "public.primary_therapist_assignment",
+    "public.service_case",
+    "public.member_enrollment_idempotency",
+    "public.member_enrollment_audit",
+    "public.member_enrollment_outbox",
+    "public.member_enrollment_delivery",
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -106,4 +128,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
         } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
             CANONICAL_HEALTH_FACT_TABLE
-        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES
+        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES | PHASE1_SLICE3_TABLES

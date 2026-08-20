@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260817_0021"
+REQUIRED_HEAD_REVISION = "20260818_0022"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -131,6 +131,26 @@ def _get_health_projection_reader_database_url() -> str:
     return _get_role_database_url("KG_TEST_HEALTH_PROJECTION_READER_DATABASE_URL")
 
 
+def _get_member_enrollment_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MEMBER_ENROLLMENT_WRITER_DATABASE_URL")
+
+
+def _get_member_identity_review_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL")
+
+
+def _get_member_case_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MEMBER_CASE_WRITER_DATABASE_URL")
+
+
+def _get_member_workflow_worker_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL")
+
+
+def _get_member_enrollment_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL")
+
+
 def _propagate_module_d_role_preflight_environment() -> None:
     aliases = {
         "KG_DATABASE_USER": "KG_TEST_APPLICATION_ROLE",
@@ -187,6 +207,16 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_THERAPIST_READINESS_WORKER_DATABASE_URL": "KG_TEST_THERAPIST_READINESS_WORKER_DATABASE_URL",
         "KG_THERAPIST_READER_ROLE": "KG_TEST_THERAPIST_READER_ROLE",
         "KG_THERAPIST_READER_DATABASE_URL": "KG_TEST_THERAPIST_READER_DATABASE_URL",
+        "KG_MEMBER_ENROLLMENT_WRITER_ROLE": "KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE",
+        "KG_MEMBER_ENROLLMENT_WRITER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_WRITER_DATABASE_URL",
+        "KG_MEMBER_IDENTITY_REVIEW_WRITER_ROLE": "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE",
+        "KG_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL": "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL",
+        "KG_MEMBER_CASE_WRITER_ROLE": "KG_TEST_MEMBER_CASE_WRITER_ROLE",
+        "KG_MEMBER_CASE_WRITER_DATABASE_URL": "KG_TEST_MEMBER_CASE_WRITER_DATABASE_URL",
+        "KG_MEMBER_WORKFLOW_WORKER_ROLE": "KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE",
+        "KG_MEMBER_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL",
+        "KG_MEMBER_ENROLLMENT_READER_ROLE": "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE",
+        "KG_MEMBER_ENROLLMENT_READER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -228,10 +258,10 @@ class PgDatabase:
     def __init__(self, database_url: str):
         self.database_url = _to_asyncpg_dsn(database_url)
 
-    async def _fetch_value(self, sql: str):
+    async def _fetch_value(self, sql: str, *args):
         connection = await asyncpg.connect(self.database_url)
         try:
-            return await connection.fetchval(sql)
+            return await connection.fetchval(sql, *args)
         finally:
             await connection.close()
 
@@ -653,6 +683,11 @@ def pg_database():
         therapist_review_role = _validated_role_name("KG_TEST_THERAPIST_REVIEW_WRITER_ROLE")
         therapist_worker_role = _validated_role_name("KG_TEST_THERAPIST_READINESS_WORKER_ROLE")
         therapist_reader_role = _validated_role_name("KG_TEST_THERAPIST_READER_ROLE")
+        member_enrollment_role = _validated_role_name("KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE")
+        member_review_role = _validated_role_name("KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE")
+        member_case_role = _validated_role_name("KG_TEST_MEMBER_CASE_WRITER_ROLE")
+        member_worker_role = _validated_role_name("KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE")
+        member_reader_role = _validated_role_name("KG_TEST_MEMBER_ENROLLMENT_READER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -683,6 +718,11 @@ def pg_database():
             therapist_review_role,
             therapist_worker_role,
             therapist_reader_role,
+            member_enrollment_role,
+            member_review_role,
+            member_case_role,
+            member_worker_role,
+            member_reader_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -834,6 +874,36 @@ def mapping_audit_database(pg_database):
 def mapping_shadow_database(pg_database):
     del pg_database
     return PgDatabase(_get_mapping_shadow_database_url())
+
+
+@pytest.fixture(scope="module")
+def member_enrollment_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_member_enrollment_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def member_identity_review_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_member_identity_review_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def member_case_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_member_case_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def member_workflow_worker_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_member_workflow_worker_database_url())
+
+
+@pytest.fixture(scope="module")
+def member_enrollment_reader_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_member_enrollment_reader_database_url())
 
 
 @pytest.fixture

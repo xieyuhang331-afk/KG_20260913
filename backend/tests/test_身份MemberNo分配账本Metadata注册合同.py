@@ -59,6 +59,28 @@ PHASE1_SLICE2_TABLES = {
         "therapist_workflow_outbox", "therapist_workflow_delivery",
     )
 }
+PHASE1_SLICE3_TABLES = {
+    "identity.identity_claim_algorithm_state",
+    "identity.identity_subject_claim_registry",
+    "public.slice3_digest_algorithm_state",
+    "public.member_service_invitation",
+    "public.service_enrollment",
+    "public.controlled_member_bootstrap",
+    "public.member_identity_verification",
+    "public.member_identity_revision",
+    "public.member_identity_review_decision",
+    "public.member_identity_pii_access",
+    "public.proxy_grant",
+    "public.consent_document_version",
+    "public.consent_document_rendition",
+    "public.consent_record",
+    "public.primary_therapist_assignment",
+    "public.service_case",
+    "public.member_enrollment_idempotency",
+    "public.member_enrollment_audit",
+    "public.member_enrollment_outbox",
+    "public.member_enrollment_delivery",
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -105,4 +127,5 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
             | PROJECTION_SHADOW_TABLES
                 | PHASE1_SLICE1_TABLES
                 | PHASE1_SLICE2_TABLES
+                | PHASE1_SLICE3_TABLES
         )

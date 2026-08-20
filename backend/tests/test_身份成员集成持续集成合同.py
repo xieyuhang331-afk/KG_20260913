@@ -6,11 +6,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260817_0021"
+EXPECTED_HEAD = "20260818_0022"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260817_0021; found stale revision 20260816_0020"
+    "20260818_0022; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -746,6 +746,11 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_THERAPIST_REVIEW_WRITER_ROLE", "kg_ci_therapist_review_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_READINESS_WORKER_ROLE", "kg_ci_therapist_worker_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_READER_ROLE", "kg_ci_therapist_reader_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE", "kg_ci_member_enrollment_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE", "kg_ci_member_review_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_CASE_WRITER_ROLE", "kg_ci_member_case_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE", "kg_ci_member_worker_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_ENROLLMENT_READER_ROLE", "kg_ci_member_reader_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -1108,3 +1113,30 @@ def test_slice2_runtime_roles_urls_and_ephemeral_keyrings_are_propagated_before_
     ):
         assert backend_integration_job.count(f'"{prefix}_CURRENT_KEY_ID"') >= 1
         assert f'values[f"{{prefix}}_KEYRING_JSON"]' in backend_integration_job
+
+
+def test_slice3_runtime_roles_and_urls_are_created_and_propagated_before_export():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    prefixes = (
+        "KG_MEMBER_ENROLLMENT_WRITER",
+        "KG_MEMBER_IDENTITY_REVIEW_WRITER",
+        "KG_MEMBER_CASE_WRITER",
+        "KG_MEMBER_WORKFLOW_WORKER",
+        "KG_MEMBER_ENROLLMENT_READER",
+    )
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    for prefix in prefixes:
+        test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
+        role_mapping = f'values["{prefix}_ROLE"] = values["{test_prefix}_ROLE"]'
+        url_mapping = f'values["{prefix}_DATABASE_URL"] = values["{test_prefix}_DATABASE_URL"]'
+        role_variable = prefix.removeprefix("KG_").lower() + "_role"
+
+        assert backend_integration_job.count(
+            f'"{test_prefix}_DATABASE_URL": "{test_prefix}_ROLE"'
+        ) == 1
+        assert backend_integration_job.count(role_mapping) == 1
+        assert backend_integration_job.count(url_mapping) == 1
+        assert backend_integration_job.index(role_mapping) < export_position
+        assert backend_integration_job.index(url_mapping) < export_position
+        assert backend_integration_job.count(f'CREATE ROLE :"{role_variable}" LOGIN') == 1
