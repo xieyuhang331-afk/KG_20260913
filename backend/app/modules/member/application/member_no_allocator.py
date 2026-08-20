@@ -16,6 +16,19 @@ _MEMBER_NO_PAYLOAD_LENGTH = 20
 _MAX_CANDIDATE_INSERT_ATTEMPTS = 3
 
 
+def generate_member_no_candidate(
+    random_bits: Callable[[int], int] = secrets.randbits,
+) -> MemberNo:
+    value = random_bits(_MEMBER_NO_RANDOM_BITS)
+    if type(value) is not int or value < 0 or value >= 1 << _MEMBER_NO_RANDOM_BITS:
+        raise MemberNoAllocationFailed("member number generation failed")
+    encoded = ["0"] * _MEMBER_NO_PAYLOAD_LENGTH
+    for index in range(_MEMBER_NO_PAYLOAD_LENGTH - 1, -1, -1):
+        encoded[index] = _MEMBER_NO_ALPHABET[value & 31]
+        value >>= 5
+    return MemberNo("M" + "".join(encoded))
+
+
 class MemberNoAllocationError(RuntimeError):
     pass
 
@@ -282,21 +295,7 @@ class RegistrationMemberNoAllocator:
         return value
 
     def _generate_member_no(self) -> MemberNo:
-        value = self._random_bits(_MEMBER_NO_RANDOM_BITS)
-        if (
-            type(value) is not int
-            or value < 0
-            or value >= 1 << _MEMBER_NO_RANDOM_BITS
-        ):
-            raise MemberNoAllocationFailed(
-                "member number generation failed"
-            )
-
-        encoded = ["0"] * _MEMBER_NO_PAYLOAD_LENGTH
-        for index in range(_MEMBER_NO_PAYLOAD_LENGTH - 1, -1, -1):
-            encoded[index] = _MEMBER_NO_ALPHABET[value & 31]
-            value >>= 5
-        return MemberNo("M" + "".join(encoded))
+        return generate_member_no_candidate(self._random_bits)
 
     @staticmethod
     def _validate_command(

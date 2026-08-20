@@ -12,6 +12,10 @@ from app.modules.health_analysis.api import internal_router as health_analysis_i
 from app.modules.health_analysis.api import router as health_analysis_router
 from app.modules.organization.api import router as organization_router
 from app.modules.institution_onboarding.api import onboarding_router, platform_router
+from app.modules.member_enrollment.api import (
+    routers as member_enrollment_routers,
+    strip_member_enrollment_validation_responses,
+)
 from app.modules.private_file.api import router as private_file_router
 from app.modules.therapist_qualification.api import (
     institution_router as therapist_institution_router,
@@ -60,10 +64,14 @@ def create_app() -> FastAPI:
     app.include_router(therapist_institution_router)
     app.include_router(therapist_router)
     app.include_router(therapist_platform_router)
+    for member_enrollment_router in member_enrollment_routers:
+        app.include_router(member_enrollment_router)
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        return strip_therapist_validation_responses(default_openapi())
+        return strip_member_enrollment_validation_responses(
+            strip_therapist_validation_responses(default_openapi())
+        )
 
     app.openapi = therapist_aware_openapi
 
