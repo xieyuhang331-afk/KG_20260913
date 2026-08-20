@@ -10,6 +10,7 @@ RECONCILE_TASK_NAME = "identity.registration.reconcile_outbox"
 PRIVATE_FILE_QUEUE = "private-file"
 PRIVATE_FILE_SCAN_TASK_NAME = "phase1.private_file.scan"
 THERAPIST_WORKFLOW_QUEUE = "therapist-workflow"
+MEMBER_ENROLLMENT_QUEUE = "member-enrollment-workflow"
 _DECLARED_QUEUES = (
     "ai",
     "judgment",
@@ -20,6 +21,7 @@ _DECLARED_QUEUES = (
     REGISTRATION_QUEUE,
     PRIVATE_FILE_QUEUE,
     THERAPIST_WORKFLOW_QUEUE,
+    MEMBER_ENROLLMENT_QUEUE,
 )
 
 
@@ -34,7 +36,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks"),
+        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks"),
     )
     app.conf.update(
         accept_content=("json",),
@@ -58,6 +60,10 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             "phase1.therapist.expire_invitations": {"queue": THERAPIST_WORKFLOW_QUEUE},
             "phase1.therapist.recompute_readiness": {"queue": THERAPIST_WORKFLOW_QUEUE},
             "phase1.therapist.sweep_readiness": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            "phase1.member_enrollment.dispatch_outbox": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            "phase1.member_enrollment.consume_outbox": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            "phase1.member_enrollment.recover_outbox": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            "phase1.member_enrollment.expire_invitations": {"queue": MEMBER_ENROLLMENT_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {
@@ -89,6 +95,21 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
                 "task": "phase1.therapist.sweep_readiness",
                 "schedule": 60.0,
                 "options": {"queue": THERAPIST_WORKFLOW_QUEUE},
+            },
+            "member-enrollment-dispatch": {
+                "task": "phase1.member_enrollment.dispatch_outbox",
+                "schedule": 5.0,
+                "options": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            },
+            "member-enrollment-recovery": {
+                "task": "phase1.member_enrollment.recover_outbox",
+                "schedule": 60.0,
+                "options": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            },
+            "member-enrollment-invitation-expiry": {
+                "task": "phase1.member_enrollment.expire_invitations",
+                "schedule": 60.0,
+                "options": {"queue": MEMBER_ENROLLMENT_QUEUE},
             },
         },
     )

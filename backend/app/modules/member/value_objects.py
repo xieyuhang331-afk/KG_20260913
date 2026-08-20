@@ -34,6 +34,7 @@ class MemberStatus(str, Enum):
 
 class CreationSource(str, Enum):
     REGISTRATION = "registration"
+    CONTROLLED_PROXY_ENROLLMENT = "controlled_proxy_enrollment"
 
     @classmethod
     def _missing_(cls, value):

@@ -334,10 +334,35 @@ async def _cleanup_slice2_seed(
         "public.therapist_workflow_audit,public.therapist_workflow_idempotency,"
         "public.readiness_evidence,public.institution_service_readiness,"
         "public.therapist_status_decision,public.therapist_review_decision,"
-        "public.therapist_review_item,public.therapist_qualification_attachment,"
-        "public.therapist_profile_revision_qualification,"
-        "public.therapist_qualification_version,public.therapist_profile_revision,"
-        "public.therapist_profile,public.therapist_invitation"
+        "public.therapist_review_item"
+    )
+    # Slice 3 adds cyclic current-pointer FKs around service_case and assignment,
+    # while Slice 2 itself has a profile/current-qualification cycle. Scoped
+    # cleanup preserves unrelated Slice 3/P1 facts and never disables an FK.
+    await pg_database._execute(
+        "BEGIN;"
+        "UPDATE public.therapist_profile SET status='ACTIVATED',current_revision_no=0,"
+        "current_qualification_version_id=NULL,qualification_valid_until=NULL,"
+        "submitted_at=NULL,reviewed_at=NULL,suspended_at=NULL,resumed_at=NULL,"
+        "exited_at=NULL,suspension_reason_code=NULL "
+        f"WHERE tenant_id={tenant_id};"
+        "DELETE FROM public.therapist_qualification_attachment a USING "
+        "public.therapist_qualification_version q,public.therapist_profile p "
+        "WHERE a.qualification_version_id=q.qualification_version_id "
+        "AND q.therapist_id=p.therapist_id "
+        f"AND p.tenant_id={tenant_id};"
+        "DELETE FROM public.therapist_profile_revision_qualification rq USING "
+        "public.therapist_profile p WHERE rq.therapist_id=p.therapist_id "
+        f"AND p.tenant_id={tenant_id};"
+        "DELETE FROM public.therapist_qualification_version q USING "
+        "public.therapist_profile p WHERE q.therapist_id=p.therapist_id "
+        f"AND p.tenant_id={tenant_id};"
+        "DELETE FROM public.therapist_profile_revision r USING "
+        "public.therapist_profile p WHERE r.therapist_id=p.therapist_id "
+        f"AND p.tenant_id={tenant_id};"
+        f"DELETE FROM public.therapist_profile WHERE tenant_id={tenant_id};"
+        f"DELETE FROM public.therapist_invitation WHERE tenant_id={tenant_id};"
+        "COMMIT"
     )
     await pg_database._execute(
         "DELETE FROM public.institution_license WHERE application_id IN "
@@ -789,9 +814,9 @@ def test_0020至0021升级降级再升级及权限残留零(pg_database):
         "SELECT to_regprocedure('public.therapist_totp_for_login_v1(bigint)') IS NULL"
     )
 
-    command.upgrade(config, "20260817_0021")
+    command.upgrade(config, "20260818_0022")
     assert pg_database.fetch_value(
-        "SELECT version_num='20260817_0021' FROM public.alembic_version"
+        "SELECT version_num='20260818_0022' FROM public.alembic_version"
     )
     assert pg_database.fetch_value(
         "SELECT to_regclass('public.therapist_profile') IS NOT NULL"
@@ -822,7 +847,7 @@ def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
 
     def assert_upgrade_rejected() -> None:
         with pytest.raises(RuntimeError) as error:
-            command.upgrade(config, "20260817_0021")
+            command.upgrade(config, "20260818_0022")
         assert str(error.value) == "Slice 2 database role configuration is invalid"
         assert error.value.__cause__ is None
         assert pg_database.fetch_value(
@@ -847,14 +872,14 @@ def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
         assert_upgrade_rejected()
         monkeypatch.setenv("KG_THERAPIST_READER_ROLE", reader)
 
-        command.upgrade(config, "20260817_0021")
+        command.upgrade(config, "20260818_0022")
         asyncio.run(admin_execute(f'GRANT "{external}" TO "{reader}"'))
         try:
             with pytest.raises(RuntimeError) as error:
                 command.downgrade(config, "20260816_0020")
-            assert str(error.value) == "Slice 2 database role configuration is invalid"
+            assert str(error.value) == "Slice 3 database role configuration is invalid"
             assert pg_database.fetch_value(
-                "SELECT version_num='20260817_0021' FROM public.alembic_version"
+                "SELECT version_num='20260818_0022' FROM public.alembic_version"
             )
             assert pg_database.fetch_value(
                 "SELECT to_regclass('public.therapist_profile') IS NOT NULL"
@@ -864,8 +889,8 @@ def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
     finally:
         if pg_database.fetch_value(
             "SELECT version_num FROM public.alembic_version"
-        ) != "20260817_0021":
-            command.upgrade(config, "20260817_0021")
+        ) != "20260818_0022":
+            command.upgrade(config, "20260818_0022")
         asyncio.run(admin_execute(f'DROP ROLE IF EXISTS "{external}"'))
 
 

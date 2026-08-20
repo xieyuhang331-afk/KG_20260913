@@ -103,12 +103,21 @@ assert set(APPROVED_ROUTE_SCHEMAS) == set(APPROVED_ROUTE_CONTRACTS)
 
 def test_逐路由typed_schema_status_error与UUIDv7():
     paths = create_app().openapi()["paths"]
-    operations = {
-        (path, method): value
+    approved_operations = {
+        (path, method.lower())
+        for method, path in APPROVED_ROUTE_CONTRACTS
+    }
+    actual_operations = {
+        (path, method)
         for path, methods in paths.items()
         for method, value in methods.items()
         if method in {"get", "post", "put"}
-        and ("therapist" in path or "service-readiness" in path)
+        and "therapist_qualification" in value.get("tags", ())
+    }
+    assert actual_operations == approved_operations
+    operations = {
+        (path, method): paths[path][method]
+        for path, method in approved_operations
     }
     assert len(operations) == 26
     for (_, _), operation in operations.items():

@@ -47,7 +47,7 @@ jobs:
       - name: Enforce blocked P2 decisions
         shell: bash
         run: |
-          if git grep -I -n -E 'family_delegation|health_fact_correction|health_fact_supersession|therapist_assignment|professional_service_fulfillment' -- backend/app frontend/src; then
+          if git grep -I -n -w -E 'family_delegation|health_fact_correction|health_fact_supersession|therapist_assignment|professional_service_fulfillment' -- backend/app frontend/src; then
             echo 'Decision-003, Decision-008, or Decision-009 implementation detected.'
             exit 1
           fi
@@ -203,6 +203,11 @@ jobs:
               "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE": f"kg_ci_therapist_review_{suffix}",
               "KG_TEST_THERAPIST_READINESS_WORKER_ROLE": f"kg_ci_therapist_worker_{suffix}",
               "KG_TEST_THERAPIST_READER_ROLE": f"kg_ci_therapist_reader_{suffix}",
+              "KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE": f"kg_ci_member_enrollment_{suffix}",
+              "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE": f"kg_ci_member_review_{suffix}",
+              "KG_TEST_MEMBER_CASE_WRITER_ROLE": f"kg_ci_member_case_{suffix}",
+              "KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE": f"kg_ci_member_worker_{suffix}",
+              "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE": f"kg_ci_member_reader_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -282,6 +287,36 @@ jobs:
           values["KG_ORGANIZATION_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(organization_projection_keys, separators=(",", ":"), sort_keys=True)
           values["KG_HEALTH_PROJECTION_DIGEST_CURRENT_KEY_ID"] = "ci-health-proj-k2"
           values["KG_HEALTH_PROJECTION_DIGEST_KEYRING_JSON"] = json.dumps(health_projection_keys, separators=(",", ":"), sort_keys=True)
+          member_enrollment_key_purposes = {
+              "KG_MEMBER_ENROLLMENT_PII": "pii",
+              "KG_MEMBER_ENROLLMENT_LOOKUP": "lookup",
+              "KG_MEMBER_ENROLLMENT_CODE": "code",
+              "KG_MEMBER_ENROLLMENT_REPLAY": "replay",
+              "KG_MEMBER_ENROLLMENT_COORDINATION": "coordination",
+              "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
+              "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
+              "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",
+              "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST": "consent",
+              "KG_MEMBER_ENROLLMENT_DELIVERY": "delivery",
+          }
+          member_enrollment_key_materials = {
+              prefix: base64.b64encode(secrets.token_bytes(32)).decode()
+              for prefix in member_enrollment_key_purposes
+          }
+          if len(
+              {
+                  *member_enrollment_key_materials.values(),
+                  values["KG_IDENTITY_PII_HMAC_KEY_B64"],
+              }
+          ) != len(member_enrollment_key_materials) + 1:
+              raise RuntimeError("Member enrollment key material is not isolated")
+          for prefix, purpose in member_enrollment_key_purposes.items():
+              key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"
+              values[f"{prefix}_CURRENT_KEY_ID"] = key_id
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: member_enrollment_key_materials[prefix]},
+                  separators=(",", ":"), sort_keys=True,
+              )
           url_names = {
               "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
               "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
@@ -311,6 +346,11 @@ jobs:
               "KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE",
               "KG_TEST_THERAPIST_READINESS_WORKER_DATABASE_URL": "KG_TEST_THERAPIST_READINESS_WORKER_ROLE",
               "KG_TEST_THERAPIST_READER_DATABASE_URL": "KG_TEST_THERAPIST_READER_ROLE",
+              "KG_TEST_MEMBER_ENROLLMENT_WRITER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE",
+              "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL": "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE",
+              "KG_TEST_MEMBER_CASE_WRITER_DATABASE_URL": "KG_TEST_MEMBER_CASE_WRITER_ROLE",
+              "KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE",
+              "KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -375,6 +415,16 @@ jobs:
           values["KG_THERAPIST_REVIEW_WRITER_ROLE"] = values["KG_TEST_THERAPIST_REVIEW_WRITER_ROLE"]
           values["KG_THERAPIST_READINESS_WORKER_ROLE"] = values["KG_TEST_THERAPIST_READINESS_WORKER_ROLE"]
           values["KG_THERAPIST_READER_ROLE"] = values["KG_TEST_THERAPIST_READER_ROLE"]
+          values["KG_MEMBER_ENROLLMENT_WRITER_DATABASE_URL"] = values["KG_TEST_MEMBER_ENROLLMENT_WRITER_DATABASE_URL"]
+          values["KG_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL"] = values["KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_DATABASE_URL"]
+          values["KG_MEMBER_CASE_WRITER_DATABASE_URL"] = values["KG_TEST_MEMBER_CASE_WRITER_DATABASE_URL"]
+          values["KG_MEMBER_WORKFLOW_WORKER_DATABASE_URL"] = values["KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL"]
+          values["KG_MEMBER_ENROLLMENT_READER_DATABASE_URL"] = values["KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL"]
+          values["KG_MEMBER_ENROLLMENT_WRITER_ROLE"] = values["KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE"]
+          values["KG_MEMBER_IDENTITY_REVIEW_WRITER_ROLE"] = values["KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE"]
+          values["KG_MEMBER_CASE_WRITER_ROLE"] = values["KG_TEST_MEMBER_CASE_WRITER_ROLE"]
+          values["KG_MEMBER_WORKFLOW_WORKER_ROLE"] = values["KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE"]
+          values["KG_MEMBER_ENROLLMENT_READER_ROLE"] = values["KG_TEST_MEMBER_ENROLLMENT_READER_ROLE"]
           for prefix in (
               "KG_THERAPIST_PII_ENCRYPTION", "KG_THERAPIST_PII_DIGEST",
               "KG_THERAPIST_TOTP_ENCRYPTION", "KG_THERAPIST_INVITATION_CODE_HMAC",
@@ -418,6 +468,7 @@ jobs:
               *organization_mapping_keys.values(),
               *organization_projection_keys.values(),
               *health_projection_keys.values(),
+              *member_enrollment_key_materials.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
@@ -575,6 +626,16 @@ jobs:
             --set=therapist_worker_password="$KG_TEST_THERAPIST_READINESS_WORKER_ROLE_PASSWORD" \
             --set=therapist_reader_role="$KG_TEST_THERAPIST_READER_ROLE" \
             --set=therapist_reader_password="$KG_TEST_THERAPIST_READER_ROLE_PASSWORD" \
+            --set=member_enrollment_writer_role="$KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE" \
+            --set=member_enrollment_writer_password="$KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE_PASSWORD" \
+            --set=member_identity_review_writer_role="$KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE" \
+            --set=member_identity_review_writer_password="$KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE_PASSWORD" \
+            --set=member_case_writer_role="$KG_TEST_MEMBER_CASE_WRITER_ROLE" \
+            --set=member_case_writer_password="$KG_TEST_MEMBER_CASE_WRITER_ROLE_PASSWORD" \
+            --set=member_workflow_worker_role="$KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE" \
+            --set=member_workflow_worker_password="$KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE_PASSWORD" \
+            --set=member_enrollment_reader_role="$KG_TEST_MEMBER_ENROLLMENT_READER_ROLE" \
+            --set=member_enrollment_reader_password="$KG_TEST_MEMBER_ENROLLMENT_READER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -605,6 +666,11 @@ jobs:
           CREATE ROLE :"therapist_review_role" LOGIN PASSWORD :'therapist_review_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"therapist_worker_role" LOGIN PASSWORD :'therapist_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"therapist_reader_role" LOGIN PASSWORD :'therapist_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"member_enrollment_writer_role" LOGIN PASSWORD :'member_enrollment_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"member_identity_review_writer_role" LOGIN PASSWORD :'member_identity_review_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"member_case_writer_role" LOGIN PASSWORD :'member_case_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"member_workflow_worker_role" LOGIN PASSWORD :'member_workflow_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"member_enrollment_reader_role" LOGIN PASSWORD :'member_enrollment_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

@@ -1,4 +1,8 @@
 import ast
+import base64
+import json
+import secrets
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -6,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260817_0021"
+EXPECTED_HEAD = "20260818_0022"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260817_0021; found stale revision 20260816_0020"
+    "20260818_0022; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -37,6 +41,18 @@ REVISION_CONTRACT_FILES = (
     INTEGRATION_ROOT / "test_pg_migrations_smoke.py",
 )
 ALEMBIC_VERSION_QUERY = "SELECT version_num FROM alembic_version"
+BLOCKED_P2_IDENTIFIERS = (
+    "family_delegation",
+    "health_fact_correction",
+    "health_fact_supersession",
+    "therapist_assignment",
+    "professional_service_fulfillment",
+)
+APPROVED_SLICE3_COMPOUND_IDENTIFIERS = (
+    "primary_therapist_assignment",
+    "slice3_therapist_assignment_read_v1",
+    "get_primary_therapist_assignment",
+)
 
 
 def _target_contains_name(target, name):
@@ -533,6 +549,65 @@ def _workflow_shell_lines(step_name):
     ]
 
 
+def test_repository_safety_uses_word_boundaries_without_weakening_blocked_p2_decisions(
+    tmp_path,
+):
+    pattern = "|".join(BLOCKED_P2_IDENTIFIERS)
+    command = f"git grep -I -n -w -E '{pattern}' -- backend/app frontend/src"
+    step = _workflow_step_block("Enforce blocked P2 decisions")
+
+    assert command in step
+
+    backend = tmp_path / "backend" / "app"
+    frontend = tmp_path / "frontend" / "src"
+    backend.mkdir(parents=True)
+    frontend.mkdir(parents=True)
+    (backend / "approved_slice3.py").write_text(
+        "\n".join(APPROVED_SLICE3_COMPOUND_IDENTIFIERS), encoding="utf-8"
+    )
+    (frontend / "blocked_p2.ts").write_text(
+        "\n".join(BLOCKED_P2_IDENTIFIERS), encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "init", "--quiet"], cwd=tmp_path, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "--", "backend/app", "frontend/src"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    result = subprocess.run(
+        ["git", "grep", "-I", "-n", "-w", "-E", pattern, "--", "backend/app", "frontend/src"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "approved_slice3.py" not in result.stdout
+    assert "blocked_p2.ts" in result.stdout
+    for identifier in BLOCKED_P2_IDENTIFIERS:
+        assert identifier in result.stdout
+    for identifier in APPROVED_SLICE3_COMPOUND_IDENTIFIERS:
+        assert identifier not in result.stdout
+
+
+def test_slice3_assignment_detail_uses_an_approved_compound_internal_name():
+    api_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "modules"
+        / "member_enrollment"
+        / "api.py"
+    )
+    source = api_path.read_text(encoding="utf-8")
+
+    assert "async def get_primary_therapist_assignment(" in source
+    assert "async def therapist_assignment(" not in source
+
+
 def test_registration_runtime_ci_uses_disposable_rabbitmq_and_exact_cleanup():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     start = _workflow_step_block("Start disposable RabbitMQ")
@@ -746,6 +821,11 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_THERAPIST_REVIEW_WRITER_ROLE", "kg_ci_therapist_review_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_READINESS_WORKER_ROLE", "kg_ci_therapist_worker_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_READER_ROLE", "kg_ci_therapist_reader_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE", "kg_ci_member_enrollment_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE", "kg_ci_member_review_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_CASE_WRITER_ROLE", "kg_ci_member_case_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE", "kg_ci_member_worker_test_run")
+        monkeypatch.setenv("KG_TEST_MEMBER_ENROLLMENT_READER_ROLE", "kg_ci_member_reader_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -1108,3 +1188,127 @@ def test_slice2_runtime_roles_urls_and_ephemeral_keyrings_are_propagated_before_
     ):
         assert backend_integration_job.count(f'"{prefix}_CURRENT_KEY_ID"') >= 1
         assert f'values[f"{{prefix}}_KEYRING_JSON"]' in backend_integration_job
+
+
+def test_slice3_runtime_roles_and_urls_are_created_and_propagated_before_export():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    prefixes = (
+        "KG_MEMBER_ENROLLMENT_WRITER",
+        "KG_MEMBER_IDENTITY_REVIEW_WRITER",
+        "KG_MEMBER_CASE_WRITER",
+        "KG_MEMBER_WORKFLOW_WORKER",
+        "KG_MEMBER_ENROLLMENT_READER",
+    )
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    for prefix in prefixes:
+        test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
+        role_mapping = f'values["{prefix}_ROLE"] = values["{test_prefix}_ROLE"]'
+        url_mapping = f'values["{prefix}_DATABASE_URL"] = values["{test_prefix}_DATABASE_URL"]'
+        role_variable = prefix.removeprefix("KG_").lower() + "_role"
+
+        assert backend_integration_job.count(
+            f'"{test_prefix}_DATABASE_URL": "{test_prefix}_ROLE"'
+        ) == 1
+        assert backend_integration_job.count(role_mapping) == 1
+        assert backend_integration_job.count(url_mapping) == 1
+        assert backend_integration_job.index(role_mapping) < export_position
+        assert backend_integration_job.index(url_mapping) < export_position
+        assert backend_integration_job.count(f'CREATE ROLE :"{role_variable}" LOGIN') == 1
+
+
+def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    prefixes = {
+        "KG_MEMBER_ENROLLMENT_PII": "pii",
+        "KG_MEMBER_ENROLLMENT_LOOKUP": "lookup",
+        "KG_MEMBER_ENROLLMENT_CODE": "code",
+        "KG_MEMBER_ENROLLMENT_REPLAY": "replay",
+        "KG_MEMBER_ENROLLMENT_COORDINATION": "coordination",
+        "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST": "request",
+        "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST": "audit",
+        "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST": "outbox",
+        "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST": "consent",
+        "KG_MEMBER_ENROLLMENT_DELIVERY": "delivery",
+    }
+    mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
+    export_position = backend_integration_job.index("GITHUB_ENV")
+
+    assert "member_enrollment_key_purposes = {" in backend_integration_job
+    assert "member_enrollment_key_materials = {" in backend_integration_job
+    assert "base64.b64encode(secrets.token_bytes(32)).decode()" in backend_integration_job
+    assert 'values["KG_IDENTITY_PII_HMAC_KEY_B64"]' in backend_integration_job
+    assert "Member enrollment key material is not isolated" in backend_integration_job
+    assert "*member_enrollment_key_materials.values()," in backend_integration_job
+    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 2
+    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 2
+    assert backend_integration_job.count(
+        'key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"'
+    ) == 1
+
+    for prefix, purpose in prefixes.items():
+        declaration = f'"{prefix}": "{purpose}"'
+        assert backend_integration_job.count(declaration) == 1
+        assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+SLICE3_RUNTIME_KEYRING_PREFIXES = (
+    "KG_MEMBER_ENROLLMENT_PII",
+    "KG_MEMBER_ENROLLMENT_LOOKUP",
+    "KG_MEMBER_ENROLLMENT_CODE",
+    "KG_MEMBER_ENROLLMENT_REPLAY",
+    "KG_MEMBER_ENROLLMENT_DELIVERY",
+    "KG_MEMBER_ENROLLMENT_COORDINATION",
+    "KG_MEMBER_ENROLLMENT_REQUEST_DIGEST",
+    "KG_MEMBER_ENROLLMENT_AUDIT_DIGEST",
+    "KG_MEMBER_ENROLLMENT_OUTBOX_DIGEST",
+    "KG_MEMBER_ENROLLMENT_CONSENT_DIGEST",
+)
+
+
+def _install_complete_slice3_runtime_keyrings(monkeypatch: pytest.MonkeyPatch) -> None:
+    materials: list[bytes] = []
+    while len(materials) != len(SLICE3_RUNTIME_KEYRING_PREFIXES) + 1:
+        candidate = secrets.token_bytes(32)
+        if candidate not in materials:
+            materials.append(candidate)
+    monkeypatch.setenv("KG_IDENTITY_PII_KEY_ID", "test-identity-current")
+    monkeypatch.setenv(
+        "KG_IDENTITY_PII_HMAC_KEY_B64", base64.b64encode(materials[0]).decode()
+    )
+    for index, prefix in enumerate(SLICE3_RUNTIME_KEYRING_PREFIXES, start=1):
+        key_id = f"test-runtime-{index}"
+        monkeypatch.setenv(f"{prefix}_CURRENT_KEY_ID", key_id)
+        monkeypatch.setenv(
+            f"{prefix}_KEYRING_JSON",
+            json.dumps(
+                {key_id: base64.b64encode(materials[index]).decode()},
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+
+def test_complete_slice3_runtime_keyrings_construct_member_enrollment_secrets(monkeypatch):
+    from app.modules.member_enrollment.service import MemberEnrollmentSecrets
+
+    _install_complete_slice3_runtime_keyrings(monkeypatch)
+
+    secrets_box = MemberEnrollmentSecrets()
+
+    assert secrets_box.pii_key_id == "test-runtime-1"
+    assert secrets_box.consent_digest_key_id == "test-runtime-10"
+
+
+@pytest.mark.parametrize("prefix", SLICE3_RUNTIME_KEYRING_PREFIXES)
+@pytest.mark.parametrize("missing_suffix", ("CURRENT_KEY_ID", "KEYRING_JSON"))
+def test_member_enrollment_secrets_fail_closed_when_any_runtime_keyring_value_is_missing(
+    monkeypatch, prefix: str, missing_suffix: str
+):
+    from app.modules.member_enrollment.service import MemberEnrollmentSecrets
+
+    _install_complete_slice3_runtime_keyrings(monkeypatch)
+    monkeypatch.delenv(f"{prefix}_{missing_suffix}")
+
+    with pytest.raises(RuntimeError, match="^MEMBER_ENROLLMENT_DEPENDENCY_UNAVAILABLE$"):
+        MemberEnrollmentSecrets()

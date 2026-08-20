@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -42,7 +43,7 @@ def _seed(pg_database):
         f"('{SUBMISSION_REF}', {USER_REF}, 1, 'submitted', "
         "decode('01', 'hex'), decode('000000000000000000000001', 'hex'), "
         "decode('02', 'hex'), decode('000000000000000000000002', 'hex'), "
-        "'110101********1234', 'ci-contract-key', "
+        f"'110101********1234', '{os.environ['KG_IDENTITY_PII_KEY_ID']}', "
         f"'{'c' * 64}', '{'d' * 64}', '{'e' * 64}', "
         f"'identity-consent-v1', '{NOW.isoformat()}')"
     )
