@@ -325,21 +325,15 @@ async def _member_for_actor(
         or actor.org_id is not None
     ):
         raise _error("ACTOR_CURRENTNESS_FORBIDDEN")
-    result = await authority.execute(text(
-        "SELECT l.member_id,u.phone,u.role,u.status,u.tenant_id,m.status AS member_status "
-        "FROM public.\"user\" u JOIN identity.user_member_self_link l "
-        "ON l.user_ref=u.id JOIN identity.member m ON m.member_id=l.member_id "
-        "WHERE u.id=:user_id FOR SHARE OF u,l,m"
-    ), {"user_id": actor.id})
+    result = await authority.execute(
+        text(
+            "SELECT public.slice3_member_currentness_authority_v1("
+            ":user_id,:expected_phone) AS member_id"
+        ),
+        {"user_id": actor.id, "expected_phone": expected_phone},
+    )
     row = result.mappings().one_or_none()
-    if (
-        row is None
-        or row["role"] != "member"
-        or row["status"] != "active"
-        or row["tenant_id"] is not None
-        or row["member_status"] != "created"
-        or (expected_phone is not None and row["phone"] != expected_phone)
-    ):
+    if row is None or row["member_id"] is None:
         raise _error("ACTOR_CURRENTNESS_FORBIDDEN")
     return UUID(str(row["member_id"]))
 
@@ -364,6 +358,13 @@ def _public_row(row) -> dict:
     value = dict(row)
     if "tenant_public_id" in value:
         value["tenant_id"] = value.pop("tenant_public_id")
+    return value
+
+
+def _enrollment_list_row(row) -> dict:
+    value = _public_row(row)
+    for field in ("identity", "proxy", "consents", "assignment"):
+        value.pop(field, None)
     return value
 
 
@@ -997,7 +998,7 @@ async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:
 
 @family_router.get("/member-enrollments", response_model=EnrollmentPageDTO)
 async def family_enrollments(cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    member_id=await _member_for_actor(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).family_enrollment_rows(member_id,cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_public_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["enrollment_id"]) if len(rows)>limit else None}
+    member_id=await _member_for_actor(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).family_enrollment_rows(member_id,cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_enrollment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["enrollment_id"]) if len(rows)>limit else None}
 
 
 @family_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
