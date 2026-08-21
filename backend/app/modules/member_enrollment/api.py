@@ -498,7 +498,7 @@ async def _replay_result(
         actor_scope=context.actor_scope, operation=operation,
         target_id=target_id, key=context.idempotency_key,
     )
-    if request_digest != row["postimage_digest"]:
+    if secrets.audit_digest({"operation": operation, "result": result}) != row["postimage_digest"]:
         raise _error("COMMIT_OUTCOME_UNKNOWN")
     return result
 
