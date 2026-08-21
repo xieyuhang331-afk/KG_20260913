@@ -1,57 +1,91 @@
-export interface IdentityReviewQueueItem {
-  user_id: number;
-  submission_version: number;
-  id_card_masked: string;
-  submitted_at: string;
-}
+import type { CursorPage, CursorParams, UUIDv7 } from "@/shared/api/slice3";
 
-export interface IdentityReviewQueueResponse {
-  items: IdentityReviewQueueItem[];
-  page: number;
-  page_size: number;
-  total: number;
-}
+export type MemberReviewMode = "SELF" | "PROXY_ELDER";
 
-export interface IdentityReviewQueueParams {
-  page?: number;
-  page_size?: number;
-}
-
-export interface IdentityReviewQueueWireItem extends IdentityReviewQueueItem {
-  [key: string]: unknown;
-}
-
-export interface IdentityReviewQueueWireResponse {
-  items: IdentityReviewQueueWireItem[];
-  page: number;
-  page_size: number;
-  total: number;
-}
-
-export interface IdentityReviewStepUpResponse {
-  step_up_token: string;
-  token_type: "identity_review_step_up";
-  expires_in: 120;
-}
-
-export interface IdentityReviewDetailResponse {
-  user_id: number;
-  submission_version: number;
+export interface MemberIdentityReviewSummary {
+  review_id: UUIDv7;
+  enrollment_id: UUIDv7;
+  member_id: UUIDv7;
+  mode: MemberReviewMode;
   status: string;
+  id_masked: string;
+  submitted_at: string;
+  version: number;
+}
+
+export interface MemberIdentityReviewDetail extends MemberIdentityReviewSummary {
+  current_revision_id: UUIDv7;
+  current_revision_no: number;
+  institution_attestation: string | null;
+  correction_fields: Array<"real_name" | "id_number">;
+  proxy_witness_status: string | null;
+}
+
+export interface MemberIdentityPii {
+  review_id: UUIDv7;
+  revision_id: UUIDv7;
   real_name: string;
-  id_card: string;
-  id_card_masked: string;
-  consent_version: string;
-  submitted_at: string;
+  id_number: string;
+  birth_date: string;
+  access_id: UUIDv7;
 }
 
-export interface IdentityReviewDecisionResponse {
-  user_id: number;
-  submission_version: number;
+export interface MemberIdentityStatus {
+  verification_id: UUIDv7;
+  enrollment_id: UUIDv7;
+  member_id: UUIDv7;
+  current_revision_id: UUIDv7;
   status: string;
-  replayed: boolean;
+  id_masked: string;
+  submitted_at: string;
+  institution_checked_at: string | null;
+  platform_decided_at: string | null;
+  reason_codes: string[];
+  version: number;
 }
 
-export interface IdentityReviewApproveResponse extends IdentityReviewDecisionResponse {
-  decision_ref: string;
+export interface MemberIdentityReviewParams extends CursorParams {
+  status?: string;
+}
+
+export type MemberIdentityReviewPage = CursorPage<MemberIdentityReviewSummary>;
+
+export interface MemberIdentityDecisionPayload {
+  revision_id: UUIDv7;
+  decision: "APPROVED" | "NEEDS_CORRECTION" | "REJECTED";
+  reason_code: string | null;
+  correction_fields: Array<"real_name" | "id_number">;
+  represented_elder_eligible: boolean | null;
+  expected_version: number;
+}
+
+export type ConsentDocumentType =
+  | "USER_AGREEMENT"
+  | "PRIVACY_POLICY"
+  | "HEALTH_DATA_PROCESSING"
+  | "INSTITUTION_SERVICE"
+  | "NON_MEDICAL_RISK"
+  | "PROXY_AUTHORIZATION";
+
+export interface ConsentRenditionInput {
+  locale: string;
+  title: string;
+  body: string;
+}
+
+export interface ConsentDocument {
+  document_version_id: UUIDv7;
+  document_type: ConsentDocumentType;
+  semantic_version: string;
+  status: "DRAFT" | "PUBLISHED" | "RETIRED";
+  requires_reconsent: true;
+  effective_at: string | null;
+  retired_at: string | null;
+  renditions: Array<{
+    rendition_id: UUIDv7;
+    locale: string;
+    title: string;
+    content_sha256: string;
+  }>;
+  version: number;
 }

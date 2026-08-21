@@ -11,6 +11,7 @@ import { InstitutionInvitationPage } from "./pages/InstitutionInvitationPage";
 import { InstitutionReviewPage } from "./pages/InstitutionReviewPage";
 import { TherapistReviewPage } from "./pages/TherapistReviewPage";
 import { TherapistStatusPage } from "./pages/TherapistStatusPage";
+import { ConsentDocumentPage } from "./pages/ConsentDocumentPage";
 
 export const platformRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -29,7 +30,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
       element: <ProtectedRoute roles={[USER_ROLES.superAdmin]} />,
       children: [
         { path: "identity-reviews", element: <IdentityReviewListPage /> },
-        { path: "identity-reviews/:userId", element: <IdentityReviewDetailPage /> },
+        { path: "identity-reviews/:reviewId", element: <IdentityReviewDetailPage /> },
+        { path: "consent-documents", element: <ConsentDocumentPage /> },
         { path: "institution-invitations", element: <InstitutionInvitationPage /> },
         { path: "institution-reviews", element: <InstitutionReviewPage /> },
         { path: "therapist-reviews", element: <TherapistReviewPage /> },

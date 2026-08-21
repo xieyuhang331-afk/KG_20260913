@@ -1,4 +1,4 @@
-import { Building2, ClipboardList, Store, StoreIcon } from "lucide-react";
+import { Building2, ClipboardList, MailPlus, Store, StoreIcon, UsersRound } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { institutionNavigation } from "@/domains/institution/navigation";
 import { useAuthStore } from "@/shared/auth/authStore";
@@ -48,6 +48,10 @@ export function InstitutionShell() {
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 text-slate-500 ring-1 ring-slate-200 group-aria-[current=page]:bg-white group-aria-[current=page]:text-teal-700">
                   {item.label === "组织资料" ? (
                     <Building2 aria-hidden="true" size={17} />
+                  ) : item.label === "会员邀请" ? (
+                    <MailPlus aria-hidden="true" size={17} />
+                  ) : item.label === "会员入组" ? (
+                    <UsersRound aria-hidden="true" size={17} />
                   ) : (
                     <ClipboardList aria-hidden="true" size={17} />
                   )}

@@ -1,14 +1,18 @@
 import { readFile, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
-const roots = ["src/domains/platform", "src/domains/organization", "src/domains/institution"];
+const roots = ["src/domains/platform", "src/domains/organization", "src/domains/institution", "src/shared/api"];
 const allowedExtensions = new Set([".ts", ".tsx"]);
 const forbiddenPatterns = [
   ["完整身份证号", /(?<!\d)\d{17}[0-9Xx](?!\w)/g],
   ["Bearer Token", /\bBearer\s+[A-Za-z0-9._~-]+/g],
   ["JWT", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
   ["敏感浏览器存储", /\b(?:localStorage|sessionStorage)\b/g],
-  ["敏感URL参数", /[?&](?:step_up_token|id_card|password)=/gi],
+  [
+    "敏感URL参数",
+    /[?&](?:authorization|current_password|id_card|id_number|jwt|password|phone|real_name|short_code|step_up_token)=/gi,
+  ],
+  ["敏感查询缓存", /\b(?:persistQueryClient|setQueryData)\s*\(/g],
   ["日志输出", /\bconsole\.(?:debug|info|log|warn|error)\s*\(/g],
   ["测试快照", /\btoMatch(?:Inline)?Snapshot\s*\(/g],
   ["错误报告", /\b(?:captureException|captureMessage|reportError)\s*\(/g],
@@ -40,7 +44,7 @@ if (findings.length > 0) {
 }
 
 console.log(
-  "PII scan passed: platform, organization, and institution frontend source contains no forbidden sensitive values or token literals.",
+  "PII scan passed: Slice 3 API, platform, organization, and institution frontend source contains no forbidden sensitive values, cache writes, or token literals.",
 );
 
 async function listFiles(directory) {

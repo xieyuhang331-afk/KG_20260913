@@ -6,6 +6,9 @@ import { ControlledOnboardingPage } from "./pages/ControlledOnboardingPage";
 import { TherapistInvitationPage } from "./pages/TherapistInvitationPage";
 import { TherapistListPage } from "./pages/TherapistListPage";
 import { ServiceReadinessPage } from "./pages/ServiceReadinessPage";
+import { MemberInvitationPage } from "./pages/MemberInvitationPage";
+import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
+import { MemberEnrollmentDetailPage } from "./pages/MemberEnrollmentDetailPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -26,5 +29,8 @@ export const institutionRoutes: { protectedChildren: RouteObject[] } = {
     { path: "therapist-invitations", element: <TherapistInvitationPage /> },
     { path: "therapists", element: <TherapistListPage /> },
     { path: "service-readiness", element: <ServiceReadinessPage /> },
+    { path: "member-invitations", element: <MemberInvitationPage /> },
+    { path: "member-enrollments", element: <MemberEnrollmentPage /> },
+    { path: "member-enrollments/:enrollmentId", element: <MemberEnrollmentDetailPage /> },
   ],
 };

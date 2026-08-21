@@ -1,4 +1,5 @@
 import { apiRequest } from "@/shared/api/client";
+import type { UUIDv7 } from "@/shared/api/slice3";
 import type {
   MyTenantApplicationsParams,
   MyTenantApplicationsResponse,
@@ -11,6 +12,16 @@ import type {
   TherapistProfile,
   TherapistQualification,
   TherapistStatus,
+  MemberEnrollmentDetail,
+  MemberEnrollmentSummary,
+  MemberIdentityStatus,
+  MemberInvitation,
+  MemberInvitationMode,
+  MemberInvitationSecret,
+  MemberInvitationStatus,
+  PreparingServiceCase,
+  PrimaryAssignment,
+  ServiceScopeTag,
 } from "./types";
 
 export interface InstitutionActivationPayload {
@@ -166,6 +177,83 @@ export const getServiceReadinessEvidence = (params: CursorParams = {}) =>
   apiRequest<CursorPage<ServiceReadinessEvidence>>(
     `/api/v1/institution/service-readiness/evidence${therapistQuery(params)}`,
   );
+
+export const createMemberInvitation = (payload: { mode: MemberInvitationMode; phone: string }, key: string) =>
+  apiRequest<MemberInvitationSecret>("/api/v1/institution/member-invitations", {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+
+export const listMemberInvitations = (params: CursorParams & { status?: MemberInvitationStatus } = {}) =>
+  apiRequest<CursorPage<MemberInvitation>>(`/api/v1/institution/member-invitations${therapistQuery(params)}`);
+
+export const resendMemberInvitation = (id: UUIDv7, expectedVersion: number, key: string) =>
+  apiRequest<MemberInvitationSecret>(`/api/v1/institution/member-invitations/${id}/resend`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  });
+
+export const revokeMemberInvitation = (
+  id: UUIDv7,
+  expectedVersion: number,
+  reasonCode: "DUPLICATE_INVITATION" | "WRONG_RECIPIENT" | "INSTITUTION_CANCELLED",
+  key: string,
+) =>
+  apiRequest<MemberInvitation>(`/api/v1/institution/member-invitations/${id}/revoke`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
+  });
+
+export const listMemberEnrollments = (params: CursorParams & { status?: string } = {}) =>
+  apiRequest<CursorPage<MemberEnrollmentSummary>>(`/api/v1/institution/member-enrollments${therapistQuery(params)}`);
+
+export const getMemberEnrollment = (id: UUIDv7, signal?: AbortSignal) =>
+  apiRequest<MemberEnrollmentDetail>(`/api/v1/institution/member-enrollments/${id}`, { signal });
+
+export interface InstitutionIdentityCheckPayload {
+  revision_id: UUIDv7;
+  decision: "CHECKED" | "NEEDS_CORRECTION" | "REJECTED";
+  reason_code: string | null;
+  correction_fields: Array<"real_name" | "id_number">;
+  attestation_code: "OFFLINE_IDENTITY_CHECKED" | "PRINCIPAL_PRESENT_AND_AUTHORIZED_PROXY" | null;
+  expected_version: number;
+}
+
+export const checkMemberIdentity = (enrollmentId: UUIDv7, payload: InstitutionIdentityCheckPayload, key: string) =>
+  apiRequest<MemberIdentityStatus>(`/api/v1/institution/member-enrollments/${enrollmentId}/identity-check`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+
+export const assignPrimaryTherapist = (
+  enrollmentId: UUIDv7,
+  payload: { therapist_id: UUIDv7; service_scope_tags: ServiceScopeTag[]; expected_version: number },
+  key: string,
+) =>
+  apiRequest<PrimaryAssignment>(`/api/v1/institution/member-enrollments/${enrollmentId}/primary-assignments`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
+  });
+
+export const cancelPrimaryAssignment = (
+  assignmentId: UUIDv7,
+  expectedVersion: number,
+  reasonCode: "MEMBER_UNAVAILABLE" | "THERAPIST_UNAVAILABLE" | "INSTITUTION_CANCELLED",
+  key: string,
+) =>
+  apiRequest<PrimaryAssignment>(`/api/v1/institution/primary-assignments/${assignmentId}/cancel`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
+  });
+
+export const getPreparingServiceCase = (caseId: UUIDv7) =>
+  apiRequest<PreparingServiceCase>(`/api/v1/institution/service-cases/${caseId}`);
 
 function therapistQuery(params: object) {
   const query = new URLSearchParams();

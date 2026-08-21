@@ -1,0 +1,84 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ConsentDocumentPage } from "./pages/ConsentDocumentPage";
+import { IdentityReviewListPage } from "./pages/实名认证审核列表页";
+
+describe("平台会员实名与同意文档", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("实名队列使用会员审核业务语言", () => {
+    render(<IdentityReviewListPage />, { wrapper: MemoryRouter });
+    expect(screen.getByRole("heading", { name: "会员实名认证审核" })).toBeInTheDocument();
+  });
+
+  it("同意文档明确 zh-CN、重新同意与生效规则", () => {
+    render(<ConsentDocumentPage />, { wrapper: MemoryRouter });
+    expect(screen.getByRole("heading", { name: "同意文档" })).toBeInTheDocument();
+    expect(screen.getAllByText(/zh-CN/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/重新同意/).length).toBeGreaterThan(0);
+  });
+
+  it("发布发生 409 时清除陈旧副本且不自动重放", async () => {
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    const documentId = "0198b963-38f0-7d7d-8000-000000000041";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          document_version_id: documentId,
+          document_type: "USER_AGREEMENT",
+          semantic_version: "1.0.0",
+          status: "DRAFT",
+          requires_reconsent: true,
+          effective_at: null,
+          retired_at: null,
+          renditions: [
+            {
+              rendition_id: "0198b963-38f0-7d7d-8000-000000000042",
+              locale: "zh-CN",
+              title: "合成协议",
+              content_sha256: "a".repeat(64),
+            },
+          ],
+          version: 1,
+        }),
+      )
+      .mockResolvedValueOnce(failure(409, "VERSION_CONFLICT"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsentDocumentPage />, { wrapper: MemoryRouter });
+
+    await userEvent.type(screen.getByLabelText("语义版本"), "1.0.0");
+    await userEvent.type(screen.getByLabelText("zh-CN 标题"), "合成协议");
+    await userEvent.type(screen.getByLabelText("zh-CN 正文"), "仅用于前端合同验证。");
+    await userEvent.click(screen.getByRole("button", { name: "创建草稿" }));
+    await screen.findByText("同意文档草稿已创建。");
+    await userEvent.type(screen.getByLabelText(/生效时间/), "2026-08-21T00:00");
+    await userEvent.click(screen.getByRole("button", { name: "发布版本" }));
+
+    expect(await screen.findByText(/页面已清除陈旧副本/)).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/publish"))).toHaveLength(1);
+    expect(screen.getByText(/同意文档列表 API/)).toBeInTheDocument();
+  });
+});
+
+function response(data: unknown) {
+  return new Response(JSON.stringify({ data }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function failure(status: number, code: string) {
+  return new Response(JSON.stringify({ code }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
