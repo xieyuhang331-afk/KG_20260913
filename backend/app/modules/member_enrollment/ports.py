@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 from uuid import UUID
@@ -24,6 +25,37 @@ class MemberEnrollmentSecretsPort(Protocol):
 
 class VerifiedAdultEligibilityPort(Protocol):
     async def verified_birth_date_for_update(self, *, user_id: int, member_id: UUID) -> tuple[date, UUID, UUID, int, str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedIdentitySummaryV2:
+    gender: str
+    birth_date: date
+    identity_revision_ref: UUID
+    source_version: int
+    tenant_public_id: UUID
+    evidence_status: str
+
+
+class HealthIdentitySummaryAuthorityPort(Protocol):
+    async def verified_identity_summary(
+        self,
+        *,
+        subject_member_id: UUID,
+        service_case_id: UUID,
+    ) -> VerifiedIdentitySummaryV2: ...
+
+
+class HealthIdentitySummaryCurrentnessPort(Protocol):
+    async def require_current(
+        self,
+        *,
+        subject_member_id: UUID,
+        service_case_id: UUID,
+        identity_revision_ref: UUID,
+        identity_source_version: int,
+        tenant_public_id: UUID,
+    ) -> None: ...
 
 
 class ActorCurrentnessPort(Protocol):

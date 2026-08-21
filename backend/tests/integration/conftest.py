@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260821_0023"
+REQUIRED_HEAD_REVISION = "20260821_0024"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -151,6 +151,30 @@ def _get_member_enrollment_reader_database_url() -> str:
     return _get_role_database_url("KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL")
 
 
+def _get_health_record_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_HEALTH_RECORD_WRITER_DATABASE_URL")
+
+
+def _get_assessment_readiness_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_ASSESSMENT_READINESS_WRITER_DATABASE_URL")
+
+
+def _get_slice4_workflow_worker_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE4_WORKFLOW_WORKER_DATABASE_URL")
+
+
+def _get_slice4_clinical_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE4_CLINICAL_READER_DATABASE_URL")
+
+
+def _get_slice4_institution_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE4_INSTITUTION_READER_DATABASE_URL")
+
+
+def _get_slice4_identity_authority_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE4_IDENTITY_AUTHORITY_DATABASE_URL")
+
+
 def _propagate_module_d_role_preflight_environment() -> None:
     aliases = {
         "KG_DATABASE_USER": "KG_TEST_APPLICATION_ROLE",
@@ -217,6 +241,18 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_MEMBER_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL",
         "KG_MEMBER_ENROLLMENT_READER_ROLE": "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE",
         "KG_MEMBER_ENROLLMENT_READER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL",
+        "KG_HEALTH_RECORD_WRITER_ROLE": "KG_TEST_HEALTH_RECORD_WRITER_ROLE",
+        "KG_HEALTH_RECORD_WRITER_DATABASE_URL": "KG_TEST_HEALTH_RECORD_WRITER_DATABASE_URL",
+        "KG_ASSESSMENT_READINESS_WRITER_ROLE": "KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE",
+        "KG_ASSESSMENT_READINESS_WRITER_DATABASE_URL": "KG_TEST_ASSESSMENT_READINESS_WRITER_DATABASE_URL",
+        "KG_SLICE4_WORKFLOW_WORKER_ROLE": "KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE",
+        "KG_SLICE4_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_SLICE4_WORKFLOW_WORKER_DATABASE_URL",
+        "KG_SLICE4_CLINICAL_READER_ROLE": "KG_TEST_SLICE4_CLINICAL_READER_ROLE",
+        "KG_SLICE4_CLINICAL_READER_DATABASE_URL": "KG_TEST_SLICE4_CLINICAL_READER_DATABASE_URL",
+        "KG_SLICE4_INSTITUTION_READER_ROLE": "KG_TEST_SLICE4_INSTITUTION_READER_ROLE",
+        "KG_SLICE4_INSTITUTION_READER_DATABASE_URL": "KG_TEST_SLICE4_INSTITUTION_READER_DATABASE_URL",
+        "KG_SLICE4_IDENTITY_AUTHORITY_ROLE": "KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE",
+        "KG_SLICE4_IDENTITY_AUTHORITY_DATABASE_URL": "KG_TEST_SLICE4_IDENTITY_AUTHORITY_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -688,6 +724,12 @@ def pg_database():
         member_case_role = _validated_role_name("KG_TEST_MEMBER_CASE_WRITER_ROLE")
         member_worker_role = _validated_role_name("KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE")
         member_reader_role = _validated_role_name("KG_TEST_MEMBER_ENROLLMENT_READER_ROLE")
+        health_record_role = _validated_role_name("KG_TEST_HEALTH_RECORD_WRITER_ROLE")
+        assessment_role = _validated_role_name("KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE")
+        slice4_worker_role = _validated_role_name("KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE")
+        clinical_reader_role = _validated_role_name("KG_TEST_SLICE4_CLINICAL_READER_ROLE")
+        institution_reader_role = _validated_role_name("KG_TEST_SLICE4_INSTITUTION_READER_ROLE")
+        identity_authority_role = _validated_role_name("KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -723,6 +765,12 @@ def pg_database():
             member_case_role,
             member_worker_role,
             member_reader_role,
+            health_record_role,
+            assessment_role,
+            slice4_worker_role,
+            clinical_reader_role,
+            institution_reader_role,
+            identity_authority_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -904,6 +952,42 @@ def member_workflow_worker_database(pg_database):
 def member_enrollment_reader_database(pg_database):
     del pg_database
     return PgDatabase(_get_member_enrollment_reader_database_url())
+
+
+@pytest.fixture(scope="module")
+def health_record_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_health_record_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def assessment_readiness_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_assessment_readiness_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice4_workflow_worker_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice4_workflow_worker_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice4_clinical_reader_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice4_clinical_reader_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice4_institution_reader_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice4_institution_reader_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice4_identity_authority_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice4_identity_authority_database_url())
 
 
 @pytest.fixture

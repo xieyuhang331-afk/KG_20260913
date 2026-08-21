@@ -16,6 +16,7 @@ def test_规范健康事实SQLAlchemy持久化尚未实现():
     assert table.schema == "public"
     assert {column.name for column in table.columns} == {
         "id", "subject_user_id", "indicator_code", "catalog_version",
+        "subject_member_id", "fact_ref",
         "value_kind", "numeric_value", "unit", "measured_at", "received_at",
         "created_at", "source_type", "source_identity_digest",
         "producer_event_key", "payload_digest", "digest_key_id",
@@ -41,11 +42,19 @@ def test_ORM约束与索引精确存在():
     constraints = {constraint.name for constraint in table.constraints}
     assert "uq_canonical_health_fact_source_event" in constraints
     assert "uq_canonical_health_fact_single_successor" in constraints
-    for suffix in (
-        "catalog_v1", "value_kind_v1_numeric", "indicator_v1", "unit_v1",
-        "source_type", "source_digest", "payload_digest", "predecessor_reason_pair",
-    ):
-        assert any(name and name.endswith(suffix) for name in constraints)
+    assert {
+        "ck_canonical_health_fact_catalog_v1_v2",
+        "ck_canonical_health_fact_value_kind_v1_numeric",
+        "ck_canonical_health_fact_indicator_v1_v2",
+        "ck_canonical_health_fact_unit_v1_v2",
+        "ck_canonical_health_fact_source_type_v1_v2",
+        "ck_canonical_health_fact_source_digest",
+        "ck_canonical_health_fact_payload_digest",
+        "ck_canonical_health_fact_predecessor_reason_pair",
+    } <= constraints
+    rendered = " ".join(str(constraint.sqltext) for constraint in table.constraints if hasattr(constraint, "sqltext"))
+    assert "catalog_version=1" in rendered and "catalog_version=2" in rendered
+    assert "source_type IN ('APP','STORE','DEVICE','REPORT')" in rendered
     assert {index.name for index in table.indexes} == {
         "idx_canonical_health_fact_subject_indicator_time",
         "idx_canonical_health_fact_source_time",

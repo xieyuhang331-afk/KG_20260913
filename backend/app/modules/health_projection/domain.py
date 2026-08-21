@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Sequence
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.modules.health_fact.domain import CATALOG_V1
@@ -18,6 +19,8 @@ _SELECTION_DOMAIN = b"kg:projection:health:core-selection:v1\0"
 _SOURCE_PRIORITY = {"APP": 1, "REPORT": 2, "STORE": 3, "DEVICE": 4}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 RULE_VERSION = "health-daily-selection-v1"
+RULE_VERSION_V2 = "health-daily-selection-v2"
+_SOURCE_PRIORITY_V2 = {"APP": 1, "REPORT": 2, "STORE": 3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,32 @@ class HealthCurrentFact:
     measured_at: datetime
     received_at: datetime
     source_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCurrentFactV2:
+    id: int
+    fact_ref: UUID
+    subject_member_id: UUID
+    subject_user_id: int | None
+    indicator_code: str
+    numeric_value: Decimal
+    unit: str
+    measured_at: datetime
+    received_at: datetime
+    source_type: str
+    verification_state: str
+    status_event_seq: int
+    superseded: bool
+
+
+def select_window_winner_v2(facts: Sequence[HealthCurrentFactV2]) -> HealthCurrentFactV2:
+    if not facts or any(fact.source_type not in _SOURCE_PRIORITY_V2 for fact in facts):
+        raise ProjectionSourceInvalid("Projection source is invalid")
+    candidates = [fact for fact in facts if not fact.superseded and fact.verification_state != "DISPUTED"]
+    if not candidates:
+        raise ProjectionSourceInvalid("Projection source is invalid")
+    return max(candidates, key=lambda fact: (_SOURCE_PRIORITY_V2[fact.source_type], _aware(fact.measured_at), _aware(fact.received_at), fact.id))
 
 
 @dataclass(frozen=True, slots=True)

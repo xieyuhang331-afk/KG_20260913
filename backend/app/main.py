@@ -26,7 +26,11 @@ from app.modules.therapist_qualification.api import (
 from app.modules.registry import get_module_registry
 from app.modules.review.api import router as review_router
 from app.modules.tenant.api import router as tenant_router
-from app.modules.user_health.api import router as user_health_router
+from app.modules.user_health.api import (
+    formal_routers as slice4_formal_routers,
+    router as user_health_router,
+    strip_slice4_validation_responses,
+)
 
 
 @asynccontextmanager
@@ -66,11 +70,15 @@ def create_app() -> FastAPI:
     app.include_router(therapist_platform_router)
     for member_enrollment_router in member_enrollment_routers:
         app.include_router(member_enrollment_router)
+    for slice4_router in slice4_formal_routers:
+        app.include_router(slice4_router)
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        return strip_member_enrollment_validation_responses(
-            strip_therapist_validation_responses(default_openapi())
+        return strip_slice4_validation_responses(
+            strip_member_enrollment_validation_responses(
+                strip_therapist_validation_responses(default_openapi())
+            )
         )
 
     app.openapi = therapist_aware_openapi

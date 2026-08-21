@@ -83,6 +83,22 @@ class Settings(BaseModel):
     member_case_writer_role: str | None = None
     member_workflow_worker_role: str | None = None
     member_enrollment_reader_role: str | None = None
+    health_record_writer_database_url: str | None = None
+    assessment_readiness_writer_database_url: str | None = None
+    slice4_workflow_worker_database_url: str | None = None
+    slice4_clinical_reader_database_url: str | None = None
+    slice4_institution_reader_database_url: str | None = None
+    slice4_identity_authority_database_url: str | None = None
+    health_record_writer_role: str | None = None
+    assessment_readiness_writer_role: str | None = None
+    slice4_workflow_worker_role: str | None = None
+    slice4_clinical_reader_role: str | None = None
+    slice4_institution_reader_role: str | None = None
+    slice4_identity_authority_role: str | None = None
+    slice4_profile_phi_current_key_id: str | None = None
+    slice4_profile_phi_keyring_json: str | None = None
+    slice4_assembly_phi_current_key_id: str | None = None
+    slice4_assembly_phi_keyring_json: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -180,4 +196,20 @@ def get_settings() -> Settings:
         member_case_writer_role=os.getenv("KG_MEMBER_CASE_WRITER_ROLE"),
         member_workflow_worker_role=os.getenv("KG_MEMBER_WORKFLOW_WORKER_ROLE"),
         member_enrollment_reader_role=os.getenv("KG_MEMBER_ENROLLMENT_READER_ROLE"),
+        health_record_writer_database_url=os.getenv("KG_HEALTH_RECORD_WRITER_DATABASE_URL"),
+        assessment_readiness_writer_database_url=os.getenv("KG_ASSESSMENT_READINESS_WRITER_DATABASE_URL"),
+        slice4_workflow_worker_database_url=os.getenv("KG_SLICE4_WORKFLOW_WORKER_DATABASE_URL"),
+        slice4_clinical_reader_database_url=os.getenv("KG_SLICE4_CLINICAL_READER_DATABASE_URL"),
+        slice4_institution_reader_database_url=os.getenv("KG_SLICE4_INSTITUTION_READER_DATABASE_URL"),
+        slice4_identity_authority_database_url=os.getenv("KG_SLICE4_IDENTITY_AUTHORITY_DATABASE_URL"),
+        health_record_writer_role=os.getenv("KG_HEALTH_RECORD_WRITER_ROLE"),
+        assessment_readiness_writer_role=os.getenv("KG_ASSESSMENT_READINESS_WRITER_ROLE"),
+        slice4_workflow_worker_role=os.getenv("KG_SLICE4_WORKFLOW_WORKER_ROLE"),
+        slice4_clinical_reader_role=os.getenv("KG_SLICE4_CLINICAL_READER_ROLE"),
+        slice4_institution_reader_role=os.getenv("KG_SLICE4_INSTITUTION_READER_ROLE"),
+        slice4_identity_authority_role=os.getenv("KG_SLICE4_IDENTITY_AUTHORITY_ROLE"),
+        slice4_profile_phi_current_key_id=os.getenv("KG_SLICE4_PROFILE_PHI_CURRENT_KEY_ID"),
+        slice4_profile_phi_keyring_json=os.getenv("KG_SLICE4_PROFILE_PHI_KEYRING_JSON"),
+        slice4_assembly_phi_current_key_id=os.getenv("KG_SLICE4_ASSEMBLY_PHI_CURRENT_KEY_ID"),
+        slice4_assembly_phi_keyring_json=os.getenv("KG_SLICE4_ASSEMBLY_PHI_KEYRING_JSON"),
     )

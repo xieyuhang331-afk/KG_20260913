@@ -60,6 +60,17 @@ class SqlAlchemyHealthFactRepository:
         )
         return None if model is None else _restore(model)
 
+    async def get_by_ref(self, fact_ref) -> CanonicalHealthFact | None:
+        result = await _await_safely(
+            self._session.execute(
+                select(CanonicalHealthFactOrmModel).where(
+                    CanonicalHealthFactOrmModel.fact_ref == fact_ref
+                )
+            )
+        )
+        model = _scalar_one_or_none_safely(result)
+        return None if model is None else _restore(model)
+
     async def get_successor(self, fact_id: int) -> CanonicalHealthFact | None:
         result = await _await_safely(
             self._session.execute(
@@ -74,6 +85,8 @@ class SqlAlchemyHealthFactRepository:
     async def add(self, fact: CanonicalHealthFact) -> CanonicalHealthFact:
         model = CanonicalHealthFactOrmModel(
             subject_user_id=fact.subject_user_id,
+            subject_member_id=fact.subject_member_id,
+            fact_ref=fact.fact_ref,
             indicator_code=fact.indicator_code,
             catalog_version=fact.catalog_version,
             value_kind=fact.value_kind,
@@ -180,6 +193,8 @@ def _restore(model) -> CanonicalHealthFact:
     return CanonicalHealthFact(
         id=model.id,
         subject_user_id=model.subject_user_id,
+        subject_member_id=model.subject_member_id,
+        fact_ref=model.fact_ref,
         indicator_code=model.indicator_code,
         catalog_version=model.catalog_version,
         value_kind=model.value_kind,

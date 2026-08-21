@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260821_0023"
+EXPECTED_HEAD = "20260821_0024"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260821_0023; found stale revision 20260816_0020"
+    "20260821_0024; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -826,6 +826,12 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_MEMBER_CASE_WRITER_ROLE", "kg_ci_member_case_test_run")
         monkeypatch.setenv("KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE", "kg_ci_member_worker_test_run")
         monkeypatch.setenv("KG_TEST_MEMBER_ENROLLMENT_READER_ROLE", "kg_ci_member_reader_test_run")
+        monkeypatch.setenv("KG_TEST_HEALTH_RECORD_WRITER_ROLE", "kg_ci_health_record_test_run")
+        monkeypatch.setenv("KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE", "kg_ci_readiness_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE", "kg_ci_slice4_worker_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE4_CLINICAL_READER_ROLE", "kg_ci_clinical_reader_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE4_INSTITUTION_READER_ROLE", "kg_ci_institution_reader_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE", "kg_ci_identity_authority_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -1240,13 +1246,60 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
     assert 'values["KG_IDENTITY_PII_HMAC_KEY_B64"]' in backend_integration_job
     assert "Member enrollment key material is not isolated" in backend_integration_job
     assert "*member_enrollment_key_materials.values()," in backend_integration_job
-    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 2
-    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 2
+    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 3
+    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 3
     assert backend_integration_job.count(
         'key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"'
     ) == 1
 
     for prefix, purpose in prefixes.items():
+        declaration = f'"{prefix}": "{purpose}"'
+        assert backend_integration_job.count(declaration) == 1
+        assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+def test_slice4_runtime_roles_urls_and_keyrings_are_created_masked_and_propagated():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    runtime_prefixes = (
+        "KG_HEALTH_RECORD_WRITER",
+        "KG_ASSESSMENT_READINESS_WRITER",
+        "KG_SLICE4_WORKFLOW_WORKER",
+        "KG_SLICE4_CLINICAL_READER",
+        "KG_SLICE4_INSTITUTION_READER",
+        "KG_SLICE4_IDENTITY_AUTHORITY",
+    )
+    export_position = backend_integration_job.index("GITHUB_ENV")
+    for prefix in runtime_prefixes:
+        test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
+        role_variable = prefix.removeprefix("KG_").lower() + "_role"
+        role_mapping = f'values[f"{{prefix}}_ROLE"] = values[f"{{test_prefix}}_ROLE"]'
+        url_mapping = f'values[f"{{prefix}}_DATABASE_URL"] = values[f"{{test_prefix}}_DATABASE_URL"]'
+        assert backend_integration_job.count(
+            f'"{test_prefix}_DATABASE_URL": "{test_prefix}_ROLE"'
+        ) == 1
+        assert backend_integration_job.count(f'CREATE ROLE :"{role_variable}" LOGIN') == 1
+        assert role_mapping in backend_integration_job
+        assert url_mapping in backend_integration_job
+        assert backend_integration_job.index(role_mapping) < export_position
+        assert backend_integration_job.index(url_mapping) < export_position
+
+    key_purposes = {
+        "KG_SLICE4_PROFILE_PHI": "profile-phi",
+        "KG_SLICE4_ASSEMBLY_PHI": "assembly-phi",
+        "KG_SLICE4_REQUEST_DIGEST": "request",
+        "KG_SLICE4_AUDIT_DIGEST": "audit",
+        "KG_SLICE4_OUTBOX_DIGEST": "outbox",
+        "KG_SLICE4_DELIVERY": "delivery",
+        "KG_SLICE4_CURSOR": "cursor",
+        "KG_SLICE4_REPLAY_DIGEST": "replay",
+        "KG_SLICE4_COORDINATION": "coordination",
+    }
+    mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
+    assert "slice4_key_materials = {" in backend_integration_job
+    assert "Slice 4 key material is not isolated" in backend_integration_job
+    assert "*slice4_key_materials.values()," in backend_integration_job
+    assert 'key_id = f"ci-slice4-{purpose}-{secrets.token_hex(6)}"' in backend_integration_job
+    for prefix, purpose in key_purposes.items():
         declaration = f'"{prefix}": "{purpose}"'
         assert backend_integration_job.count(declaration) == 1
         assert backend_integration_job.index(declaration) < mask_position < export_position

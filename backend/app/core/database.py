@@ -85,6 +85,9 @@ _SLICE2_RUNTIME_ERROR = "Therapist qualification database runtime is unavailable
 _SLICE3_RUNTIMES = {}
 _SLICE3_RUNTIME_LOCKS = {}
 _SLICE3_RUNTIME_ERROR = "Member enrollment database runtime is unavailable"
+_SLICE4_RUNTIMES = {}
+_SLICE4_RUNTIME_LOCKS = {}
+_SLICE4_RUNTIME_ERROR = "Slice 4 database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -183,6 +186,16 @@ def get_health_fact_writer_session_factory():
         _HEALTH_FACT_WRITER_ASYNC_ENGINE = engine
         _HEALTH_FACT_WRITER_SESSION_FACTORY = session_factory
     return _HEALTH_FACT_WRITER_SESSION_FACTORY
+
+
+async def get_health_fact_writer_session():
+    factory = get_health_fact_writer_session_factory()
+    async with factory() as session:
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()
 
 
 def _get_mapping_writer_database_url(settings: Settings, *, kind: str) -> str:
@@ -336,6 +349,11 @@ async def dispose_database_runtimes() -> None:
                     _SLICE3_RUNTIMES.clear()
                     _SLICE3_RUNTIME_LOCKS.clear()
                     for _, engine, _ in slice3_entries:
+                        await engine.dispose()
+                    slice4_entries = tuple(_SLICE4_RUNTIMES.values())
+                    _SLICE4_RUNTIMES.clear()
+                    _SLICE4_RUNTIME_LOCKS.clear()
+                    for _, engine, _ in slice4_entries:
                         await engine.dispose()
 
 
@@ -693,4 +711,123 @@ async def get_member_workflow_worker_session():
 
 async def get_member_enrollment_reader_session():
     async for session in _slice3_session("reader"):
+        yield session
+
+
+_SLICE4_KINDS = {
+    "health_record_writer",
+    "assessment_readiness_writer",
+    "workflow_worker",
+    "clinical_reader",
+    "institution_reader",
+    "identity_authority",
+}
+
+
+def _slice4_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "health_record_writer": settings.health_record_writer_database_url,
+        "assessment_readiness_writer": settings.assessment_readiness_writer_database_url,
+        "workflow_worker": settings.slice4_workflow_worker_database_url,
+        "clinical_reader": settings.slice4_clinical_reader_database_url,
+        "institution_reader": settings.slice4_institution_reader_database_url,
+        "identity_authority": settings.slice4_identity_authority_database_url,
+    }
+    roles = {
+        "health_record_writer": settings.health_record_writer_role,
+        "assessment_readiness_writer": settings.assessment_readiness_writer_role,
+        "workflow_worker": settings.slice4_workflow_worker_role,
+        "clinical_reader": settings.slice4_clinical_reader_role,
+        "institution_reader": settings.slice4_institution_reader_role,
+        "identity_authority": settings.slice4_identity_authority_role,
+    }
+    try:
+        if kind not in _SLICE4_KINDS:
+            raise ValueError
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            len(parsed) == 6
+            and len(set(users)) == 6
+            and all(value.drivername == "postgresql+asyncpg" and value.username and value.password for value in parsed.values())
+            and all((value.host, value.port, value.database) == (settings.database_host, settings.database_port, settings.database_name) for value in parsed.values())
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users
+            and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE4_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+async def get_slice4_session_factory(kind: str):
+    if kind not in _SLICE4_KINDS:
+        raise RuntimeError(_SLICE4_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    key = (id(loop), kind)
+    lock = _SLICE4_RUNTIME_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        entry = _SLICE4_RUNTIMES.get(key)
+        if entry is None:
+            try:
+                engine = create_async_engine(_slice4_url(get_settings(), kind), pool_pre_ping=True)
+                entry = (weakref.ref(loop), engine, create_session_factory(engine))
+            except Exception:
+                raise RuntimeError(_SLICE4_RUNTIME_ERROR) from None
+            _SLICE4_RUNTIMES[key] = entry
+        return entry[2]
+
+
+async def dispose_slice4_runtime(kind: str) -> None:
+    if kind not in _SLICE4_KINDS:
+        raise RuntimeError(_SLICE4_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    entry = _SLICE4_RUNTIMES.pop((id(loop), kind), None)
+    _SLICE4_RUNTIME_LOCKS.pop((id(loop), kind), None)
+    if entry is not None:
+        owner = entry[0]()
+        if owner is not loop:
+            raise RuntimeError(_SLICE4_RUNTIME_ERROR) from None
+        await entry[1].dispose()
+
+
+async def _slice4_session(kind: str):
+    factory = await get_slice4_session_factory(kind)
+    async with factory() as session:
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()
+
+
+async def get_health_record_writer_session():
+    async for session in _slice4_session("health_record_writer"):
+        yield session
+
+
+async def get_assessment_readiness_writer_session():
+    async for session in _slice4_session("assessment_readiness_writer"):
+        yield session
+
+
+async def get_slice4_workflow_worker_session():
+    async for session in _slice4_session("workflow_worker"):
+        yield session
+
+
+async def get_slice4_clinical_reader_session():
+    async for session in _slice4_session("clinical_reader"):
+        yield session
+
+
+async def get_slice4_institution_reader_session():
+    async for session in _slice4_session("institution_reader"):
+        yield session
+
+
+async def get_slice4_identity_authority_session():
+    async for session in _slice4_session("identity_authority"):
         yield session

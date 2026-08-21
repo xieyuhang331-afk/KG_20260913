@@ -208,6 +208,12 @@ jobs:
               "KG_TEST_MEMBER_CASE_WRITER_ROLE": f"kg_ci_member_case_{suffix}",
               "KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE": f"kg_ci_member_worker_{suffix}",
               "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE": f"kg_ci_member_reader_{suffix}",
+              "KG_TEST_HEALTH_RECORD_WRITER_ROLE": f"kg_ci_health_record_{suffix}",
+              "KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE": f"kg_ci_readiness_{suffix}",
+              "KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE": f"kg_ci_slice4_worker_{suffix}",
+              "KG_TEST_SLICE4_CLINICAL_READER_ROLE": f"kg_ci_clinical_reader_{suffix}",
+              "KG_TEST_SLICE4_INSTITUTION_READER_ROLE": f"kg_ci_institution_reader_{suffix}",
+              "KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE": f"kg_ci_identity_authority_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -317,6 +323,36 @@ jobs:
                   {key_id: member_enrollment_key_materials[prefix]},
                   separators=(",", ":"), sort_keys=True,
               )
+          slice4_key_purposes = {
+              "KG_SLICE4_PROFILE_PHI": "profile-phi",
+              "KG_SLICE4_ASSEMBLY_PHI": "assembly-phi",
+              "KG_SLICE4_REQUEST_DIGEST": "request",
+              "KG_SLICE4_AUDIT_DIGEST": "audit",
+              "KG_SLICE4_OUTBOX_DIGEST": "outbox",
+              "KG_SLICE4_DELIVERY": "delivery",
+              "KG_SLICE4_CURSOR": "cursor",
+              "KG_SLICE4_REPLAY_DIGEST": "replay",
+              "KG_SLICE4_COORDINATION": "coordination",
+          }
+          slice4_key_materials = {
+              prefix: base64.b64encode(secrets.token_bytes(32)).decode()
+              for prefix in slice4_key_purposes
+          }
+          if len(
+              {
+                  *slice4_key_materials.values(),
+                  *member_enrollment_key_materials.values(),
+                  values["KG_IDENTITY_PII_HMAC_KEY_B64"],
+              }
+          ) != len(slice4_key_materials) + len(member_enrollment_key_materials) + 1:
+              raise RuntimeError("Slice 4 key material is not isolated")
+          for prefix, purpose in slice4_key_purposes.items():
+              key_id = f"ci-slice4-{purpose}-{secrets.token_hex(6)}"
+              values[f"{prefix}_CURRENT_KEY_ID"] = key_id
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: slice4_key_materials[prefix]},
+                  separators=(",", ":"), sort_keys=True,
+              )
           url_names = {
               "KG_TEST_DATABASE_URL": "KG_TEST_APPLICATION_ROLE",
               "KG_TEST_MIGRATION_DATABASE_URL": "KG_TEST_MIGRATION_ROLE",
@@ -351,6 +387,12 @@ jobs:
               "KG_TEST_MEMBER_CASE_WRITER_DATABASE_URL": "KG_TEST_MEMBER_CASE_WRITER_ROLE",
               "KG_TEST_MEMBER_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE",
               "KG_TEST_MEMBER_ENROLLMENT_READER_DATABASE_URL": "KG_TEST_MEMBER_ENROLLMENT_READER_ROLE",
+              "KG_TEST_HEALTH_RECORD_WRITER_DATABASE_URL": "KG_TEST_HEALTH_RECORD_WRITER_ROLE",
+              "KG_TEST_ASSESSMENT_READINESS_WRITER_DATABASE_URL": "KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE",
+              "KG_TEST_SLICE4_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE",
+              "KG_TEST_SLICE4_CLINICAL_READER_DATABASE_URL": "KG_TEST_SLICE4_CLINICAL_READER_ROLE",
+              "KG_TEST_SLICE4_INSTITUTION_READER_DATABASE_URL": "KG_TEST_SLICE4_INSTITUTION_READER_ROLE",
+              "KG_TEST_SLICE4_IDENTITY_AUTHORITY_DATABASE_URL": "KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -426,6 +468,17 @@ jobs:
           values["KG_MEMBER_WORKFLOW_WORKER_ROLE"] = values["KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE"]
           values["KG_MEMBER_ENROLLMENT_READER_ROLE"] = values["KG_TEST_MEMBER_ENROLLMENT_READER_ROLE"]
           for prefix in (
+              "KG_HEALTH_RECORD_WRITER",
+              "KG_ASSESSMENT_READINESS_WRITER",
+              "KG_SLICE4_WORKFLOW_WORKER",
+              "KG_SLICE4_CLINICAL_READER",
+              "KG_SLICE4_INSTITUTION_READER",
+              "KG_SLICE4_IDENTITY_AUTHORITY",
+          ):
+              test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
+              values[f"{prefix}_ROLE"] = values[f"{test_prefix}_ROLE"]
+              values[f"{prefix}_DATABASE_URL"] = values[f"{test_prefix}_DATABASE_URL"]
+          for prefix in (
               "KG_THERAPIST_PII_ENCRYPTION", "KG_THERAPIST_PII_DIGEST",
               "KG_THERAPIST_TOTP_ENCRYPTION", "KG_THERAPIST_INVITATION_CODE_HMAC",
               "KG_THERAPIST_REPLAY_ENCRYPTION", "KG_THERAPIST_READINESS_DIGEST",
@@ -469,6 +522,7 @@ jobs:
               *organization_projection_keys.values(),
               *health_projection_keys.values(),
               *member_enrollment_key_materials.values(),
+              *slice4_key_materials.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
@@ -636,6 +690,18 @@ jobs:
             --set=member_workflow_worker_password="$KG_TEST_MEMBER_WORKFLOW_WORKER_ROLE_PASSWORD" \
             --set=member_enrollment_reader_role="$KG_TEST_MEMBER_ENROLLMENT_READER_ROLE" \
             --set=member_enrollment_reader_password="$KG_TEST_MEMBER_ENROLLMENT_READER_ROLE_PASSWORD" \
+            --set=health_record_writer_role="$KG_TEST_HEALTH_RECORD_WRITER_ROLE" \
+            --set=health_record_writer_password="$KG_TEST_HEALTH_RECORD_WRITER_ROLE_PASSWORD" \
+            --set=assessment_readiness_writer_role="$KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE" \
+            --set=assessment_readiness_writer_password="$KG_TEST_ASSESSMENT_READINESS_WRITER_ROLE_PASSWORD" \
+            --set=slice4_workflow_worker_role="$KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE" \
+            --set=slice4_workflow_worker_password="$KG_TEST_SLICE4_WORKFLOW_WORKER_ROLE_PASSWORD" \
+            --set=slice4_clinical_reader_role="$KG_TEST_SLICE4_CLINICAL_READER_ROLE" \
+            --set=slice4_clinical_reader_password="$KG_TEST_SLICE4_CLINICAL_READER_ROLE_PASSWORD" \
+            --set=slice4_institution_reader_role="$KG_TEST_SLICE4_INSTITUTION_READER_ROLE" \
+            --set=slice4_institution_reader_password="$KG_TEST_SLICE4_INSTITUTION_READER_ROLE_PASSWORD" \
+            --set=slice4_identity_authority_role="$KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE" \
+            --set=slice4_identity_authority_password="$KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -671,6 +737,12 @@ jobs:
           CREATE ROLE :"member_case_writer_role" LOGIN PASSWORD :'member_case_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"member_workflow_worker_role" LOGIN PASSWORD :'member_workflow_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"member_enrollment_reader_role" LOGIN PASSWORD :'member_enrollment_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"health_record_writer_role" LOGIN PASSWORD :'health_record_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"assessment_readiness_writer_role" LOGIN PASSWORD :'assessment_readiness_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice4_workflow_worker_role" LOGIN PASSWORD :'slice4_workflow_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice4_clinical_reader_role" LOGIN PASSWORD :'slice4_clinical_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice4_institution_reader_role" LOGIN PASSWORD :'slice4_institution_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice4_identity_authority_role" LOGIN PASSWORD :'slice4_identity_authority_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

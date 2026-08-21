@@ -157,6 +157,8 @@ class CanonicalHealthFactWriter:
                         predecessor is None
                         or successor is not None
                         or predecessor.subject_user_id != authorized.subject_user_id
+                        or predecessor.subject_member_id != authorized.subject_member_id
+                        or predecessor.catalog_version != authorized.catalog_version
                         or predecessor.indicator_code != authorized.indicator_code
                     ):
                         raise HealthFactCorrectionConflict(
@@ -235,6 +237,8 @@ class CanonicalHealthFactWriter:
                 predecessor is None
                 or successor is not None
                 or predecessor.subject_user_id != authorized.subject_user_id
+                or predecessor.subject_member_id != authorized.subject_member_id
+                or predecessor.catalog_version != authorized.catalog_version
                 or predecessor.indicator_code != authorized.indicator_code
             ):
                 raise HealthFactCorrectionConflict(
@@ -297,8 +301,10 @@ def _fact_matches(
         return False
     return (
         fact.subject_user_id == draft.subject_user_id
+        and fact.subject_member_id == draft.subject_member_id
+        and fact.fact_ref == draft.fact_ref
         and fact.indicator_code == draft.indicator_code
-        and fact.catalog_version == 1
+        and fact.catalog_version == draft.catalog_version
         and fact.value_kind == "NUMERIC"
         and fact.numeric_value == draft.numeric_value.quantize(Decimal("0.01"))
         and fact.unit == draft.unit

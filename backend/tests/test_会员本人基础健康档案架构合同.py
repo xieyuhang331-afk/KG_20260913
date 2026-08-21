@@ -20,6 +20,10 @@ def test_本人健康档案实现保持冻结架构边界() -> None:
         "app.migrations",
     )
     forbidden_calls = {"create_async_engine", "create_all", "drop_all"}
+    allowed_member_enrollment_imports = {
+        "app.modules.member_enrollment.identity_authority",
+        "app.modules.member_enrollment.repository",
+    }
 
     for path in PRODUCTION_FILES:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -37,10 +41,15 @@ def test_本人健康档案实现保持冻结架构边界() -> None:
                     calls.append(node.func.attr)
 
         assert not any(
-            imported.startswith(prefix)
+            imported == prefix or imported.startswith(prefix + ".")
             for imported in imports
             for prefix in forbidden_imports
         ), path
+        assert {
+            imported
+            for imported in imports
+            if imported.startswith("app.modules.member_enrollment")
+        }.issubset(allowed_member_enrollment_imports), path
         assert not (set(calls) & forbidden_calls), path
 
 
