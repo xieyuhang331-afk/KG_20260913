@@ -153,6 +153,8 @@ class MemberEnrollmentRoute(APIRoute):
             except HTTPException as exc:
                 key=(next(iter(self.methods)),self.path); allowed=SLICE3_ROUTE_ERROR_CODES[key]; detail=exc.detail; code=detail.get("code") if isinstance(detail,dict) else detail if isinstance(detail,str) else None
                 status=400 if exc.status_code==422 else exc.status_code
+                if status == 401:
+                    code = "AUTHENTICATION_REQUIRED"
                 if type(code) is not str or code not in allowed.get(status,()):
                     status,code=(400,"INVALID_REQUEST") if "INVALID_REQUEST" in allowed.get(400,()) else (503,"DEPENDENCY_UNAVAILABLE")
                 return JSONResponse(status_code=status,content={"code":code,"message":"request rejected"})
