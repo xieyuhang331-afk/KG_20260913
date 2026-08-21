@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260821_0023"
+REQUIRED_HEAD_REVISION = "20260821_0024"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
