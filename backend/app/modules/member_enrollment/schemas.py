@@ -39,9 +39,12 @@ PURPOSE_CODES = {
 
 
 def _uuid_v7(value: UUID) -> UUID:
-    if type(value) is not UUID or value.version != 7:
+    if not isinstance(value, UUID):
         raise ValueError("UUID_V7_REQUIRED")
-    return value
+    normalized = UUID(int=value.int)
+    if normalized.version != 7:
+        raise ValueError("UUID_V7_REQUIRED")
+    return normalized
 
 
 UuidV7 = Annotated[UUID, AfterValidator(_uuid_v7)]
