@@ -6,7 +6,8 @@ from datetime import date, datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import and_, insert, or_, select, text, update
+from sqlalchemy import and_, bindparam, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
 from app.modules.member_enrollment.models import (
     ConsentDocumentRenditionModel,
@@ -1238,6 +1239,11 @@ class MemberEnrollmentRepository:
                 "(proxy_member_id=:member_id AND proxy IS NOT NULL)) "
                 "AND (:cursor_id IS NULL OR enrollment_id>:cursor_id) "
                 "ORDER BY enrollment_id LIMIT :limit"
+            ).bindparams(
+                bindparam(
+                    "cursor_id",
+                    type_=PostgreSQLUUID(as_uuid=True),
+                )
             ),
             {"member_id": member_id, "cursor_id": cursor_id, "limit": limit},
         )
