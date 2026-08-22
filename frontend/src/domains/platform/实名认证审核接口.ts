@@ -1,75 +1,84 @@
 import { apiRequest } from "@/shared/api/client";
+import { cursorQuery, type UUIDv7 } from "@/shared/api/slice3";
 import type {
-  IdentityReviewApproveResponse,
-  IdentityReviewDecisionResponse,
-  IdentityReviewDetailResponse,
-  IdentityReviewQueueParams,
-  IdentityReviewQueueResponse,
-  IdentityReviewQueueWireResponse,
-  IdentityReviewStepUpResponse,
+  ConsentDocument,
+  ConsentDocumentType,
+  ConsentRenditionInput,
+  MemberIdentityDecisionPayload,
+  MemberIdentityPii,
+  MemberIdentityReviewDetail,
+  MemberIdentityReviewPage,
+  MemberIdentityReviewParams,
+  MemberIdentityStatus,
 } from "./实名认证审核类型";
 
-export const IDENTITY_REVIEW_PURPOSE = "MANUAL_REVIEW" as const;
-export const IDENTITY_REVIEW_APPROVE_BASIS = "APPROVED_OFFLINE_IDENTITY_CHECK" as const;
-export const IDENTITY_REVIEW_REJECT_REASON = "OFFLINE_CHECK_FAILED" as const;
+export const listMemberIdentityReviews = (params: MemberIdentityReviewParams = {}) =>
+  apiRequest<MemberIdentityReviewPage>(`/api/v1/platform/member-identity-reviews${cursorQuery(params)}`);
 
-export async function listIdentityReviews(
-  params: IdentityReviewQueueParams = {},
-): Promise<IdentityReviewQueueResponse> {
-  const query = new URLSearchParams({
-    status: "submitted",
-    page: String(params.page ?? 1),
-    page_size: String(params.page_size ?? 20),
-  });
-  const response = await apiRequest<IdentityReviewQueueWireResponse>(`/api/v1/reviews/identity?${query.toString()}`);
-
-  return {
-    page: response.page,
-    page_size: response.page_size,
-    total: response.total,
-    items: response.items.map((item) => ({
-      user_id: item.user_id,
-      submission_version: item.submission_version,
-      id_card_masked: item.id_card_masked,
-      submitted_at: item.submitted_at,
-    })),
-  };
-}
-
-export function issueIdentityReviewStepUp(userId: number, password: string, signal?: AbortSignal) {
-  return apiRequest<IdentityReviewStepUpResponse>(`/api/v1/reviews/users/${userId}/identity/step-up`, {
-    method: "POST",
-    body: JSON.stringify({ password }),
+export const getMemberIdentityReview = (reviewId: UUIDv7, signal?: AbortSignal) =>
+  apiRequest<MemberIdentityReviewDetail>(`/api/v1/platform/member-identity-reviews/${reviewId}`, {
     signal,
   });
-}
 
-export function getIdentityReviewDetail(userId: number, stepUpToken: string, signal?: AbortSignal) {
-  const query = new URLSearchParams({ purpose_code: IDENTITY_REVIEW_PURPOSE });
-  return apiRequest<IdentityReviewDetailResponse>(`/api/v1/reviews/users/${userId}/identity?${query.toString()}`, {
-    headers: { "X-Identity-Review-Step-Up": stepUpToken },
+export const claimMemberIdentityReview = (reviewId: UUIDv7, expectedVersion: number, key: string) =>
+  apiRequest<MemberIdentityReviewDetail>(`/api/v1/platform/member-identity-reviews/${reviewId}/claim`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  });
+
+export const accessMemberIdentityPii = (
+  reviewId: UUIDv7,
+  currentPassword: string,
+  reasonCode: "PLATFORM_IDENTITY_REVIEW" | "DUPLICATE_IDENTITY_INVESTIGATION",
+  key: string,
+  signal?: AbortSignal,
+) =>
+  apiRequest<MemberIdentityPii>(`/api/v1/platform/member-identity-reviews/${reviewId}/pii-access`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key, "Cache-Control": "no-store" },
+    body: JSON.stringify({ current_password: currentPassword, reason_code: reasonCode }),
+    cache: "no-store",
     signal,
   });
-}
 
-export function approveIdentityReview(userId: number, submissionVersion: number, idempotencyKey: string) {
-  return apiRequest<IdentityReviewApproveResponse>(`/api/v1/reviews/users/${userId}/identity/approve`, {
+export const decideMemberIdentityReview = (reviewId: UUIDv7, payload: MemberIdentityDecisionPayload, key: string) =>
+  apiRequest<MemberIdentityStatus>(`/api/v1/platform/member-identity-reviews/${reviewId}/decision`, {
     method: "POST",
-    body: JSON.stringify({
-      idempotency_key: idempotencyKey,
-      submission_version: submissionVersion,
-      decision_basis_code: IDENTITY_REVIEW_APPROVE_BASIS,
-    }),
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
   });
-}
 
-export function rejectIdentityReview(userId: number, submissionVersion: number, idempotencyKey: string) {
-  return apiRequest<IdentityReviewDecisionResponse>(`/api/v1/reviews/users/${userId}/identity/reject`, {
+export const createConsentDocument = (
+  payload: {
+    document_type: ConsentDocumentType;
+    semantic_version: string;
+    requires_reconsent: true;
+    renditions: ConsentRenditionInput[];
+  },
+  key: string,
+) =>
+  apiRequest<ConsentDocument>("/api/v1/platform/consent-documents", {
     method: "POST",
-    body: JSON.stringify({
-      idempotency_key: idempotencyKey,
-      submission_version: submissionVersion,
-      reason_code: IDENTITY_REVIEW_REJECT_REASON,
-    }),
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify(payload),
   });
-}
+
+export const publishConsentDocument = (documentId: UUIDv7, expectedVersion: number, effectiveAt: string, key: string) =>
+  apiRequest<ConsentDocument>(`/api/v1/platform/consent-documents/${documentId}/publish`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, effective_at: effectiveAt }),
+  });
+
+export const retireConsentDocument = (
+  documentId: UUIDv7,
+  expectedVersion: number,
+  reasonCode: "SUPERSEDED_BY_NEW_VERSION" | "LEGAL_WITHDRAWAL",
+  key: string,
+) =>
+  apiRequest<ConsentDocument>(`/api/v1/platform/consent-documents/${documentId}/retire`, {
+    method: "POST",
+    headers: { "Idempotency-Key": key },
+    body: JSON.stringify({ expected_version: expectedVersion, reason_code: reasonCode }),
+  });

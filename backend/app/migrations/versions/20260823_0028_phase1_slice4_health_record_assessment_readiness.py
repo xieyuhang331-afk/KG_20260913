@@ -1,7 +1,7 @@
 """Phase 1 Slice 4 member-first health record and assessment readiness.
 
-Revision ID: 20260821_0024
-Revises: 20260821_0023
+Revision ID: 20260823_0028
+Revises: 20260822_0027
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import make_url
 
 
-revision = "20260821_0024"
-down_revision = "20260821_0023"
+revision = "20260823_0028"
+down_revision = "20260822_0027"
 branch_labels = None
 depends_on = None
 

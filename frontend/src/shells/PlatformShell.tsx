@@ -9,6 +9,7 @@ import {
   MailPlus,
   UserRoundCheck,
   ShieldCheck,
+  FileCheck2,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { platformNavigation } from "@/domains/platform/navigation";
@@ -21,7 +22,8 @@ const navigationIcons: Record<string, ReactNode> = {
   受控入驻审核: <ClipboardList aria-hidden="true" size={17} />,
   健管师资质审核: <UserRoundCheck aria-hidden="true" size={17} />,
   健管师状态: <HeartPulse aria-hidden="true" size={17} />,
-  实名审核: <BadgeCheck aria-hidden="true" size={17} />,
+  会员实名审核: <BadgeCheck aria-hidden="true" size={17} />,
+  同意文档: <FileCheck2 aria-hidden="true" size={17} />,
   组织治理: <Building2 aria-hidden="true" size={17} />,
 };
 

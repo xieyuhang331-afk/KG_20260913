@@ -8,7 +8,7 @@ from uuid import UUID
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / (
     "app/migrations/versions/"
-    "20260821_0024_phase1_slice4_health_record_assessment_readiness.py"
+    "20260823_0028_phase1_slice4_health_record_assessment_readiness.py"
 )
 
 

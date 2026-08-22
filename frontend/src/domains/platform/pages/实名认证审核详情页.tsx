@@ -1,438 +1,375 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, EyeOff, LockKeyhole, RefreshCw, XCircle } from "lucide-react";
-import type { FormEvent } from "react";
+import { ArrowLeft, Eye, EyeOff, RefreshCw, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { isApiError } from "@/shared/api/errors";
-import { setCurrentUser } from "@/shared/auth/authStore";
-import { clearAccessToken } from "@/shared/auth/tokenStorage";
+import { Link, useParams } from "react-router-dom";
 import {
-  approveIdentityReview,
-  getIdentityReviewDetail,
-  issueIdentityReviewStepUp,
-  rejectIdentityReview,
+  accessMemberIdentityPii,
+  claimMemberIdentityReview,
+  decideMemberIdentityReview,
+  getMemberIdentityReview,
 } from "../实名认证审核接口";
+import type { MemberIdentityPii, MemberIdentityReviewDetail } from "../实名认证审核类型";
+import { createIdempotencyKey, getSafeApiError, isUuidV7 } from "@/shared/api/slice3";
 
-type Decision = "approve" | "reject";
-
-interface SensitiveIdentity {
-  userId: number;
-  submissionVersion: number;
-  status: string;
-  realName: string;
-  identityValue: string;
-  maskedValue: string;
-  consentVersion: string;
-  submittedAt: string;
-}
-
-interface DecisionAttempt {
-  type: Decision;
-  idempotencyKey: string;
-  submissionVersion: number;
-}
+const sensitiveLifetimeMs = 60_000;
 
 export function IdentityReviewDetailPage() {
-  const { userId } = useParams();
-  const numericUserId = Number(userId);
+  const { reviewId = "" } = useParams();
+  const [detail, setDetail] = useState<MemberIdentityReviewDetail | null>(null);
+  const [pii, setPii] = useState<MemberIdentityPii | null>(null);
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [decision, setDecision] = useState<"APPROVED" | "NEEDS_CORRECTION" | "REJECTED">("APPROVED");
+  const [reason, setReason] = useState("IDENTITY_INFORMATION_INCONSISTENT");
+  const [correctionFields, setCorrectionFields] = useState<Array<"real_name" | "id_number">>(["real_name"]);
+  const detailController = useRef<AbortController | null>(null);
+  const piiController = useRef<AbortController | null>(null);
 
-  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
-    return <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">无效的审核对象。</div>;
-  }
-
-  return <IdentityReviewDetailView key={numericUserId} userId={numericUserId} />;
-}
-
-export function IdentityReviewDetailView({ userId }: { userId: number }) {
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const passwordInputRef = useRef<HTMLInputElement>(null);
-  const stepUpAbortRef = useRef<AbortController | null>(null);
-  const [sensitiveIdentity, setSensitiveIdentity] = useState<SensitiveIdentity | null>(null);
-  const [sensitiveExpiresAt, setSensitiveExpiresAt] = useState<number | null>(null);
-  const [stepUpPending, setStepUpPending] = useState(false);
-  const [stepUpError, setStepUpError] = useState<string | null>(null);
-  const [pageNotice, setPageNotice] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
-  const [decision, setDecision] = useState<DecisionAttempt | null>(null);
-  const [decisionPending, setDecisionPending] = useState(false);
-  const [decisionError, setDecisionError] = useState<string | null>(null);
-
-  const clearSensitiveIdentity = useCallback(() => {
-    setSensitiveIdentity(null);
-    setSensitiveExpiresAt(null);
+  const clearSensitive = useCallback(() => {
+    piiController.current?.abort();
+    piiController.current = null;
+    setPii(null);
+    setPassword("");
   }, []);
 
-  useEffect(() => {
-    return () => {
-      stepUpAbortRef.current?.abort();
-      stepUpAbortRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (sensitiveExpiresAt === null) return;
-    const timeout = window.setTimeout(
-      () => {
-        clearSensitiveIdentity();
-        setDecision(null);
-        setPageNotice("临时查看已到期，敏感身份信息已自动隐藏。");
-      },
-      Math.max(0, sensitiveExpiresAt - Date.now()),
-    );
-    return () => window.clearTimeout(timeout);
-  }, [clearSensitiveIdentity, sensitiveExpiresAt]);
-
-  async function handleStepUp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const password = String(new FormData(form).get("password") ?? "");
-    form.reset();
-    if (!password || stepUpPending || decisionPending) return;
-
-    stepUpAbortRef.current?.abort();
-    const controller = new AbortController();
-    stepUpAbortRef.current = controller;
-    clearSensitiveIdentity();
-    setDecision(null);
-    setConflict(false);
-    setStepUpError(null);
-    setPageNotice(null);
-    setStepUpPending(true);
-
-    try {
-      const stepUp = await issueIdentityReviewStepUp(userId, password, controller.signal);
-      if (stepUp.token_type !== "identity_review_step_up" || stepUp.expires_in !== 120 || !stepUp.step_up_token) {
-        throw new Error("Unexpected step-up contract");
-      }
-
-      const detail = await getIdentityReviewDetail(userId, stepUp.step_up_token, controller.signal);
-      if (detail.user_id !== userId || detail.status !== "submitted") {
-        setConflict(true);
-        throw new Error("Identity review state conflict");
-      }
-
-      setSensitiveIdentity({
-        userId: detail.user_id,
-        submissionVersion: detail.submission_version,
-        status: detail.status,
-        realName: detail.real_name,
-        identityValue: detail.id_card,
-        maskedValue: detail.id_card_masked,
-        consentVersion: detail.consent_version,
-        submittedAt: detail.submitted_at,
-      });
-      setSensitiveExpiresAt(Date.now() + stepUp.expires_in * 1000);
-      setPageNotice("二次认证成功。敏感身份信息将在120秒后自动隐藏。");
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      clearSensitiveIdentity();
-      if (isApiError(error) && error.status === 409) {
-        handleConflict();
-        await queryClient.invalidateQueries({ queryKey: ["platform", "identity-review-queue"] });
-      }
-      setStepUpError(getSafeErrorMessage(error, "step-up"));
-    } finally {
-      if (stepUpAbortRef.current === controller) stepUpAbortRef.current = null;
-      if (!controller.signal.aborted) setStepUpPending(false);
-    }
-  }
-
-  function openDecision(type: Decision) {
-    if (!sensitiveIdentity || stepUpPending || decisionPending) return;
-    setDecision({
-      type,
-      idempotencyKey: `identity-review-${crypto.randomUUID()}`,
-      submissionVersion: sensitiveIdentity.submissionVersion,
-    });
-    setDecisionError(null);
-  }
-
-  async function submitDecision() {
-    if (!decision || !sensitiveIdentity || decisionPending) return;
-    if (decision.submissionVersion !== sensitiveIdentity.submissionVersion) {
-      handleConflict();
+  const load = useCallback(async () => {
+    clearSensitive();
+    if (!isUuidV7(reviewId)) {
+      setError("审核标识格式无效。");
+      setLoading(false);
       return;
     }
-
-    setDecisionPending(true);
-    setDecisionError(null);
+    detailController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    setLoading(true);
     try {
-      if (decision.type === "approve") {
-        await approveIdentityReview(userId, decision.submissionVersion, decision.idempotencyKey);
-      } else {
-        await rejectIdentityReview(userId, decision.submissionVersion, decision.idempotencyKey);
+      const value = await getMemberIdentityReview(reviewId, controller.signal);
+      if (!controller.signal.aborted && detailController.current === controller) {
+        setDetail(value);
+        setError("");
       }
-      clearSensitiveIdentity();
-      setDecision(null);
-      await queryClient.invalidateQueries({ queryKey: ["platform", "identity-review-queue"] });
-      navigate("/platform/identity-reviews", { replace: true });
-    } catch (error) {
-      if (isApiError(error) && error.status === 409) {
-        handleConflict();
-        await queryClient.invalidateQueries({ queryKey: ["platform", "identity-review-queue"] });
-      } else if (isApiError(error) && error.status === 401) {
-        clearSensitiveIdentity();
-        clearAccessToken();
-        setCurrentUser(null);
-        navigate("/platform/login", { replace: true });
-      } else {
-        if (isApiError(error) && [403, 404, 422].includes(error.status)) {
-          clearSensitiveIdentity();
-          setDecision(null);
-        }
-        setDecisionError(getSafeErrorMessage(error, "decision"));
-      }
+    } catch (reasonValue) {
+      if (!controller.signal.aborted) setError(getSafeApiError(reasonValue).message);
     } finally {
-      setDecisionPending(false);
+      if (detailController.current === controller) {
+        detailController.current = null;
+        setLoading(false);
+      }
+    }
+  }, [clearSensitive, reviewId]);
+
+  useEffect(() => {
+    void load();
+    return () => {
+      detailController.current?.abort();
+      clearSensitive();
+    };
+  }, [load, clearSensitive]);
+
+  useEffect(() => {
+    if (!pii) return;
+    const timer = window.setTimeout(clearSensitive, sensitiveLifetimeMs);
+    return () => window.clearTimeout(timer);
+  }, [pii, clearSensitive]);
+
+  async function runMutation(action: () => Promise<unknown>, message: string) {
+    setBusy(true);
+    setSuccess("");
+    try {
+      await action();
+      clearSensitive();
+      await load();
+      setSuccess(message);
+    } catch (reasonValue) {
+      const safe = getSafeApiError(reasonValue);
+      if (safe.status === 403 || safe.refreshRequired) clearSensitive();
+      if (safe.refreshRequired) await load();
+      setError(safe.message);
+    } finally {
+      setBusy(false);
     }
   }
 
-  function handleConflict() {
-    clearSensitiveIdentity();
-    setDecision(null);
-    setDecisionError(null);
-    setConflict(true);
-    setPageNotice("审核状态已变化，敏感信息已清除。请重新验证最新状态。");
+  async function claim() {
+    if (!detail || !window.confirm("确认领取该审核项？")) return;
+    await runMutation(
+      () => claimMemberIdentityReview(detail.review_id, detail.version, createIdempotencyKey()),
+      "审核项已领取。",
+    );
   }
 
-  function restartVerification() {
-    setConflict(false);
-    setStepUpError(null);
-    passwordInputRef.current?.focus();
+  async function reveal(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detail) return;
+    const currentPassword = password;
+    setPassword("");
+    setBusy(true);
+    setError("");
+    clearSensitive();
+    const controller = new AbortController();
+    piiController.current = controller;
+    try {
+      const value = await accessMemberIdentityPii(
+        detail.review_id,
+        currentPassword,
+        "PLATFORM_IDENTITY_REVIEW",
+        createIdempotencyKey(),
+        controller.signal,
+      );
+      if (!controller.signal.aborted && piiController.current === controller) setPii(value);
+    } catch (reasonValue) {
+      if (!controller.signal.aborted) {
+        const safe = getSafeApiError(reasonValue);
+        clearSensitive();
+        if (safe.refreshRequired) await load();
+        setError(safe.message);
+      }
+    } finally {
+      if (piiController.current === controller) piiController.current = null;
+      setBusy(false);
+    }
   }
 
-  const interactionPending = stepUpPending || decisionPending;
-  const canDecide = sensitiveIdentity !== null && !interactionPending;
+  async function submitDecision(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!detail || !window.confirm("确认提交该审核决定？提交后不会自动重放。")) return;
+    const needsCorrection = decision === "NEEDS_CORRECTION";
+    const payload = {
+      revision_id: detail.current_revision_id,
+      decision,
+      reason_code: decision === "APPROVED" ? null : needsCorrection ? reason : "IDENTITY_DOCUMENT_INVALID",
+      correction_fields: needsCorrection ? correctionFields : [],
+      represented_elder_eligible: decision === "APPROVED" && detail.mode === "PROXY_ELDER" ? true : null,
+      expected_version: detail.version,
+    };
+    await runMutation(
+      () => decideMemberIdentityReview(detail.review_id, payload, createIdempotencyKey()),
+      "审核决定已提交。",
+    );
+  }
 
   return (
-    <div className="space-y-5">
-      <Link className="inline-flex items-center gap-2 text-sm font-medium text-pine" to="/platform/identity-reviews">
-        <ArrowLeft size={16} />
-        返回待审核队列
+    <main className="mx-auto max-w-6xl space-y-5">
+      <Link
+        className="inline-flex items-center text-sm font-semibold text-teal-700"
+        onClick={clearSensitive}
+        to="/platform/identity-reviews"
+      >
+        <ArrowLeft aria-hidden="true" className="mr-1" size={16} />
+        返回审核队列
       </Link>
-
-      <header className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-pine">Identity Review Detail</p>
-        <h1 className="mt-2 text-2xl font-semibold text-ink">实名认证审核详情</h1>
-        <p className="mt-2 text-sm text-slate-500">审核对象：用户 #{userId}</p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold tracking-wide text-teal-700">会员治理 / 身份终审详情</p>
+          <h1 className="mt-1 text-2xl font-semibold">实名认证审核详情</h1>
+          <p className="mt-2 font-mono text-xs text-slate-500">{reviewId}</p>
+        </div>
+        <button
+          className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold"
+          disabled={busy || loading}
+          onClick={() => void load()}
+          type="button"
+        >
+          <RefreshCw aria-hidden="true" className="mr-2" size={16} />
+          刷新
+        </button>
       </header>
-
-      {conflict ? (
-        <section className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-amber-800">审核状态已变化，需重新验证后读取最新详情。</p>
-          <button
-            className="inline-flex items-center justify-center gap-2 rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800"
-            onClick={restartVerification}
-            type="button"
-          >
-            <RefreshCw size={16} />
-            重新验证最新状态
-          </button>
+      {error ? (
+        <section className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
+          {error}
         </section>
       ) : null}
-
-      {pageNotice ? (
-        <p aria-live="polite" className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-          {pageNotice}
-        </p>
+      {success ? (
+        <section
+          className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"
+          role="status"
+        >
+          {success}
+        </section>
       ) : null}
-
-      <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-start gap-3">
-            <span className="rounded-lg bg-mint p-2.5 text-pine">
-              <LockKeyhole size={20} />
-            </span>
-            <div>
-              <h2 className="font-semibold text-ink">敏感身份信息默认隐藏</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-500">
-                二次认证凭证仅用于本次请求，不进入URL、持久缓存、日志、埋点或错误报告。
-              </p>
-            </div>
-          </div>
-
-          {sensitiveIdentity ? (
-            <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-700">临时敏感视图</p>
-                  <h3 className="mt-2 font-semibold text-ink">{sensitiveIdentity.realName}</h3>
-                </div>
-                <button
-                  className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-800"
-                  onClick={() => {
-                    clearSensitiveIdentity();
-                    setDecision(null);
-                    setPageNotice("敏感身份信息已立即隐藏。");
-                  }}
-                  type="button"
-                >
-                  <EyeOff size={15} />
-                  立即隐藏
-                </button>
+      {loading ? (
+        <div className="rounded-xl bg-white p-8 text-center text-sm text-slate-500">正在加载审核详情…</div>
+      ) : detail ? (
+        <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
+          <div className="space-y-5">
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold">脱敏审核资料</h2>
+                <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                  {reviewStatusLabel(detail.status)}
+                </span>
               </div>
-              <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-                <IdentityDefinition label="完整身份证号" value={sensitiveIdentity.identityValue} />
-                <IdentityDefinition label="脱敏身份证号" value={sensitiveIdentity.maskedValue} />
-                <IdentityDefinition label="提交版本" value={sensitiveIdentity.submissionVersion} />
-                <IdentityDefinition label="同意版本" value={sensitiveIdentity.consentVersion} />
+              <dl className="mt-5 grid gap-4 sm:grid-cols-2">
+                <Field label="脱敏证件" value={detail.id_masked} />
+                <Field label="入组模式" value={detail.mode === "SELF" ? "本人" : "代办老人"} />
+                <Field label="当前实名材料" value={compactId(detail.current_revision_id)} />
+                <Field label="材料版本" value={`第 ${detail.current_revision_no} 版`} />
+                <Field label="机构核验声明" value={attestationLabel(detail.institution_attestation)} />
+                <Field label="代理见证状态" value={detail.proxy_witness_status ?? "不适用"} />
               </dl>
-            </div>
-          ) : (
-            <form
-              className="mt-6 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-5 py-8"
-              onSubmit={handleStepUp}
-            >
-              <label className="block text-sm font-medium text-ink" htmlFor="identity-review-password">
-                当前审核员密码
-              </label>
-              <p className="mt-2 text-xs leading-5 text-slate-500">
-                验证成功后仅临时显示本次submitted申请，120秒后自动隐藏。
-              </p>
-              <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-                <input
-                  autoComplete="current-password"
-                  className="h-10 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-pine"
-                  disabled={interactionPending}
-                  id="identity-review-password"
-                  maxLength={256}
-                  name="password"
-                  ref={passwordInputRef}
-                  required
-                  type="password"
-                />
-                <button
-                  className="h-10 rounded-md bg-pine px-4 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={interactionPending}
-                  type="submit"
-                >
-                  {stepUpPending ? "正在验证..." : "验证并临时查看"}
-                </button>
+              <button
+                className="mt-5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold"
+                disabled={busy}
+                onClick={() => void claim()}
+                type="button"
+              >
+                领取审核
+              </button>
+            </section>
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
+              <div className="flex items-center gap-2">
+                <ShieldAlert aria-hidden="true" className="text-amber-600" size={20} />
+                <h2 className="font-semibold">一次性查看完整身份信息</h2>
               </div>
-              {stepUpError ? <p className="mt-3 text-sm text-red-700">{stepUpError}</p> : null}
-            </form>
-          )}
-        </section>
-
-        <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="font-semibold text-ink">审核操作</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            完成二次认证并核对submitted版本后方可决策；服务端生成权威决策时间。
-          </p>
-          <div className="mt-5 space-y-3">
-            <button
-              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-pine px-4 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!canDecide}
-              onClick={() => openDecision("approve")}
-              type="button"
-            >
-              <CheckCircle2 size={17} />
-              审核通过
-            </button>
-            <button
-              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-coral px-4 py-2.5 text-sm font-medium text-coral disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!canDecide}
-              onClick={() => openDecision("reject")}
-              type="button"
-            >
-              <XCircle size={17} />
-              审核驳回
-            </button>
+              <p className="mt-2 text-sm text-slate-500">需当前审核员密码重认证；成功后仅在本组件内存显示 60 秒。</p>
+              {pii ? (
+                <div className="mt-4 rounded-xl bg-slate-950 p-5 text-white">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold">敏感信息正在显示</span>
+                    <button
+                      className="inline-flex items-center text-xs text-slate-200"
+                      onClick={clearSensitive}
+                      type="button"
+                    >
+                      <EyeOff aria-hidden="true" className="mr-1" size={14} />
+                      立即隐藏
+                    </button>
+                  </div>
+                  <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <Field label="姓名" value={pii.real_name} dark />
+                    <Field label="身份证号" value={pii.id_number} dark />
+                    <Field label="出生日期" value={pii.birth_date} dark />
+                  </dl>
+                </div>
+              ) : (
+                <form className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={reveal}>
+                  <label className="min-w-0 flex-1 text-sm font-medium">
+                    当前密码
+                    <input
+                      aria-label="当前审核员密码"
+                      autoComplete="current-password"
+                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                      onChange={(event) => setPassword(event.target.value)}
+                      type="password"
+                      value={password}
+                    />
+                  </label>
+                  <button
+                    className="inline-flex items-center justify-center rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    disabled={busy || !password}
+                    type="submit"
+                  >
+                    <Eye aria-hidden="true" className="mr-2" size={16} />
+                    临时查看
+                  </button>
+                </form>
+              )}
+            </section>
           </div>
-          {!sensitiveIdentity ? <p className="mt-3 text-xs text-slate-400">需先完成二次认证并查看最新申请。</p> : null}
-          {!decision && decisionError ? <p className="mt-3 text-sm text-red-700">{decisionError}</p> : null}
-        </aside>
-      </div>
-
-      {decision ? (
-        <DecisionDialog
-          decision={decision.type}
-          error={decisionError}
-          isSubmitting={decisionPending}
-          onCancel={() => {
-            if (decisionPending) return;
-            setDecision(null);
-            setDecisionError(null);
-          }}
-          onConfirm={() => void submitDecision()}
-        />
-      ) : null}
-    </div>
+          <aside>
+            <form
+              className="sticky top-24 space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-panel"
+              onSubmit={submitDecision}
+            >
+              <h2 className="font-semibold">审核决定</h2>
+              <label className="block text-sm font-medium">
+                决定
+                <select
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                  onChange={(event) => setDecision(event.target.value as typeof decision)}
+                  value={decision}
+                >
+                  <option value="APPROVED">通过</option>
+                  <option value="NEEDS_CORRECTION">要求补正</option>
+                  <option value="REJECTED">驳回</option>
+                </select>
+              </label>
+              {decision === "NEEDS_CORRECTION" ? (
+                <>
+                  <label className="block text-sm font-medium">
+                    原因
+                    <select
+                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                      onChange={(event) => setReason(event.target.value)}
+                      value={reason}
+                    >
+                      <option value="IDENTITY_INFORMATION_INCONSISTENT">身份信息不一致</option>
+                      <option value="IDENTITY_DOCUMENT_INVALID">证件无效</option>
+                      <option value="PROXY_EVIDENCE_INCOMPLETE">代理证明不完整</option>
+                    </select>
+                  </label>
+                  <fieldset className="space-y-2 text-sm">
+                    <legend className="font-medium">补正字段</legend>
+                    {(["real_name", "id_number"] as const).map((field) => (
+                      <label className="block" key={field}>
+                        <input
+                          checked={correctionFields.includes(field)}
+                          onChange={(event) =>
+                            setCorrectionFields((values) =>
+                              event.target.checked
+                                ? [...new Set([...values, field])]
+                                : values.filter((value) => value !== field),
+                            )
+                          }
+                          type="checkbox"
+                        />{" "}
+                        {field === "real_name" ? "姓名" : "身份证号"}
+                      </label>
+                    ))}
+                  </fieldset>
+                </>
+              ) : null}
+              <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                提交以当前材料版本为准；数据冲突时只刷新最新状态，不重复提交决定。
+              </p>
+              <button
+                className="w-full rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={busy}
+                type="submit"
+              >
+                {busy ? "处理中…" : "确认提交决定"}
+              </button>
+            </form>
+          </aside>
+        </div>
+      ) : (
+        <section className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">
+          详情不可用，请返回队列后重试。
+        </section>
+      )}
+    </main>
   );
 }
 
-function IdentityDefinition({ label, value }: { label: string; value: string | number }) {
+function Field({ label, value, dark = false }: { label: string; value: string; dark?: boolean }) {
   return (
     <div>
-      <dt className="text-xs text-slate-500">{label}</dt>
-      <dd className="mt-1 break-all font-medium text-ink">{value}</dd>
+      <dt className={`text-xs ${dark ? "text-slate-400" : "text-slate-400"}`}>{label}</dt>
+      <dd className={`mt-1 break-all font-medium ${dark ? "text-white" : "text-slate-800"}`}>{value}</dd>
     </div>
   );
 }
-
-function DecisionDialog({
-  decision,
-  error,
-  isSubmitting,
-  onCancel,
-  onConfirm,
-}: {
-  decision: Decision;
-  error: string | null;
-  isSubmitting: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const approving = decision === "approve";
-  const title = approving ? "确认审核通过" : "确认审核驳回";
-
+function compactId(value: string) {
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+function reviewStatusLabel(status: string) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4" role="presentation">
-      <section
-        aria-label={title}
-        aria-modal="true"
-        className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
-        role="dialog"
-      >
-        <h2 className="text-lg font-semibold text-ink">{title}</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-600">
-          {approving
-            ? "将以固定线下身份核验依据提交，通过后清除当前敏感视图。"
-            : "将以固定线下核验失败原因提交，驳回后清除当前敏感视图。"}
-        </p>
-        {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
-        <div className="mt-6 flex justify-end gap-3">
-          <button
-            className="rounded-md border border-slate-200 px-4 py-2 text-sm disabled:opacity-50"
-            disabled={isSubmitting}
-            onClick={onCancel}
-            type="button"
-          >
-            取消
-          </button>
-          <button
-            className="rounded-md bg-pine px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            disabled={isSubmitting}
-            onClick={onConfirm}
-            type="button"
-          >
-            {isSubmitting ? "正在提交..." : approving ? "确认通过" : "确认驳回"}
-          </button>
-        </div>
-      </section>
-    </div>
+    {
+      INSTITUTION_CHECKED: "机构核验通过，待平台终审",
+      CLAIMED: "审核员已领取",
+      PLATFORM_REVIEWING: "平台审核中",
+      NEEDS_CORRECTION: "待会员补正",
+      VERIFIED: "审核已通过",
+      APPROVED: "审核已通过",
+      REJECTED: "审核未通过",
+    }[status] ?? "状态待确认"
   );
 }
-
-function getSafeErrorMessage(error: unknown, stage: "step-up" | "decision") {
-  if (!isApiError(error)) return "实名认证审核请求失败，请稍后重试。";
-  if (stage === "step-up" && error.status === 401) return "密码错误、验证已过期或登录状态无效，请重新确认。";
-  if (error.status === 403) return "当前账号没有执行实名认证审核的权限。";
-  if (error.status === 404) return "待审核实名认证不存在或状态已变化。";
-  if (error.status === 409) return "审核状态已变化，请刷新后重试。";
-  if (error.status === 422) return "实名认证审核请求不符合当前合同，请刷新页面后重试。";
-  if (error.status === 429) return "二次认证尝试过于频繁，请稍后重试。";
-  if (error.status === 503) return "实名认证审核服务暂不可用，请稍后重试。";
-  return "实名认证审核请求失败，请稍后重试。";
+function attestationLabel(value: string | null) {
+  if (value === "OFFLINE_IDENTITY_CHECKED") return "机构已完成线下实名核验";
+  if (value === "PRINCIPAL_PRESENT_AND_AUTHORIZED_PROXY") return "本人在场并已授权代办";
+  return "未提供";
 }

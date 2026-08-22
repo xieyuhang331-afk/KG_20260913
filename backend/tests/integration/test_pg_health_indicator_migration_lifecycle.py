@@ -16,7 +16,7 @@ def test_health_indicator_migration_downgrade_base_then_upgrade_head_lifecycle(p
 
     command.upgrade(config, "head")
 
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260821_0024"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
     assert pg_database.fetch_value("SELECT to_regclass('public.health_indicator')") == "health_indicator"
     assert (
         pg_database.fetch_value(

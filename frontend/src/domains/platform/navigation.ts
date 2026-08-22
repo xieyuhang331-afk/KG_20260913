@@ -20,8 +20,9 @@ export const platformNavigation: PlatformNavigationItem[] = [
     roles: [USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin],
   },
   {
-    label: "实名审核",
+    label: "会员实名审核",
     path: "/platform/identity-reviews",
     roles: [USER_ROLES.superAdmin],
   },
+  { label: "同意文档", path: "/platform/consent-documents", roles: [USER_ROLES.superAdmin] },
 ];

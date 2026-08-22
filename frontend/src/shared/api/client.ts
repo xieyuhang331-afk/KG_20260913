@@ -1,4 +1,5 @@
 import { clearAccessToken, getAccessToken } from "@/shared/auth/tokenStorage";
+import { setCurrentUser } from "@/shared/auth/authStore";
 import { env } from "@/shared/config/env";
 import { ApiError } from "./errors";
 import { unwrapApiResponse } from "./response";
@@ -7,10 +8,7 @@ interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
 }
 
-export async function apiRequest<T>(
-  path: string,
-  options: RequestOptions = {}
-): Promise<T> {
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   const hasJsonBody = options.body && !(options.body instanceof FormData);
 
@@ -25,7 +23,7 @@ export async function apiRequest<T>(
 
   const response = await fetch(`${env.apiBaseUrl}${path}`, {
     ...options,
-    headers
+    headers,
   });
 
   const payload = await readPayload(response);
@@ -33,6 +31,7 @@ export async function apiRequest<T>(
   if (!response.ok) {
     if (response.status === 401) {
       clearAccessToken();
+      setCurrentUser(null);
     }
 
     throw new ApiError(response.status, getErrorMessage(payload), payload);

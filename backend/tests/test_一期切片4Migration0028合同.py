@@ -6,7 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / (
     "app/migrations/versions/"
-    "20260821_0024_phase1_slice4_health_record_assessment_readiness.py"
+    "20260823_0028_phase1_slice4_health_record_assessment_readiness.py"
+)
+MIGRATION_0027 = ROOT / (
+    "app/migrations/versions/"
+    "20260822_0027_phase1_slice3_review_enrollment_preimage_authority.py"
 )
 MIGRATION_0023 = ROOT / (
     "app/migrations/versions/"
@@ -19,7 +23,7 @@ def _source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
-def test_D51_0024线性继承已合并Hotfix0023且历史不改写() -> None:
+def test_D51_0028线性继承已合并Hotfix0027且历史不改写() -> None:
     source = _source()
     tree = ast.parse(source)
     assigned = {
@@ -30,17 +34,18 @@ def test_D51_0024线性继承已合并Hotfix0023且历史不改写() -> None:
         if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}
     }
     assert assigned == {
-        "revision": "20260821_0024",
-        "down_revision": "20260821_0023",
+        "revision": "20260823_0028",
+        "down_revision": "20260822_0027",
     }
-    assert MIGRATION_0023.is_file()
-    assert hashlib.sha256(MIGRATION_0023.read_bytes()).hexdigest().upper() == (
-        "14DA79BCC59F07880C33F815CA909F7F29A25BEB41EFD1F9C00DD303BB5C94B9"
+    assert MIGRATION_0027.is_file()
+    migration_0027_lf = MIGRATION_0027.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(migration_0027_lf).hexdigest().upper() == (
+        "F23AE222731FAD857C4A72A8F647C1C7A6D775D880677ABC52E9C3CB175D803D"
     )
     assert "CASCADE" not in source.upper()
 
 
-def test_0024四个owner边界及零RuntimeSequence授权() -> None:
+def test_0028四个owner边界及零RuntimeSequence授权() -> None:
     source = _source()
     for name in (
         "slice4_health_profile_root_create_v1",
@@ -61,7 +66,7 @@ def test_0024四个owner边界及零RuntimeSequence授权() -> None:
             assert f"GRANT {privilege} ON SEQUENCE public.{sequence}" not in source
 
 
-def test_0024非空downgrade在REVOKE_DROP_ALTER前fail_closed() -> None:
+def test_0028非空downgrade在REVOKE_DROP_ALTER前fail_closed() -> None:
     source = _source()
     downgrade = source[source.index("def downgrade()") :]
     marker = "Slice 4 downgrade requires empty module tables"
@@ -75,7 +80,7 @@ def test_0024非空downgrade在REVOKE_DROP_ALTER前fail_closed() -> None:
     assert ddl_positions and guard < min(ddl_positions)
 
 
-def test_0024保留PR53四列权限且不修改0023() -> None:
+def test_0028保留PR53四列权限且不修改历史Migration() -> None:
     source = _source()
     hotfix = MIGRATION_0023.read_text(encoding="utf-8")
     exact_columns = ("code_digest", "code_key_id", "expires_at", "issued_at")

@@ -36,7 +36,7 @@ def test_G04_G06_Slice4队列路由Beat与Outbox真值合同() -> None:
     assert celery_app.conf.beat_schedule["slice4-readiness-sweep"]["schedule"] == 60.0
 
     migration = Path(
-        "app/migrations/versions/20260821_0024_phase1_slice4_health_record_assessment_readiness.py"
+        "app/migrations/versions/20260823_0028_phase1_slice4_health_record_assessment_readiness.py"
     ).read_text(encoding="utf-8")
     normalized_migration = " ".join(migration.split()).replace('" "', "")
     for truth in (
