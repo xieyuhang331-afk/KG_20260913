@@ -1030,6 +1030,11 @@ class MemberEnrollmentService:
         access_token_digest: str,
         currentness_digest: str,
     ) -> IdentityVerification:
+        await self.repo.lock_identity_review_boundary(verification_id)
+        if not await self.repo.reviewer_claim_is_current(
+            verification_id, context.actor.id
+        ):
+            raise MemberEnrollmentConflict("STEP_UP_FORBIDDEN")
         await self.repo.lock_operation(
             context.actor_scope, "IDENTITY_REVIEW_DECIDE", verification_id,
             context.idempotency_key,
@@ -1062,6 +1067,18 @@ class MemberEnrollmentService:
             or step_up["version"] != 2
         ):
             raise MemberEnrollmentConflict("STEP_UP_FORBIDDEN")
+        enrollment_preimage = await self.repo.review_enrollment_preimage_for_update(
+            verification_id=verification_id,
+            enrollment_id=enrollment["enrollment_id"],
+            reviewer_user_id=context.actor.id,
+        )
+        if enrollment_preimage is None:
+            raise MemberEnrollmentConflict("STEP_UP_FORBIDDEN")
+        if (
+            enrollment_preimage["status"] != enrollment["status"]
+            or enrollment_preimage["version"] != enrollment["version"]
+        ):
+            raise MemberEnrollmentConflict("STATE_CONFLICT")
         value = IdentityVerification(
             verification_id=verification_id,
             current_revision_id=row["current_revision_id"],
@@ -1171,6 +1188,11 @@ class MemberEnrollmentService:
         proof_values: Mapping[str, object],
         credential_proof_digest: str,
     ) -> dict[str, object]:
+        await self.repo.lock_identity_review_boundary(verification_id)
+        if not await self.repo.reviewer_claim_is_current(
+            verification_id, context.actor.id
+        ):
+            raise MemberEnrollmentConflict("STEP_UP_FORBIDDEN")
         await self.repo.lock_operation(
             context.actor_scope, "IDENTITY_PII_ACCESS", verification_id,
             context.idempotency_key,

@@ -132,7 +132,7 @@ SLICE3_ROUTE_ERROR_CODES = {
     ("GET","/api/v1/platform/member-identity-reviews/{review_id}"):_route_errors("REVIEWER_CURRENTNESS_FORBIDDEN","IDENTITY_REVIEW_NOT_FOUND"),
     ("POST","/api/v1/platform/member-identity-reviews/{review_id}/claim"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","IDENTITY_REVIEW_NOT_FOUND","VERSION_CONFLICT","STATE_CONFLICT",mutation=True),
     ("POST","/api/v1/platform/member-identity-reviews/{review_id}/pii-access"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","STEP_UP_FORBIDDEN","IDENTITY_REVIEW_NOT_FOUND","STEP_UP_REPLAYED","STEP_UP_RATE_LIMITED",mutation=True),
-    ("POST","/api/v1/platform/member-identity-reviews/{review_id}/decision"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","IDENTITY_REVIEW_NOT_FOUND","VERSION_CONFLICT","STATE_CONFLICT","IDENTITY_REVISION_STALE","DUPLICATE_IDENTITY",mutation=True),
+    ("POST","/api/v1/platform/member-identity-reviews/{review_id}/decision"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","STEP_UP_FORBIDDEN","IDENTITY_REVIEW_NOT_FOUND","VERSION_CONFLICT","STATE_CONFLICT","IDENTITY_REVISION_STALE","DUPLICATE_IDENTITY",mutation=True),
     ("POST","/api/v1/platform/consent-documents"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","CONSENT_VERSION_CONFLICT",mutation=True),
     ("POST","/api/v1/platform/consent-documents/{document_version_id}/publish"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","CONSENT_DOCUMENT_NOT_FOUND","VERSION_CONFLICT","STATE_CONFLICT","CONSENT_RENDITION_INCOMPLETE",mutation=True),
     ("POST","/api/v1/platform/consent-documents/{document_version_id}/retire"):_route_errors("INVALID_REQUEST","REVIEWER_CURRENTNESS_FORBIDDEN","CONSENT_DOCUMENT_NOT_FOUND","VERSION_CONFLICT","STATE_CONFLICT",mutation=True),
@@ -838,6 +838,17 @@ async def _current_reviewer(authority, actor: CurrentUser):
     return row
 
 
+def _reviewer_currentness_payload(reviewer):
+    return {
+        "id": reviewer["id"],
+        "role": reviewer["role"],
+        "status": reviewer["status"],
+        "tenant_id": reviewer["tenant_id"],
+        "version": reviewer["version"],
+        "updated_at": reviewer["updated_at"],
+    }
+
+
 async def _platform_tenant(
     member_reader, institution_authority, enrollment_id: UUID
 ) -> tuple[int, UUID]:
@@ -1106,12 +1117,16 @@ async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,k
 @platform_router.post("/member-identity-reviews/{review_id}/pii-access", response_model=IdentityPiiDTO)
 async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,response:Response,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
     reviewer=await _current_reviewer(authority,actor)
-    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
+    repo=MemberEnrollmentRepository(session)
+    rows=await _safe(repo.safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    if not await _safe(repo.reviewer_claim_is_current(review_id,actor.id)):
+        raise _error("STEP_UP_FORBIDDEN")
     tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"])
+    await session.rollback()
     context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True); request_value=_request_value({"reason_code":payload.reason_code},review_id)
     proof_secrets=MemberEnrollmentSecrets(); request_digest=proof_secrets.request_digest(request_value)
-    currentness=proof_secrets.audit_digest({"id":reviewer["id"],"role":reviewer["role"],"status":reviewer["status"],"tenant_id":reviewer["tenant_id"],"version":reviewer["version"],"updated_at":reviewer["updated_at"]})
+    currentness=proof_secrets.audit_digest(_reviewer_currentness_payload(reviewer))
     access_token_digest=proof_secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
     password_valid=verify_password(payload.current_password,reviewer["password_hash"])
     proof_issued_at=datetime.now(timezone.utc); proof_expires_at=proof_issued_at+timedelta(seconds=15)
@@ -1132,7 +1147,7 @@ async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionReq
     if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
     tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"]); context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True); request_value=_request_value(payload,review_id); target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_DECIDE",request_value,target_id=review_id)
     if replay is not None: return replay
-    currentness=secrets.audit_digest({"id":reviewer["id"],"role":reviewer["role"],"status":reviewer["status"],"tenant_id":reviewer["tenant_id"],"version":reviewer["version"]}); access_token_digest=secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
+    currentness=secrets.audit_digest(_reviewer_currentness_payload(reviewer)); access_token_digest=secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
     await _safe(_service(session).platform_identity_decide(context,review_id,payload,source_member_id=rows[0]["member_id"],enrollment_mode=rows[0]["mode"],access_token_digest=access_token_digest,currentness_digest=currentness)); repo=MemberEnrollmentRepository(session); row=await repo.verification_for_update(review_id); revision=await repo.current_identity_revision(review_id,row["current_revision_id"]); result=_identity(row,revision)
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="IDENTITY_REVIEW_DECIDE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 

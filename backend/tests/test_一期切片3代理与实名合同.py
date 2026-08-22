@@ -159,6 +159,7 @@ def test_step_up失败预算_nonce一次性与decision消费() -> None:
         'status="ISSUED"',
     ):
         assert value in access_source
+
     for value in (
         "slice3_reviewer_step_up_budget_v1",
         "slice3_reviewer_pii_v1",
@@ -172,6 +173,34 @@ def test_step_up失败预算_nonce一次性与decision消费() -> None:
     assert "FOR UPDATE" in migration_source
     assert "authorization" in api_source.lower()
     assert "password_valid=" in api_source
+
+
+def test_identity_review_verification_advisory_boundary早于所有行锁() -> None:
+    import inspect
+
+    from app.modules.member_enrollment import ports, repository, service
+
+    port_source = inspect.getsource(ports.MemberEnrollmentRepositoryPort)
+    repository_source = inspect.getsource(
+        repository.MemberEnrollmentRepository.lock_identity_review_boundary
+    )
+    assert "lock_identity_review_boundary" in port_source
+    assert "slice3-identity-review-boundary" in repository_source
+    assert "pg_advisory_xact_lock" in repository_source
+    assert "hashlib.sha256" in repository_source
+    assert "operation" not in repository_source
+    assert "idempotency" not in repository_source
+    assert "actor_scope" not in repository_source
+
+    for entrypoint in (
+        service.MemberEnrollmentService.access_identity_pii,
+        service.MemberEnrollmentService.platform_identity_decide,
+    ):
+        source = inspect.getsource(entrypoint)
+        boundary = source.index("lock_identity_review_boundary")
+        authority = source.index("reviewer_claim_is_current")
+        operation = source.index("lock_operation")
+        assert boundary < authority < operation
 
 
 def test_F2_step_up结果变体与credential_proof一次性边界() -> None:

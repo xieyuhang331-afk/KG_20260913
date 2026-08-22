@@ -88,7 +88,7 @@ def _get_health_summary(real_db_client, user_id: int, *, requester_id: int | Non
 
 
 def _assert_database_ready(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260822_0025"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260822_0027"
     assert pg_database.fetch_value(
         """
         SELECT hypertable_name
