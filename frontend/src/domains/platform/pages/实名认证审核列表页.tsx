@@ -62,7 +62,7 @@ export function IdentityReviewListPage() {
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">会员治理 / 身份终审</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">会员实名认证审核</h1>
-          <p className="mt-2 text-sm text-slate-500">仅显示脱敏身份摘要；领取后按当前 Revision 终审。</p>
+          <p className="mt-2 text-sm text-slate-500">仅显示脱敏身份摘要；领取后按当前实名材料版本终审。</p>
         </div>
         <button
           className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
@@ -86,7 +86,7 @@ export function IdentityReviewListPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div>
             <h2 className="font-semibold">审核队列</h2>
-            <p className="mt-1 text-xs text-slate-500">opaque cursor 批次，不推算总页数。</p>
+            <p className="mt-1 text-xs text-slate-500">按批次加载审核记录，不推算总页数。</p>
           </div>
           <select
             aria-label="审核状态"
@@ -131,7 +131,7 @@ export function IdentityReviewListPage() {
                     <td className="px-5 py-4 font-medium">{item.id_masked}</td>
                     <td className="px-5 py-4">
                       <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                        {item.status}
+                        {reviewStatusLabel(item.status)}
                       </span>
                     </td>
                     <td className="px-5 py-4 text-slate-500">{formatTime(item.submitted_at)}</td>
@@ -180,4 +180,17 @@ function formatTime(value: string) {
   return Number.isNaN(date.getTime())
     ? "时间待确认"
     : new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+function reviewStatusLabel(status: string) {
+  return (
+    {
+      INSTITUTION_CHECKED: "机构核验通过，待平台终审",
+      CLAIMED: "审核员已领取",
+      PLATFORM_REVIEWING: "平台审核中",
+      NEEDS_CORRECTION: "待会员补正",
+      VERIFIED: "审核已通过",
+      APPROVED: "审核已通过",
+      REJECTED: "审核未通过",
+    }[status] ?? "状态待确认"
+  );
 }

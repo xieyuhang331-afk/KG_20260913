@@ -199,15 +199,15 @@ export function IdentityReviewDetailPage() {
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold">脱敏审核资料</h2>
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                  {detail.status}
+                  {reviewStatusLabel(detail.status)}
                 </span>
               </div>
               <dl className="mt-5 grid gap-4 sm:grid-cols-2">
                 <Field label="脱敏证件" value={detail.id_masked} />
                 <Field label="入组模式" value={detail.mode === "SELF" ? "本人" : "代办老人"} />
-                <Field label="当前 Revision" value={compactId(detail.current_revision_id)} />
-                <Field label="Revision 序号" value={String(detail.current_revision_no)} />
-                <Field label="机构核验声明" value={detail.institution_attestation ?? "未提供"} />
+                <Field label="当前实名材料" value={compactId(detail.current_revision_id)} />
+                <Field label="材料版本" value={`第 ${detail.current_revision_no} 版`} />
+                <Field label="机构核验声明" value={attestationLabel(detail.institution_attestation)} />
                 <Field label="代理见证状态" value={detail.proxy_witness_status ?? "不适用"} />
               </dl>
               <button
@@ -323,7 +323,7 @@ export function IdentityReviewDetailPage() {
                 </>
               ) : null}
               <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                提交携带当前 revision_id 和 expected_version。409 只刷新，不自动重放。
+                提交以当前材料版本为准；数据冲突时只刷新最新状态，不重复提交决定。
               </p>
               <button
                 className="w-full rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
@@ -354,4 +354,22 @@ function Field({ label, value, dark = false }: { label: string; value: string; d
 }
 function compactId(value: string) {
   return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+function reviewStatusLabel(status: string) {
+  return (
+    {
+      INSTITUTION_CHECKED: "机构核验通过，待平台终审",
+      CLAIMED: "审核员已领取",
+      PLATFORM_REVIEWING: "平台审核中",
+      NEEDS_CORRECTION: "待会员补正",
+      VERIFIED: "审核已通过",
+      APPROVED: "审核已通过",
+      REJECTED: "审核未通过",
+    }[status] ?? "状态待确认"
+  );
+}
+function attestationLabel(value: string | null) {
+  if (value === "OFFLINE_IDENTITY_CHECKED") return "机构已完成线下实名核验";
+  if (value === "PRINCIPAL_PRESENT_AND_AUTHORIZED_PROXY") return "本人在场并已授权代办";
+  return "未提供";
 }

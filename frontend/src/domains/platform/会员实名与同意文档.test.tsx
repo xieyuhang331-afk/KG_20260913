@@ -16,11 +16,13 @@ describe("平台会员实名与同意文档", () => {
     expect(screen.getByRole("heading", { name: "会员实名认证审核" })).toBeInTheDocument();
   });
 
-  it("同意文档明确 zh-CN、重新同意与生效规则", () => {
+  it("同意文档使用业务语言说明中文正文、重新同意与生效规则", () => {
     render(<ConsentDocumentPage />, { wrapper: MemoryRouter });
     expect(screen.getByRole("heading", { name: "同意文档" })).toBeInTheDocument();
-    expect(screen.getAllByText(/zh-CN/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("简体中文标题")).toBeInTheDocument();
+    expect(screen.getByLabelText("简体中文正文")).toBeInTheDocument();
     expect(screen.getAllByText(/重新同意/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/rendition|requires_reconsent|列表 API/)).not.toBeInTheDocument();
   });
 
   it("发布发生 409 时清除陈旧副本且不自动重放", async () => {
@@ -56,8 +58,8 @@ describe("平台会员实名与同意文档", () => {
     render(<ConsentDocumentPage />, { wrapper: MemoryRouter });
 
     await userEvent.type(screen.getByLabelText("语义版本"), "1.0.0");
-    await userEvent.type(screen.getByLabelText("zh-CN 标题"), "合成协议");
-    await userEvent.type(screen.getByLabelText("zh-CN 正文"), "仅用于前端合同验证。");
+    await userEvent.type(screen.getByLabelText("简体中文标题"), "合成协议");
+    await userEvent.type(screen.getByLabelText("简体中文正文"), "仅用于前端合同验证。");
     await userEvent.click(screen.getByRole("button", { name: "创建草稿" }));
     await screen.findByText("同意文档草稿已创建。");
     await userEvent.type(screen.getByLabelText(/生效时间/), "2026-08-21T00:00");
@@ -65,7 +67,7 @@ describe("平台会员实名与同意文档", () => {
 
     expect(await screen.findByText(/页面已清除陈旧副本/)).toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/publish"))).toHaveLength(1);
-    expect(screen.getByText(/同意文档列表 API/)).toBeInTheDocument();
+    expect(screen.getAllByText(/当前合同暂不支持查询历史文档/).length).toBeGreaterThanOrEqual(1);
   });
 });
 

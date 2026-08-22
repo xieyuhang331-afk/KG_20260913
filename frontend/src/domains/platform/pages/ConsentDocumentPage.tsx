@@ -58,13 +58,13 @@ export function ConsentDocumentPage() {
         createIdempotencyKey(),
       );
       setDocument(value);
-      setFeedback({ message: "同意文档已发布；requires_reconsent=true。", tone: "success" });
+      setFeedback({ message: "同意文档已发布；适用会员需重新确认同意。", tone: "success" });
     } catch (error) {
       const safe = getSafeApiError(error);
       if (safe.refreshRequired) setDocument(null);
       setFeedback({
         message: safe.refreshRequired
-          ? `${safe.message} 当前合同没有文档 GET 列表，页面已清除陈旧副本。`
+          ? `${safe.message} 当前合同暂不支持查询历史文档，页面已清除陈旧副本。`
           : safe.message,
         tone: "error",
       });
@@ -91,7 +91,7 @@ export function ConsentDocumentPage() {
       if (safe.refreshRequired) setDocument(null);
       setFeedback({
         message: safe.refreshRequired
-          ? `${safe.message} 当前合同没有文档 GET 列表，页面已清除陈旧副本。`
+          ? `${safe.message} 当前合同暂不支持查询历史文档，页面已清除陈旧副本。`
           : safe.message,
         tone: "error",
       });
@@ -105,7 +105,7 @@ export function ConsentDocumentPage() {
       <header>
         <p className="text-xs font-semibold tracking-wide text-teal-700">平台治理 / 版本化同意</p>
         <h1 className="mt-1 text-2xl font-semibold">同意文档</h1>
-        <p className="mt-2 text-sm text-slate-500">创建包含 zh-CN rendition 的版本，发布时固定要求用户重新同意。</p>
+        <p className="mt-2 text-sm text-slate-500">创建简体中文版本；发布新版本后，适用会员需要重新确认同意。</p>
       </header>
       {feedback ? (
         <section
@@ -149,7 +149,7 @@ export function ConsentDocumentPage() {
             </label>
           </div>
           <label className="block text-sm font-medium">
-            zh-CN 标题
+            简体中文标题
             <input
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
               maxLength={160}
@@ -159,7 +159,7 @@ export function ConsentDocumentPage() {
             />
           </label>
           <label className="block text-sm font-medium">
-            zh-CN 正文
+            简体中文正文
             <textarea
               className="mt-1 min-h-64 w-full rounded-lg border border-slate-200 px-3 py-2 leading-6"
               maxLength={100000}
@@ -171,7 +171,7 @@ export function ConsentDocumentPage() {
           <label className="flex items-start gap-2 rounded-lg bg-teal-50 p-3 text-sm text-teal-900">
             <input checked readOnly type="checkbox" />
             <span>
-              <strong>requires_reconsent=true</strong>
+              <strong>发布后要求重新同意</strong>
               <br />
               发布新版本后，适用会员必须按服务端规则重新同意。
             </span>
@@ -191,9 +191,14 @@ export function ConsentDocumentPage() {
               <dl className="space-y-3 text-sm">
                 <Field label="类型" value={documentLabels[document.document_type]} />
                 <Field label="语义版本" value={document.semantic_version} />
-                <Field label="状态" value={document.status} />
+                <Field label="状态" value={documentStatusLabel(document.status)} />
                 <Field label="版本号" value={String(document.version)} />
-                <Field label="Rendition" value={document.renditions.map((item) => item.locale).join("、")} />
+                <Field
+                  label="语言版本"
+                  value={document.renditions
+                    .map((item) => (item.locale === "zh-CN" ? "简体中文" : item.locale))
+                    .join("、")}
+                />
               </dl>
               {document.status === "DRAFT" ? (
                 <>
@@ -231,7 +236,7 @@ export function ConsentDocumentPage() {
           ) : (
             <div className="mt-4 rounded-lg bg-slate-50 p-4 text-sm text-slate-500">
               <RefreshCw aria-hidden="true" className="mb-2" size={20} />
-              <p>后端尚未提供同意文档列表 API。本页只管理本次创建响应，不伪造历史数据。</p>
+              <p>当前合同暂不支持查询历史文档。本页仅显示本次创建的文档。</p>
             </div>
           )}
         </aside>
@@ -251,4 +256,7 @@ function Field({ label, value }: { label: string; value: string }) {
 function localDateTime(date: Date) {
   const offset = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+function documentStatusLabel(status: string) {
+  return { DRAFT: "草稿", PUBLISHED: "已发布", RETIRED: "已退役" }[status] ?? "状态待确认";
 }

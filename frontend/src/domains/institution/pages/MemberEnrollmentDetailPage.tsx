@@ -206,8 +206,8 @@ export function MemberEnrollmentDetailPage() {
                   <>
                     <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                       <Field label="脱敏证件" value={detail.identity.id_masked} />
-                      <Field label="当前状态" value={detail.identity.status} />
-                      <Field label="Revision" value={compactId(detail.identity.current_revision_id)} />
+                      <Field label="当前状态" value={identityStatusLabel(detail.identity.status)} />
+                      <Field label="实名材料标识" value={compactId(detail.identity.current_revision_id)} />
                       <Field label="版本" value={String(detail.identity.version)} />
                     </dl>
                     <form className="mt-5 space-y-3 border-t border-slate-100 pt-4" onSubmit={submitIdentity}>
@@ -279,7 +279,7 @@ export function MemberEnrollmentDetailPage() {
                     <Field label="健管师" value={compactId(detail.assignment.therapist_id)} />
                     <div className="mt-3 flex items-center justify-between">
                       <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                        {detail.assignment.status}
+                        {assignmentStatusLabel(detail.assignment.status)}
                       </span>
                       <button
                         className={secondaryButtonClassName}
@@ -340,7 +340,7 @@ export function MemberEnrollmentDetailPage() {
                 <h2 className="font-semibold">入组摘要</h2>
                 <dl className="mt-4 space-y-3 text-sm">
                   <Field label="模式" value={detail.mode === "SELF" ? "本人" : "代办老人"} />
-                  <Field label="状态" value={detail.status} />
+                  <Field label="状态" value={enrollmentStatusLabel(detail.status)} />
                   <Field label="同意记录" value={`${detail.consents.length} 条`} />
                   <Field label="版本" value={String(detail.version)} />
                 </dl>
@@ -349,7 +349,7 @@ export function MemberEnrollmentDetailPage() {
                 <h2 className="font-semibold">服务案例</h2>
                 {caseDetail ? (
                   <dl className="mt-4 space-y-3 text-sm">
-                    <Field label="状态" value="PREPARING" />
+                    <Field label="状态" value="服务准备中" />
                     <Field label="案例标识" value={compactId(caseDetail.case_id)} />
                     <Field label="创建时间" value={formatTime(caseDetail.created_at)} />
                   </dl>
@@ -385,6 +385,48 @@ function formatTime(value: string) {
   return Number.isNaN(date.getTime())
     ? "时间待确认"
     : new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+function identityStatusLabel(status: string) {
+  return (
+    {
+      SUBMITTED: "实名材料已提交，待机构核验",
+      INSTITUTION_CHECKED: "机构核验通过，待平台终审",
+      PLATFORM_REVIEWING: "平台审核中",
+      NEEDS_CORRECTION: "需要补正实名材料",
+      RESUBMITTED: "补正材料已重新提交",
+      VERIFIED: "实名认证已通过",
+      REJECTED: "实名认证未通过",
+    }[status] ?? "状态待确认"
+  );
+}
+function enrollmentStatusLabel(status: string) {
+  return (
+    {
+      ACCEPTED: "已接受邀请",
+      IDENTITY_SUBMITTED: "实名材料待机构核验",
+      INSTITUTION_CHECKED: "机构核验通过，待平台终审",
+      PLATFORM_REVIEWING: "平台审核中",
+      NEEDS_CORRECTION: "实名材料待补正",
+      RESUBMITTED: "补正材料待复核",
+      IDENTITY_VERIFIED: "实名认证已通过",
+      CONSENT_PENDING: "待确认服务同意",
+      THERAPIST_PENDING: "待分配主健管师",
+      CASE_CREATED: "服务准备中",
+      REJECTED: "入组未通过",
+      REVOKED: "入组已撤销",
+      EXPIRED: "邀请已过期",
+    }[status] ?? "状态待确认"
+  );
+}
+function assignmentStatusLabel(status: string) {
+  return (
+    {
+      PENDING: "等待健管师确认",
+      ACCEPTED: "健管师已接受",
+      DECLINED: "健管师已拒绝",
+      CANCELLED: "分配已取消",
+    }[status] ?? "状态待确认"
+  );
 }
 function journey(detail: MemberEnrollmentDetail) {
   return [

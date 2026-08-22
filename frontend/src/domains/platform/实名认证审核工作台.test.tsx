@@ -34,6 +34,8 @@ describe("Platform Member Identity Review Workbench", () => {
     expect(await screen.findByText("110***********1234")).toBeInTheDocument();
     expect(screen.queryByText("forbidden")).not.toBeInTheDocument();
     expect(screen.getByText(/0198b963…000021/)).toBeInTheDocument();
+    expect(screen.getByText("机构核验通过，待平台终审")).toBeInTheDocument();
+    expect(screen.queryByText("INSTITUTION_CHECKED")).not.toBeInTheDocument();
   });
 
   it("提供空状态与恢复动作", async () => {
@@ -67,6 +69,12 @@ describe("Platform Member Identity Review Workbench", () => {
     renderDetail();
     expect(await screen.findByText("110***********1234")).toBeInTheDocument();
     expect(screen.queryByText(syntheticFullId)).not.toBeInTheDocument();
+    expect(screen.getByText("机构核验通过，待平台终审")).toBeInTheDocument();
+    expect(screen.getByText("当前实名材料")).toBeInTheDocument();
+    expect(screen.getByText("第 2 版")).toBeInTheDocument();
+    expect(screen.getByText("机构已完成线下实名核验")).toBeInTheDocument();
+    expect(screen.queryByText("OFFLINE_IDENTITY_CHECKED")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
   });
 
   it("PII 请求只在 body 传当前密码并使用 no-store", async () => {

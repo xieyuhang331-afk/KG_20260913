@@ -5,11 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemberInvitationPage } from "./pages/MemberInvitationPage";
 import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
 import { MemberEnrollmentDetailPage } from "./pages/MemberEnrollmentDetailPage";
+import { InstitutionShell } from "@/shells/InstitutionShell";
+import { setCurrentUser } from "@/shared/auth/authStore";
+import { USER_ROLES } from "@/shared/constants/roles";
 
 describe("机构会员邀请与服务准备", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    setCurrentUser(null);
   });
 
   it("提供会员邀请与一次性短码说明", () => {
@@ -24,6 +28,21 @@ describe("机构会员邀请与服务准备", () => {
     expect(screen.getByRole("button", { name: "上一批" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下一批" })).toBeInTheDocument();
     expect(screen.queryByText(/共\s*\d+\s*页/)).not.toBeInTheDocument();
+  });
+
+  it("机构Shell不展示内部数值型门店ID", () => {
+    setCurrentUser({ id: 3, role: USER_ROLES.orgAdmin, tenant_id: 501, org_id: 31 });
+    render(
+      <MemoryRouter initialEntries={["/institution/member-invitations"]}>
+        <Routes>
+          <Route element={<InstitutionShell />} path="/institution">
+            <Route element={<div>会员邀请内容</div>} path="member-invitations" />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("当前机构")).toBeInTheDocument();
+    expect(screen.queryByText(/501/)).not.toBeInTheDocument();
   });
 
   it("创建成功后短码仅在对话框内一次性展示并可用 Escape 清除", async () => {
@@ -93,6 +112,30 @@ describe("机构会员邀请与服务准备", () => {
       attestation_code: "OFFLINE_IDENTITY_CHECKED",
       expected_version: 4,
     });
+  });
+
+  it("会员入组详情使用业务文案而非后端状态枚举", async () => {
+    mockSequence(
+      success(
+        enrollmentDetail({
+          status: "INSTITUTION_CHECKED",
+          identity: { ...enrollmentDetail().identity, status: "INSTITUTION_CHECKED" },
+        }),
+      ),
+      success(page([])),
+    );
+    render(
+      <MemoryRouter initialEntries={[`/institution/member-enrollments/${invitationId}`]}>
+        <Routes>
+          <Route element={<MemberEnrollmentDetailPage />} path="/institution/member-enrollments/:enrollmentId" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect((await screen.findAllByText("机构核验通过，待平台终审")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("实名材料标识")).toBeInTheDocument();
+    expect(screen.queryByText("INSTITUTION_CHECKED")).not.toBeInTheDocument();
+    expect(screen.queryByText("Revision")).not.toBeInTheDocument();
   });
 });
 

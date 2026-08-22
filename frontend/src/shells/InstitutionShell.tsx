@@ -1,10 +1,8 @@
 import { Building2, ClipboardList, MailPlus, Store, StoreIcon, UsersRound } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { institutionNavigation } from "@/domains/institution/navigation";
-import { useAuthStore } from "@/shared/auth/authStore";
 
 export function InstitutionShell() {
-  const { currentUser } = useAuthStore();
   const location = useLocation();
   const activeItem = institutionNavigation.find(
     (item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`),
@@ -95,7 +93,7 @@ export function InstitutionShell() {
             </div>
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
               <Store aria-hidden="true" size={15} />
-              门店主体 #{currentUser?.tenant_id ?? "-"}
+              当前机构
             </div>
           </div>
           <nav className="mt-3 flex gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="机构移动导航">
