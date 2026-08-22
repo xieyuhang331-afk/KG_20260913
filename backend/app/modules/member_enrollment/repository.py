@@ -229,6 +229,15 @@ class MemberEnrollmentRepository:
         lock_key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big", signed=True)
         await self.session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
+    async def lock_identity_review_boundary(self, verification_id: UUID) -> None:
+        payload = f"slice3-identity-review-boundary\x1f{verification_id}".encode()
+        lock_key = int.from_bytes(
+            hashlib.sha256(payload).digest()[:8], "big", signed=True
+        )
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key}
+        )
+
     async def lock_consent_boundary(self, enrollment_id: UUID) -> None:
         payload = f"slice3-consent-boundary\x1f{enrollment_id}".encode()
         lock_key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big", signed=True)
@@ -327,6 +336,62 @@ class MemberEnrollmentRepository:
             .with_for_update()
         )
         return result.mappings().one_or_none()
+
+    async def review_enrollment_preimage_for_update(
+        self,
+        *,
+        verification_id: UUID,
+        enrollment_id: UUID,
+        reviewer_user_id: int,
+    ):
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice3_review_enrollment_preimage_authority_v1("
+                ":verification_id,:enrollment_id,:reviewer_user_id)"
+            ).bindparams(
+                bindparam("verification_id", type_=PostgreSQLUUID(as_uuid=True)),
+                bindparam("enrollment_id", type_=PostgreSQLUUID(as_uuid=True)),
+            ),
+            {
+                "verification_id": verification_id,
+                "enrollment_id": enrollment_id,
+                "reviewer_user_id": reviewer_user_id,
+            },
+        )
+        preimage = result.scalar_one_or_none()
+        if preimage is None:
+            return None
+        expected_columns = {
+            column.name for column in ServiceEnrollmentModel.__table__.columns
+        }
+        if type(preimage) is not dict or set(preimage) != expected_columns:
+            raise RuntimeError("Slice 3 review enrollment preimage is invalid")
+        plan = self._plan()
+        if plan is not None:
+            key = self._json_value({"enrollment_id": enrollment_id})
+            value = self._json_value(preimage)
+            matching = [
+                row
+                for row in plan.setdefault("pre_rows", [])
+                if row["table"] == ServiceEnrollmentModel.__table__.name
+                and row["key"] == key
+            ]
+            if matching and any(row["value"] != value for row in matching):
+                raise RuntimeError("Slice 3 review enrollment preimage changed")
+            if not matching:
+                plan["pre_rows"].append(
+                    {
+                        "table": ServiceEnrollmentModel.__table__.name,
+                        "key": key,
+                        "value": value,
+                    }
+                )
+            self._record_expected_row(
+                ServiceEnrollmentModel.__table__,
+                preimage,
+                key={"enrollment_id": enrollment_id},
+            )
+        return preimage
 
     async def case_enrollment_for_update(self, enrollment_id: UUID):
         result = await self.session.execute(
@@ -704,6 +769,21 @@ class MemberEnrollmentRepository:
                 created_at=row["audit_created_at"],
             )
         return row
+
+    async def reviewer_claim_is_current(
+        self, verification_id: UUID, reviewer_user_id: int
+    ) -> bool:
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice3_reviewer_claim_authority_v1("
+                ":verification_id,:reviewer_user_id)"
+            ),
+            {
+                "verification_id": verification_id,
+                "reviewer_user_id": reviewer_user_id,
+            },
+        )
+        return result.scalar_one() is True
 
     async def reviewer_pii(
         self,
