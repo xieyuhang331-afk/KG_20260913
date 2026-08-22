@@ -1,10 +1,8 @@
-import { Building2, ClipboardList, Store, StoreIcon } from "lucide-react";
+import { Building2, ClipboardList, MailPlus, Store, StoreIcon, UsersRound } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { institutionNavigation } from "@/domains/institution/navigation";
-import { useAuthStore } from "@/shared/auth/authStore";
 
 export function InstitutionShell() {
-  const { currentUser } = useAuthStore();
   const location = useLocation();
   const activeItem = institutionNavigation.find(
     (item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`),
@@ -48,6 +46,10 @@ export function InstitutionShell() {
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 text-slate-500 ring-1 ring-slate-200 group-aria-[current=page]:bg-white group-aria-[current=page]:text-teal-700">
                   {item.label === "组织资料" ? (
                     <Building2 aria-hidden="true" size={17} />
+                  ) : item.label === "会员邀请" ? (
+                    <MailPlus aria-hidden="true" size={17} />
+                  ) : item.label === "会员入组" ? (
+                    <UsersRound aria-hidden="true" size={17} />
                   ) : (
                     <ClipboardList aria-hidden="true" size={17} />
                   )}
@@ -91,7 +93,7 @@ export function InstitutionShell() {
             </div>
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
               <Store aria-hidden="true" size={15} />
-              门店主体 #{currentUser?.tenant_id ?? "-"}
+              当前机构
             </div>
           </div>
           <nav className="mt-3 flex gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="机构移动导航">

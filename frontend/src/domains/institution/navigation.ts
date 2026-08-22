@@ -5,4 +5,6 @@ export const institutionNavigation = [
   { label: "健管师邀请", path: "/institution/therapist-invitations" },
   { label: "健管师名单", path: "/institution/therapists" },
   { label: "服务就绪", path: "/institution/service-readiness" },
+  { label: "会员邀请", path: "/institution/member-invitations" },
+  { label: "会员入组", path: "/institution/member-enrollments" },
 ];
