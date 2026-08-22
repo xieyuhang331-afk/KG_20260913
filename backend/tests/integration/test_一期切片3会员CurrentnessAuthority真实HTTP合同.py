@@ -16,6 +16,12 @@ pytestmark = pytest.mark.integration
 FUNCTION_SIGNATURE = (
     "public.slice3_member_currentness_authority_v1(bigint,character varying)"
 )
+IDENTITY_SUMMARY_SIGNATURE = (
+    "public.slice3_identity_revision_summary_v1(uuid,uuid)"
+)
+IDENTITY_CORRECTION_SIGNATURE = (
+    "public.slice3_identity_revision_correction_v1(uuid,uuid)"
+)
 ENROLLMENT_LIST_FIELDS = {
     "enrollment_id",
     "tenant_id",
@@ -35,36 +41,42 @@ ENROLLMENT_LIST_FIELDS = {
 ENROLLMENT_DETAIL_FIELDS = {"identity", "proxy", "consents", "assignment"}
 
 
-def _seed_current_member_and_institution(pg_database) -> dict[str, object]:
+def _seed_current_member_and_institution(
+    pg_database, *, variant: int = 0
+) -> dict[str, object]:
     from app.core.uuid_generator import Uuid7Generator
     from app.modules.auth.service import hash_password
 
-    tenant_id = 97401
-    admin_user_id = 97402
-    member_user_id = 97403
-    org_id = 97404
+    offset = variant * 1000
+    tenant_id = 97401 + offset
+    admin_user_id = 97402 + offset
+    member_user_id = 97403 + offset
+    org_id = 97404 + offset
     member_id = Uuid7Generator().generate()
     tenant_public_id = Uuid7Generator().generate()
     institution_invitation_id = uuid4()
     institution_application_id = uuid4()
     self_link_id = uuid4()
     evidence_id = uuid4()
-    admin_phone = "13" + "9" + ("4" * 8)
-    member_phone = "13" + "7" + ("5" * 8)
+    phone_prefixes = (("139", "137"), ("158", "157"), ("186", "187"))
+    admin_prefix, member_prefix = phone_prefixes[variant]
+    admin_phone = admin_prefix + ("4" * 8)
+    member_phone = member_prefix + ("5" * 8)
+    member_no = ("M0123456789ABCDEFGHJK", "M8123456789ABCDEFGHJK", "M7123456789ABCDEFGHJK")[variant]
     admin_password = secrets.token_urlsafe(24)
     member_password = secrets.token_urlsafe(24)
     admin_hash = hash_password(admin_password).replace("'", "''")
     member_hash = hash_password(member_password).replace("'", "''")
     pg_database.execute(
         "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
-        f"VALUES ({org_id},NULL,'Authority county','AUTHORITY-COUNTY','county','active',1);"
+        f"VALUES ({org_id},NULL,'Authority county','AUTHORITY-COUNTY-{variant}','county','active',1);"
         "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
-        f"VALUES ({tenant_id},{org_id},'AUTHORITY-TENANT','Authority institution','store','test','test','active',now(),now());"
+        f"VALUES ({tenant_id},{org_id},'AUTHORITY-TENANT-{variant}','Authority institution','store','test','test','active',now(),now());"
         "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
-        f"VALUES ({admin_user_id},'13' || '9' || repeat('4',8),'{admin_hash}','org_admin','active',{tenant_id}),"
-        f"({member_user_id},'13' || '7' || repeat('5',8),'{member_hash}','member','active',NULL);"
+        f"VALUES ({admin_user_id},'{admin_phone}','{admin_hash}','org_admin','active',{tenant_id}),"
+        f"({member_user_id},'{member_phone}','{member_hash}','member','active',NULL);"
         "INSERT INTO identity.member(member_id,member_no,creation_source,status,version,created_at,updated_at) "
-        f"VALUES ('{member_id}','M0123456789ABCDEFGHJK','registration','created',1,now(),now());"
+        f"VALUES ('{member_id}','{member_no}','registration','created',1,now(),now());"
         "INSERT INTO identity.user_member_self_link("
         "link_id,user_ref,member_id,source,eligibility_decision_ref,establishment_basis,"
         "establishment_record_ref,created_at) VALUES ("
@@ -136,6 +148,85 @@ def _login(real_db_client, phone: str, password: str) -> dict[str, str]:
     )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+
+
+def _synthetic_prc_identity(birth_date: str = "19800101") -> str:
+    first_seventeen = "110101" + birth_date + "001"
+    weights = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
+    check_codes = "10X98765432"
+    return first_seventeen + check_codes[
+        sum(int(value) * weight for value, weight in zip(first_seventeen, weights)) % 11
+    ]
+
+
+def _identity_submission_snapshot(pg_database, enrollment_id: UUID, key: str) -> tuple[object, ...]:
+    enrollment = pg_database.fetch_rows(
+        "SELECT status,version,current_identity_verification_id "
+        "FROM public.service_enrollment WHERE enrollment_id=$1",
+        enrollment_id,
+    )
+    return (
+        pg_database.fetch_rows(
+            "SELECT COUNT(*) AS value FROM public.member_identity_verification "
+            "WHERE enrollment_id=$1",
+            enrollment_id,
+        )[0]["value"],
+        pg_database.fetch_rows(
+            "SELECT COUNT(*) AS value FROM public.member_identity_revision r "
+            "JOIN public.member_identity_verification v "
+            "ON v.verification_id=r.verification_id WHERE v.enrollment_id=$1",
+            enrollment_id,
+        )[0]["value"],
+        enrollment[0]["status"],
+        enrollment[0]["version"],
+        enrollment[0]["current_identity_verification_id"],
+        pg_database.fetch_value(
+            "SELECT COUNT(*) FROM public.member_enrollment_audit "
+            "WHERE action='MEMBER_IDENTITY_SUBMITTED'"
+        ),
+        pg_database.fetch_value(
+            "SELECT COUNT(*) FROM public.member_enrollment_outbox "
+            "WHERE event_type='MEMBER_IDENTITY_SUBMITTED'"
+        ),
+        pg_database.fetch_rows(
+            "SELECT COUNT(*) AS value FROM public.member_enrollment_idempotency "
+            "WHERE operation='IDENTITY_SUBMIT' AND idempotency_key=$1",
+            key,
+        )[0]["value"],
+    )
+
+
+def _create_accepted_self_enrollment(
+    real_db_client,
+    *,
+    admin_authorization: dict[str, str],
+    member_authorization: dict[str, str],
+    member_phone: object,
+    key_prefix: str,
+) -> UUID:
+    created = real_db_client.post(
+        "/api/v1/institution/member-invitations",
+        headers={
+            **admin_authorization,
+            "Idempotency-Key": f"{key_prefix}-create",
+        },
+        json={"mode": "SELF", "phone": member_phone},
+    )
+    assert created.status_code == 201
+    accepted = real_db_client.post(
+        "/api/v1/family/member-enrollments/accept",
+        headers={
+            **member_authorization,
+            "Idempotency-Key": f"{key_prefix}-accept",
+        },
+        json={
+            "invitation_id": created.json()["invitation_id"],
+            "phone": member_phone,
+            "short_code": created.json()["short_code"],
+        },
+    )
+    assert accepted.status_code == 201
+    return UUID(accepted.json()["enrollment_id"])
 
 
 def _enforce_application_self_link_select_denied(pg_database) -> None:
@@ -545,6 +636,309 @@ def test_家庭会员接受邀请真实ASGI与Currentness负向零副作用(
     )
 
 
+def test_会员实名首次提交使用真实Writer并返回安全IdentityStatus(
+    pg_database,
+    real_db_client,
+    member_enrollment_writer_database,
+) -> None:
+    seeded = _seed_current_member_and_institution(pg_database, variant=1)
+    admin_authorization = _login(
+        real_db_client,
+        str(seeded["admin_phone"]),
+        str(seeded["admin_password"]),
+    )
+    member_authorization = _login(
+        real_db_client,
+        str(seeded["member_phone"]),
+        str(seeded["member_password"]),
+    )
+    created = real_db_client.post(
+        "/api/v1/institution/member-invitations",
+        headers={**admin_authorization, "Idempotency-Key": "identity-read-create"},
+        json={"mode": "SELF", "phone": seeded["member_phone"]},
+    )
+    assert created.status_code == 201
+    invitation_id = UUID(created.json()["invitation_id"])
+    accepted = real_db_client.post(
+        "/api/v1/family/member-enrollments/accept",
+        headers={**member_authorization, "Idempotency-Key": "identity-read-accept"},
+        json={
+            "invitation_id": str(invitation_id),
+            "phone": seeded["member_phone"],
+            "short_code": created.json()["short_code"],
+        },
+    )
+    assert accepted.status_code == 201
+    enrollment_id = UUID(accepted.json()["enrollment_id"])
+    key = "identity-read-submit"
+    before = _identity_submission_snapshot(pg_database, enrollment_id, key)
+
+    with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied:
+        member_enrollment_writer_database.fetch_value(
+            "SELECT revision_id FROM public.member_identity_revision LIMIT 1"
+        )
+    assert denied.value.sqlstate == "42501"
+
+    submitted = real_db_client.put(
+        f"/api/v1/family/member-enrollments/{enrollment_id}/identity-submission",
+        headers={**member_authorization, "Idempotency-Key": key},
+        json={
+            "document_type": "PRC_RESIDENT_ID",
+            "real_name": "Synthetic Member",
+            "id_number": _synthetic_prc_identity(),
+            "expected_version": 1,
+        },
+    )
+    if submitted.status_code == 503:
+        assert submitted.json() == {
+            "code": "DEPENDENCY_UNAVAILABLE",
+            "message": "request rejected",
+        }
+        assert _identity_submission_snapshot(pg_database, enrollment_id, key) == before
+
+    assert submitted.status_code == 200
+    result = submitted.json()
+    assert set(result) == {
+        "verification_id",
+        "enrollment_id",
+        "member_id",
+        "current_revision_id",
+        "status",
+        "id_masked",
+        "submitted_at",
+        "institution_checked_at",
+        "platform_decided_at",
+        "reason_codes",
+        "version",
+    }
+    assert result["enrollment_id"] == str(enrollment_id)
+    assert result["status"] == "SUBMITTED"
+    after = _identity_submission_snapshot(pg_database, enrollment_id, key)
+    assert after[0] == before[0] + 1
+    assert after[1] == before[1] + 1
+    assert after[2:5] == ("IDENTITY_SUBMITTED", before[3] + 1, UUID(result["verification_id"]))
+    assert after[5:] == tuple(value + 1 for value in before[5:])
+
+
+def test_实名Revision受限读只允许当前范围并支持补正重提(
+    pg_database,
+    real_db_client,
+    application_database,
+    member_enrollment_writer_database,
+    member_identity_review_writer_database,
+    member_case_writer_database,
+    member_workflow_worker_database,
+    member_enrollment_reader_database,
+) -> None:
+    seeded = _seed_current_member_and_institution(pg_database, variant=2)
+    admin_authorization = _login(
+        real_db_client,
+        str(seeded["admin_phone"]),
+        str(seeded["admin_password"]),
+    )
+    member_authorization = _login(
+        real_db_client,
+        str(seeded["member_phone"]),
+        str(seeded["member_password"]),
+    )
+    enrollment_id = _create_accepted_self_enrollment(
+        real_db_client,
+        admin_authorization=admin_authorization,
+        member_authorization=member_authorization,
+        member_phone=seeded["member_phone"],
+        key_prefix="identity-bounded-primary",
+    )
+    first = real_db_client.put(
+        f"/api/v1/family/member-enrollments/{enrollment_id}/identity-submission",
+        headers={
+            **member_authorization,
+            "Idempotency-Key": "identity-bounded-submit",
+        },
+        json={
+            "document_type": "PRC_RESIDENT_ID",
+            "real_name": "Synthetic Member",
+            "id_number": _synthetic_prc_identity(),
+            "expected_version": 1,
+        },
+    )
+    assert first.status_code == 200
+    verification_id = UUID(first.json()["verification_id"])
+    first_revision_id = UUID(first.json()["current_revision_id"])
+
+    for column in ("revision_id", "real_name_ciphertext"):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied_select:
+            member_enrollment_writer_database.fetch_value(
+                f"SELECT {column} FROM public.member_identity_revision LIMIT 1"
+            )
+        assert denied_select.value.sqlstate == "42501"
+
+    safe_summary = member_enrollment_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_summary_v1($1,$2)",
+        verification_id,
+        first_revision_id,
+    )
+    assert len(safe_summary) == 1
+    assert set(safe_summary[0]) == {
+        "revision_id",
+        "verification_id",
+        "revision_no",
+        "document_type",
+        "id_masked",
+        "identity_fingerprint",
+        "fingerprint_key_id",
+        "input_digest",
+        "created_at",
+    }
+
+    correction_requested = real_db_client.post(
+        f"/api/v1/institution/member-enrollments/{enrollment_id}/identity-check",
+        headers={
+            **admin_authorization,
+            "Idempotency-Key": "identity-bounded-correction",
+        },
+        json={
+            "revision_id": str(first_revision_id),
+            "decision": "NEEDS_CORRECTION",
+            "reason_code": "IDENTITY_INFORMATION_INCONSISTENT",
+            "correction_fields": ["real_name"],
+            "expected_version": 1,
+        },
+    )
+    assert correction_requested.status_code == 200
+    correction_material = member_enrollment_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_correction_v1($1,$2)",
+        verification_id,
+        first_revision_id,
+    )
+    assert len(correction_material) == 1
+    assert set(correction_material[0]) == {
+        "revision_id",
+        "verification_id",
+        "revision_no",
+        "document_type",
+        "real_name_ciphertext",
+        "real_name_key_id",
+        "id_ciphertext",
+        "id_key_id",
+        "birth_date_ciphertext",
+        "birth_date_key_id",
+    }
+
+    old_revision_count = pg_database.fetch_value(
+        "SELECT COUNT(*) FROM public.member_identity_revision"
+    )
+    resubmitted = real_db_client.post(
+        f"/api/v1/family/member-enrollments/{enrollment_id}/identity-resubmit",
+        headers={
+            **member_authorization,
+            "Idempotency-Key": "identity-bounded-resubmit",
+        },
+        json={
+            "document_type": "PRC_RESIDENT_ID",
+            "real_name": "Synthetic Member Corrected",
+            "expected_version": 3,
+        },
+    )
+    assert resubmitted.status_code == 200
+    second_revision_id = UUID(resubmitted.json()["current_revision_id"])
+    assert second_revision_id != first_revision_id
+    assert pg_database.fetch_value(
+        "SELECT COUNT(*) FROM public.member_identity_revision"
+    ) == old_revision_count + 1
+    assert pg_database.fetch_value(
+        "SELECT COUNT(*) FROM public.member_identity_revision "
+        f"WHERE revision_id='{first_revision_id}'"
+    ) == 1
+
+    pg_database.execute(
+        "UPDATE public.member_identity_verification SET status='NEEDS_CORRECTION' "
+        f"WHERE verification_id='{verification_id}'"
+    )
+    assert member_enrollment_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_correction_v1($1,$2)",
+        verification_id,
+        first_revision_id,
+    ) == []
+    pg_database.execute(
+        "UPDATE public.member_identity_verification SET status='RESUBMITTED' "
+        f"WHERE verification_id='{verification_id}'"
+    )
+    assert member_enrollment_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_correction_v1($1,$2)",
+        verification_id,
+        second_revision_id,
+    ) == []
+
+    other_member = _seed_current_member_only(
+        pg_database,
+        user_id=97523,
+        phone_digit="9",
+        member_no="M3123456789ABCDEFGHJK",
+    )
+    other_authorization = _login(
+        real_db_client,
+        str(other_member["phone"]),
+        str(other_member["password"]),
+    )
+    other_enrollment_id = _create_accepted_self_enrollment(
+        real_db_client,
+        admin_authorization=admin_authorization,
+        member_authorization=other_authorization,
+        member_phone=other_member["phone"],
+        key_prefix="identity-bounded-other",
+    )
+    other_submission = real_db_client.put(
+        f"/api/v1/family/member-enrollments/{other_enrollment_id}/identity-submission",
+        headers={
+            **other_authorization,
+            "Idempotency-Key": "identity-bounded-other-submit",
+        },
+        json={
+            "document_type": "PRC_RESIDENT_ID",
+            "real_name": "Synthetic Other",
+            "id_number": _synthetic_prc_identity("19751231"),
+            "expected_version": 1,
+        },
+    )
+    assert other_submission.status_code == 200
+    other_verification_id = UUID(other_submission.json()["verification_id"])
+    assert member_enrollment_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_summary_v1($1,$2)",
+        other_verification_id,
+        second_revision_id,
+    ) == []
+
+    assert member_identity_review_writer_database.fetch_rows(
+        "SELECT * FROM public.slice3_identity_revision_summary_v1($1,$2)",
+        verification_id,
+        second_revision_id,
+    )
+    denied_databases = (
+        application_database,
+        member_case_writer_database,
+        member_workflow_worker_database,
+        member_enrollment_reader_database,
+    )
+    for database in denied_databases:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied_summary:
+            database.fetch_value(
+                "SELECT * FROM public.slice3_identity_revision_summary_v1(NULL,NULL)"
+            )
+        assert denied_summary.value.sqlstate == "42501"
+    for database in (member_identity_review_writer_database, *denied_databases):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError) as denied_correction:
+            database.fetch_value(
+                "SELECT * FROM public.slice3_identity_revision_correction_v1(NULL,NULL)"
+            )
+        assert denied_correction.value.sqlstate == "42501"
+    assert pg_database.fetch_value(
+        "SELECT COUNT(*)=0 FROM information_schema.routine_privileges "
+        "WHERE grantee='PUBLIC' AND routine_name IN "
+        "('slice3_identity_revision_summary_v1',"
+        "'slice3_identity_revision_correction_v1')"
+    )
+
+
 def test_Authority对无Link禁用用户与异常Member状态FailClosed(
     pg_database,
     application_database,
@@ -582,12 +976,12 @@ def test_Authority对无Link禁用用户与异常Member状态FailClosed(
     ) is None
 
 
-def test_0023到0024生命周期只改变Authority对象与精确ACL(pg_database) -> None:
+def test_0023到0025生命周期只改受限Authority与精确ACL(pg_database) -> None:
     config = _build_alembic_config(_get_test_database_url())
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260821_0024"
+    ) == "20260822_0025"
     assert pg_database.fetch_value(
         f"SELECT has_function_privilege('{application_role}',"
         f"'{FUNCTION_SIGNATURE}','EXECUTE')"
@@ -601,15 +995,16 @@ def test_0023到0024生命周期只改变Authority对象与精确ACL(pg_database
         "SELECT to_regprocedure("
         "'public.slice3_member_currentness_authority_v1(bigint,character varying)')"
     ) is None
-    assert not pg_database.fetch_value(
-        "SELECT has_table_privilege("
-        f"'{application_role}','identity.user_member_self_link','SELECT')"
-    )
+    for column in ("user_ref", "member_id"):
+        assert not pg_database.fetch_value(
+            f"SELECT has_column_privilege('{application_role}',"
+            f"'identity.user_member_self_link','{column}','SELECT')"
+        )
 
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260821_0024"
+    ) == "20260822_0025"
     assert pg_database.fetch_value(
         "SELECT to_regprocedure("
         "'public.slice3_member_currentness_authority_v1(bigint,character varying)') IS NOT NULL"
@@ -618,3 +1013,65 @@ def test_0023到0024生命周期只改变Authority对象与精确ACL(pg_database
         f"SELECT has_function_privilege('{application_role}',"
         f"'{FUNCTION_SIGNATURE}','EXECUTE')"
     )
+
+
+def test_0024到0025往返仅增加Revision受限读与两列补正权限(
+    pg_database,
+) -> None:
+    config = _build_alembic_config(_get_test_database_url())
+    enrollment_role = os.environ["KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE"]
+    review_role = os.environ["KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE"]
+
+    def assert_0025_present() -> None:
+        assert pg_database.fetch_value(
+            "SELECT version_num FROM alembic_version"
+        ) == "20260822_0025"
+        assert pg_database.fetch_value(
+            "SELECT to_regprocedure($$"
+            + IDENTITY_SUMMARY_SIGNATURE
+            + "$$) IS NOT NULL"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regprocedure($$"
+            + IDENTITY_CORRECTION_SIGNATURE
+            + "$$) IS NOT NULL"
+        )
+        for column in ("platform_decision_id", "platform_decided_at"):
+            assert pg_database.fetch_value(
+                f"SELECT has_column_privilege('{enrollment_role}',"
+                f"'public.member_identity_verification','{column}','UPDATE')"
+            )
+        assert not pg_database.fetch_value(
+            f"SELECT has_table_privilege('{enrollment_role}',"
+            "'public.member_identity_verification','UPDATE')"
+        )
+        assert pg_database.fetch_value(
+            f"SELECT has_function_privilege('{review_role}',"
+            f"'{IDENTITY_SUMMARY_SIGNATURE}','EXECUTE')"
+        )
+        assert not pg_database.fetch_value(
+            f"SELECT has_function_privilege('{review_role}',"
+            f"'{IDENTITY_CORRECTION_SIGNATURE}','EXECUTE')"
+        )
+
+    assert_0025_present()
+    command.downgrade(config, "20260821_0024")
+    assert pg_database.fetch_value(
+        "SELECT version_num FROM alembic_version"
+    ) == "20260821_0024"
+    for signature in (IDENTITY_SUMMARY_SIGNATURE, IDENTITY_CORRECTION_SIGNATURE):
+        assert pg_database.fetch_value(
+            f"SELECT to_regprocedure('{signature}')"
+        ) is None
+    for column in ("platform_decision_id", "platform_decided_at"):
+        assert not pg_database.fetch_value(
+            f"SELECT has_column_privilege('{enrollment_role}',"
+            f"'public.member_identity_verification','{column}','UPDATE')"
+        )
+    assert pg_database.fetch_value(
+        f"SELECT has_column_privilege('{enrollment_role}',"
+        "'public.member_identity_verification','status','UPDATE')"
+    )
+
+    command.upgrade(config, "head")
+    assert_0025_present()

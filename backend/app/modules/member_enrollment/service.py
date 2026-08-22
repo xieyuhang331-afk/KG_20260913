@@ -239,11 +239,12 @@ class MemberEnrollmentSecrets:
     def _replay_aad(
         actor_scope: str, operation: str, target_id: UUID, key: str, key_id: str
     ) -> bytes:
-        if not actor_scope or not operation or type(target_id) is not UUID or not key:
+        if not actor_scope or not operation or not isinstance(target_id, UUID) or not key:
             raise RuntimeError(SAFE_UNAVAILABLE) from None
         if not key_id:
             raise RuntimeError(SAFE_UNAVAILABLE) from None
-        return f"SLICE3_REPLAY_ENCRYPTION_V1\0{actor_scope}\0{operation}\0{target_id}\0{key}\0{key_id}".encode()
+        normalized_target_id = UUID(int=target_id.int)
+        return f"SLICE3_REPLAY_ENCRYPTION_V1\0{actor_scope}\0{operation}\0{normalized_target_id}\0{key}\0{key_id}".encode()
 
     def encrypt_replay(
         self, value: object, *, actor_scope: str, operation: str,
