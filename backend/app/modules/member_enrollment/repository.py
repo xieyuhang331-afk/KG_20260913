@@ -553,29 +553,21 @@ class MemberEnrollmentRepository:
 
     async def current_identity_revision(self, verification_id: UUID, revision_id: UUID):
         result = await self.session.execute(
-            select(
-                MemberIdentityRevisionModel.revision_id,
-                MemberIdentityRevisionModel.verification_id,
-                MemberIdentityRevisionModel.revision_no,
-                MemberIdentityRevisionModel.document_type,
-                MemberIdentityRevisionModel.id_masked,
-                MemberIdentityRevisionModel.identity_fingerprint,
-                MemberIdentityRevisionModel.fingerprint_key_id,
-                MemberIdentityRevisionModel.input_digest,
-                MemberIdentityRevisionModel.created_at,
-            ).where(
-                MemberIdentityRevisionModel.verification_id == verification_id,
-                MemberIdentityRevisionModel.revision_id == revision_id,
-            )
+            text(
+                "SELECT * FROM public.slice3_identity_revision_summary_v1("
+                ":verification_id,:revision_id)"
+            ),
+            {"verification_id": verification_id, "revision_id": revision_id},
         )
         return result.mappings().one_or_none()
 
     async def identity_revision_for_update(self, verification_id: UUID, revision_id: UUID):
         result = await self.session.execute(
-            select(*MemberIdentityRevisionModel.__table__.c).where(
-                MemberIdentityRevisionModel.verification_id == verification_id,
-                MemberIdentityRevisionModel.revision_id == revision_id,
-            ).with_for_update()
+            text(
+                "SELECT * FROM public.slice3_identity_revision_correction_v1("
+                ":verification_id,:revision_id)"
+            ),
+            {"verification_id": verification_id, "revision_id": revision_id},
         )
         return result.mappings().one_or_none()
 
