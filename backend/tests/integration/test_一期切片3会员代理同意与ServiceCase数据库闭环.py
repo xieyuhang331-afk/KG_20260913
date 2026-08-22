@@ -88,7 +88,7 @@ def test_0022对象与五身份最小权限(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260822_0025"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260822_0027"
     assert pg_database.fetch_value(
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name=ANY($$%s$$::text[])"
@@ -469,7 +469,7 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0025"
+    ) == "20260822_0027"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -501,7 +501,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0025"
+    ) == "20260822_0027"
 
 
 @pytest.mark.asyncio
@@ -726,6 +726,7 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
 ):
     from app.core.database import dispose_slice3_runtime, get_slice3_session_factory
     from app.core.security import CurrentUser
+    from app.modules.member_enrollment.domain import MemberEnrollmentConflict
     from app.modules.member_enrollment.repository import MemberEnrollmentRepository
     from app.modules.member_enrollment.schemas import (
         AcceptEnrollmentRequest,
@@ -1158,6 +1159,8 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             request,
             *,
             password_valid: bool,
+            target_verification_id: UUID = verification_id,
+            target_revision_id: UUID = revision_id,
             fixed_proof: tuple[dict[str, object], str] | None = None,
         ):
             reviewer = (await pg_database._fetch_rows(
@@ -1167,7 +1170,7 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             if fixed_proof is None:
                 issued_at = datetime.now(timezone.utc)
                 request_digest = secrets.request_digest({
-                    "verification_id": str(verification_id),
+                    "verification_id": str(target_verification_id),
                     "reason_code": request.reason_code,
                     "idempotency_key": context.idempotency_key,
                 })
@@ -1176,8 +1179,8 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                     "reviewer_user_id": user_id + 3,
                     "user_version": 1,
                     "user_updated_at": reviewer["updated_at"],
-                    "verification_id": verification_id,
-                    "current_revision_id": revision_id,
+                    "verification_id": target_verification_id,
+                    "current_revision_id": target_revision_id,
                     "actor_scope": context.actor_scope,
                     "idempotency_key": context.idempotency_key,
                     "request_id": context.request_id,
@@ -1197,7 +1200,7 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                 request_digest = str(proof_values["request_digest"])
             return await service.access_identity_pii(
                 context,
-                verification_id,
+                target_verification_id,
                 request,
                 currentness_digest=reviewer_currentness,
                 access_token_digest=reviewer_token,
@@ -1257,6 +1260,158 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             )
             await session.commit()
 
+        async with review_factory() as session:
+            completed_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            with pytest.raises(
+                MemberEnrollmentConflict, match="^STEP_UP_FORBIDDEN$"
+            ):
+                await access_pii(
+                    completed_service,
+                    MutationContext(
+                        actor=CurrentUser(id=user_id + 3, role="super_admin"),
+                        tenant_id=tenant_id,
+                        tenant_public_id=tenant_public_id,
+                        idempotency_key="slice3-completed-review-pii-denied",
+                        request_id=uuid4(),
+                        platform_scope=True,
+                    ),
+                    PiiAccessRequest(
+                        current_password="invalid-synthetic",
+                        reason_code="PLATFORM_IDENTITY_REVIEW",
+                    ),
+                    password_valid=False,
+                )
+            await session.rollback()
+
+        budget_member_id = uuid4()
+        budget_user_id = user_id + 10
+        budget_phone = "18" + str(budget_user_id).zfill(9)
+        await pg_database._execute(
+            "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
+            f"VALUES ({budget_user_id},'{budget_phone}','test-only','member','active',NULL);"
+            "INSERT INTO identity.member("
+            "member_id,member_no,creation_source,status,version,created_at,updated_at) "
+            f"VALUES ('{budget_member_id}','M9123456789ABCDEFGHJK','registration',"
+            "'created',1,now(),now())"
+        )
+        budget_actor = CurrentUser(
+            id=budget_user_id, role="member", tenant_id=tenant_id
+        )
+        async with factory() as session:
+            budget_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            budget_invitation_id, budget_short_code = (
+                await budget_service.create_invitation(
+                    MutationContext(
+                        actor=CurrentUser(
+                            id=user_id + 2, role="org_admin", tenant_id=tenant_id
+                        ),
+                        tenant_id=tenant_id,
+                        tenant_public_id=tenant_public_id,
+                        idempotency_key="slice3-budget-create",
+                        request_id=uuid4(),
+                    ),
+                    CreateMemberInvitationRequest(mode="SELF", phone=budget_phone),
+                )
+            )
+            await session.commit()
+        async with factory() as session:
+            budget_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            budget_enrollment_id, _ = await budget_service.accept_invitation(
+                MutationContext(
+                    actor=budget_actor,
+                    tenant_id=tenant_id,
+                    tenant_public_id=tenant_public_id,
+                    idempotency_key="slice3-budget-accept",
+                    request_id=uuid4(),
+                ),
+                AcceptEnrollmentRequest(
+                    invitation_id=budget_invitation_id,
+                    phone=budget_phone,
+                    short_code=budget_short_code,
+                ),
+                actor_member_id=budget_member_id,
+            )
+            await session.commit()
+        async with factory() as session:
+            budget_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            budget_verification_id, budget_revision_id = (
+                await budget_service.submit_identity(
+                    MutationContext(
+                        actor=budget_actor,
+                        tenant_id=tenant_id,
+                        tenant_public_id=tenant_public_id,
+                        idempotency_key="slice3-budget-identity",
+                        request_id=uuid4(),
+                    ),
+                    budget_enrollment_id,
+                    IdentitySubmissionRequest(
+                        document_type="PRC_RESIDENT_ID",
+                        real_name="Synthetic Budget Member",
+                        id_number=_synthetic_prc_identity("19810101"),
+                        expected_version=1,
+                    ),
+                    submitted_by_member_id=budget_member_id,
+                )
+            )
+            await session.commit()
+        async with factory() as session:
+            budget_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            await budget_service.institution_identity_check(
+                MutationContext(
+                    actor=CurrentUser(
+                        id=user_id + 2, role="org_admin", tenant_id=tenant_id
+                    ),
+                    tenant_id=tenant_id,
+                    tenant_public_id=tenant_public_id,
+                    idempotency_key="slice3-budget-institution-check",
+                    request_id=uuid4(),
+                ),
+                budget_verification_id,
+                InstitutionIdentityCheckRequest(
+                    revision_id=budget_revision_id,
+                    decision="CHECKED",
+                    attestation_code="OFFLINE_IDENTITY_CHECKED",
+                    expected_version=1,
+                ),
+            )
+            await session.commit()
+        async with review_factory() as session:
+            budget_service = MemberEnrollmentService(
+                MemberEnrollmentRepository(session), secrets_port=secrets
+            )
+            await budget_service.claim_identity_review(
+                MutationContext(
+                    actor=CurrentUser(id=user_id + 3, role="super_admin"),
+                    tenant_id=tenant_id,
+                    tenant_public_id=tenant_public_id,
+                    idempotency_key="slice3-budget-platform-claim",
+                    request_id=uuid4(),
+                    platform_scope=True,
+                ),
+                budget_verification_id,
+                expected_version=2,
+            )
+            await session.commit()
+
+        budget_outbox_before = await pg_database._fetch_value(
+            "SELECT count(*) FROM public.member_enrollment_outbox "
+            f"WHERE aggregate_id='{budget_verification_id}'"
+        )
+        budget_receipts_before = await pg_database._fetch_value(
+            "SELECT count(*) FROM public.member_enrollment_idempotency "
+            f"WHERE target_id='{budget_verification_id}'"
+        )
+
         for attempt in range(1, 6):
             async with review_factory() as session:
                 service = MemberEnrollmentService(
@@ -1277,6 +1432,8 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                         reason_code="PLATFORM_IDENTITY_REVIEW",
                     ),
                     password_valid=False,
+                    target_verification_id=budget_verification_id,
+                    target_revision_id=budget_revision_id,
                 )
                 assert failure["error_code"] == (
                     "STEP_UP_RATE_LIMITED" if attempt == 5 else "STEP_UP_FORBIDDEN"
@@ -1301,24 +1458,26 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                     reason_code="PLATFORM_IDENTITY_REVIEW",
                 ),
                 password_valid=True,
+                target_verification_id=budget_verification_id,
+                target_revision_id=budget_revision_id,
             )
             assert limited == {"error_code": "STEP_UP_RATE_LIMITED"}
             await session.commit()
 
         assert await pg_database._fetch_value(
             "SELECT count(*) FROM public.member_enrollment_audit "
-            f"WHERE object_id='{verification_id}' "
+            f"WHERE object_id='{budget_verification_id}' "
             "AND action='IDENTITY_PII_STEP_UP_FAILED'"
         ) == 4
         assert await pg_database._fetch_value(
             "SELECT count(*) FROM public.member_enrollment_audit "
-            f"WHERE object_id='{verification_id}' "
+            f"WHERE object_id='{budget_verification_id}' "
             "AND action='IDENTITY_PII_STEP_UP_RATE_LIMITED'"
         ) == 2
         assert await pg_database._fetch_value(
             "SELECT count(*) FROM public.member_identity_pii_access "
-            f"WHERE verification_id='{verification_id}'"
-        ) == 1
+            f"WHERE verification_id='{budget_verification_id}'"
+        ) == 0
 
         replay_context = MutationContext(
             actor=CurrentUser(id=user_id + 3, role="super_admin"),
@@ -1337,7 +1496,7 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
         ))[0]
         issued_at = datetime.now(timezone.utc)
         replay_request_digest = secrets.request_digest({
-            "verification_id": str(verification_id),
+            "verification_id": str(budget_verification_id),
             "reason_code": replay_request.reason_code,
             "idempotency_key": replay_context.idempotency_key,
         })
@@ -1346,8 +1505,8 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             "reviewer_user_id": user_id + 3,
             "user_version": 1,
             "user_updated_at": reviewer["updated_at"],
-            "verification_id": verification_id,
-            "current_revision_id": revision_id,
+            "verification_id": budget_verification_id,
+            "current_revision_id": budget_revision_id,
             "actor_scope": replay_context.actor_scope,
             "idempotency_key": replay_context.idempotency_key,
             "request_id": replay_context.request_id,
@@ -1372,13 +1531,15 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                 replay_context,
                 replay_request,
                 password_valid=False,
+                target_verification_id=budget_verification_id,
+                target_revision_id=budget_revision_id,
                 fixed_proof=fixed_proof,
             )
             assert first == {"error_code": "STEP_UP_RATE_LIMITED"}
             await session.commit()
         before_replay = await pg_database._fetch_value(
             "SELECT count(*) FROM public.member_enrollment_audit "
-            f"WHERE object_id='{verification_id}'"
+            f"WHERE object_id='{budget_verification_id}'"
         )
         async with review_factory() as session:
             service = MemberEnrollmentService(
@@ -1389,14 +1550,24 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
                 replay_context,
                 replay_request,
                 password_valid=False,
+                target_verification_id=budget_verification_id,
+                target_revision_id=budget_revision_id,
                 fixed_proof=fixed_proof,
             )
             assert replayed == {"error_code": "STEP_UP_REPLAYED"}
             await session.commit()
         assert await pg_database._fetch_value(
             "SELECT count(*) FROM public.member_enrollment_audit "
-            f"WHERE object_id='{verification_id}'"
+            f"WHERE object_id='{budget_verification_id}'"
         ) == before_replay
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.member_enrollment_outbox "
+            f"WHERE aggregate_id='{budget_verification_id}'"
+        ) == budget_outbox_before
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.member_enrollment_idempotency "
+            f"WHERE target_id='{budget_verification_id}'"
+        ) == budget_receipts_before
 
         document_types = (
             "USER_AGREEMENT",
