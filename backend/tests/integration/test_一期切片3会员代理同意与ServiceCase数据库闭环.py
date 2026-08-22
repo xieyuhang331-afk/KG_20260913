@@ -88,7 +88,7 @@ def test_0022对象与五身份最小权限(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260821_0024"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260822_0025"
     assert pg_database.fetch_value(
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name=ANY($$%s$$::text[])"
@@ -466,6 +466,10 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
         f"WHERE source_kind='P1' AND user_ref={user_id} "
         f"AND p1_submission_id='{submission_id}' AND p1_decision_ref='{decision_id}'"
     ) == 1
+    command.upgrade(config, "head")
+    assert pg_database.fetch_value(
+        "SELECT version_num FROM alembic_version"
+    ) == "20260822_0025"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -482,6 +486,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     )
     signature = "public.slice3_collection_snapshot_v1(character varying,jsonb)"
     config = _build_alembic_config(os.environ["KG_TEST_MIGRATION_DATABASE_URL"])
+    command.downgrade(config, "20260818_0022")
     with pytest.raises(RuntimeError, match="Slice 3 downgrade requires empty module tables"):
         command.downgrade(config, "20260817_0021")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260818_0022"
@@ -493,6 +498,10 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     pg_database.execute(
         f"DELETE FROM public.consent_document_version WHERE document_version_id='{document_id}'"
     )
+    command.upgrade(config, "head")
+    assert pg_database.fetch_value(
+        "SELECT version_num FROM alembic_version"
+    ) == "20260822_0025"
 
 
 @pytest.mark.asyncio
