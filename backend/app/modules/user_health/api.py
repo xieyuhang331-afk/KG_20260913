@@ -265,6 +265,7 @@ async def get_latest_health_indicators_api(
 # old contract remains byte-for-byte addressable while the member-first boundary is
 # independently versioned and testable.
 _CODE_STATUS = {
+    "AUTHENTICATION_REQUIRED": 401,
     "INVALID_REQUEST": 400,
     "INDICATOR_CATALOG_UNKNOWN": 400,
     "INDICATOR_UNIT_INVALID": 400,
@@ -392,21 +393,31 @@ SLICE4_ROUTE_ERROR_CODES = {
         "INVALID_REQUEST", "PROJECTION_SYNC_PENDING", "PROJECTION_READ_UNAVAILABLE",
     ),
     ("GET", f"{_INSTITUTION_PREFIX}/health-record"): (
-        "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
+        "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+        "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
     ),
     ("GET", f"{_INSTITUTION_PREFIX}/detection-reports"): (
-        "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND",
-        "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
+        "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+        "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
     ),
     ("GET", f"{_INSTITUTION_PREFIX}/health-indicators/latest"): (
-        "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND",
-        "CONSENT_REQUIRED", "PROJECTION_SYNC_PENDING", "PROJECTION_READ_UNAVAILABLE",
-        "DEPENDENCY_UNAVAILABLE",
+        "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+        "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "PROJECTION_SYNC_PENDING",
+        "PROJECTION_READ_UNAVAILABLE", "DEPENDENCY_UNAVAILABLE",
     ),
     ("GET", "/api/v1/service-cases/{case_id}/assessment-readiness"): (
-        "ACTOR_CURRENTNESS_FORBIDDEN", "PROXY_PERMISSION_FORBIDDEN", "THERAPIST_SCOPE_FORBIDDEN",
-        "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "DEPENDENCY_UNAVAILABLE",
+        "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "ACTOR_CURRENTNESS_FORBIDDEN",
+        "PROXY_PERMISSION_FORBIDDEN", "THERAPIST_SCOPE_FORBIDDEN",
+        "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND",
+        "DEPENDENCY_UNAVAILABLE",
     ),
+}
+
+_SLICE4_HTTP_ERROR_CONTRACT_ROUTES = {
+    ("GET", f"{_INSTITUTION_PREFIX}/health-record"),
+    ("GET", f"{_INSTITUTION_PREFIX}/detection-reports"),
+    ("GET", f"{_INSTITUTION_PREFIX}/health-indicators/latest"),
+    ("GET", "/api/v1/service-cases/{case_id}/assessment-readiness"),
 }
 
 
@@ -415,15 +426,21 @@ class Slice4Route(APIRoute):
         original = super().get_route_handler()
 
         async def handler(request: Request):
+            key = (next(iter(self.methods)), self.path)
             try:
                 return await original(request)
             except RequestValidationError:
-                return JSONResponse(status_code=400, content={"code": "INVALID_REQUEST", "message": "request rejected"})
+                status_code = 422 if key in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES else 400
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"code": "INVALID_REQUEST", "message": "request rejected"},
+                )
             except HTTPException as exc:
-                key = (next(iter(self.methods)), self.path)
                 allowed = SLICE4_ROUTE_ERROR_CODES[key]
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
+                if key in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES and exc.status_code == 401:
+                    code = "AUTHENTICATION_REQUIRED"
                 if type(code) is not str or code not in allowed:
                     code = "INVALID_REQUEST" if "INVALID_REQUEST" in allowed else "DEPENDENCY_UNAVAILABLE"
                 return JSONResponse(
@@ -431,7 +448,6 @@ class Slice4Route(APIRoute):
                     content={"code": code, "message": "request rejected"},
                 )
             except Exception as exc:
-                key = (next(iter(self.methods)), self.path)
                 code = str(exc)
                 if code in SLICE4_ROUTE_ERROR_CODES[key]:
                     return JSONResponse(
@@ -455,7 +471,7 @@ def strip_slice4_validation_responses(schema: dict[str, object]) -> dict[str, ob
         if not isinstance(operation, dict):
             continue
         responses = operation.get("responses", {})
-        if isinstance(responses, dict):
+        if isinstance(responses, dict) and (method, path) not in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES:
             responses.pop("422", None)
         operation["x-symbolic-error-codes"] = list(codes)
     return schema
@@ -1375,15 +1391,58 @@ async def therapist_trends(
     return _trend_dto(rows, indicator_code, limit)
 
 
+async def _require_service_case(enrollment_reader, case_id: UUID) -> None:
+    rows = await MemberEnrollmentRepository(enrollment_reader).safe_view_rows(
+        "slice3_service_case_read_v1",
+        predicates={"case_id": case_id},
+        order="case_id",
+        limit=2,
+    )
+    if len(rows) != 1:
+        raise _formal_error("SERVICE_CASE_NOT_FOUND")
+
+
+async def _institution_health_rows(
+    institution,
+    *,
+    actor_user_id: int,
+    service_case_id: UUID,
+    resource: str,
+    page: dict[str, object],
+):
+    try:
+        return await Slice4HealthRecordRepository(institution).institution_health(
+            actor_user_id=actor_user_id,
+            service_case_id=service_case_id,
+            resource=resource,
+            page=page,
+        )
+    except Exception as exc:
+        if "SLICE4_INSTITUTION_SCOPE_FORBIDDEN" in str(exc):
+            raise _formal_error("INSTITUTION_SCOPE_FORBIDDEN") from None
+        raise
+
+
+def _require_institution_actor(current_user: CurrentUser) -> None:
+    if current_user.role not in {"org_admin", "org_operator"}:
+        raise _formal_error("INSTITUTION_SCOPE_FORBIDDEN")
+
+
 @institution_health_router.get("/service-cases/{case_id}/health-record", response_model=InstitutionHealthRecordDTO)
 async def institution_health_record(
     case_id: UUID,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    enrollment_reader=Depends(get_member_enrollment_reader_session),
     institution=Depends(get_slice4_institution_reader_session),
 ) -> InstitutionHealthRecordDTO:
-    rows = await Slice4HealthRecordRepository(institution).institution_health(
-        actor_user_id=current_user.id, service_case_id=case_id,
-        resource="HEALTH_RECORD", page={},
+    _require_institution_actor(current_user)
+    await _require_service_case(enrollment_reader, case_id)
+    rows = await _institution_health_rows(
+        institution,
+        actor_user_id=current_user.id,
+        service_case_id=case_id,
+        resource="HEALTH_RECORD",
+        page={},
     )
     if len(rows) != 1:
         raise _formal_error("SERVICE_CASE_NOT_FOUND")
@@ -1405,8 +1464,11 @@ async def institution_reports(
     case_id: UUID, limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None, max_length=512),
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    enrollment_reader=Depends(get_member_enrollment_reader_session),
     institution=Depends(get_slice4_institution_reader_session),
 ) -> DetectionReportPageDTO:
+    _require_institution_actor(current_user)
+    await _require_service_case(enrollment_reader, case_id)
     page: dict[str, object] = {"limit": limit + 1}
     marker = _report_cursor(cursor)
     if marker is not None:
@@ -1414,9 +1476,12 @@ async def institution_reports(
             cursor_measured_at=marker[0].isoformat(),
             cursor_report_id=str(marker[1]),
         )
-    rows = await Slice4HealthRecordRepository(institution).institution_health(
-        actor_user_id=current_user.id, service_case_id=case_id,
-        resource="DETECTION_REPORTS", page=page,
+    rows = await _institution_health_rows(
+        institution,
+        actor_user_id=current_user.id,
+        service_case_id=case_id,
+        resource="DETECTION_REPORTS",
+        page=page,
     )
     items = [_institution_report_dto(row) for row in rows[:limit]]
     next_cursor = None
@@ -1429,11 +1494,17 @@ async def institution_reports(
 async def institution_latest(
     case_id: UUID, indicator_codes: list[str] = Query(default=[]),
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
+    enrollment_reader=Depends(get_member_enrollment_reader_session),
     institution=Depends(get_slice4_institution_reader_session),
 ) -> HealthIndicatorLatestDTO:
-    rows = await Slice4HealthRecordRepository(institution).institution_health(
-        actor_user_id=current_user.id, service_case_id=case_id,
-        resource="HEALTH_RECORD", page={},
+    _require_institution_actor(current_user)
+    await _require_service_case(enrollment_reader, case_id)
+    rows = await _institution_health_rows(
+        institution,
+        actor_user_id=current_user.id,
+        service_case_id=case_id,
+        resource="HEALTH_RECORD",
+        page={},
     )
     if len(rows) != 1:
         raise _formal_error("SERVICE_CASE_NOT_FOUND")
@@ -1454,6 +1525,9 @@ async def assessment_readiness(
     clinical=Depends(get_slice4_clinical_reader_session),
     institution=Depends(get_slice4_institution_reader_session),
 ) -> AssessmentReadinessDTO:
+    if current_user.role not in {"member", "therapist", "org_admin", "org_operator"}:
+        raise _formal_error("ACTOR_CURRENTNESS_FORBIDDEN")
+    await _require_service_case(enrollment_reader, case_id)
     if current_user.role == "member":
         actor_member_id = await _family_member(
             authority, Slice4HealthRecordRepository(clinical), current_user
@@ -1484,9 +1558,12 @@ async def assessment_readiness(
             raise _formal_error("THERAPIST_SCOPE_FORBIDDEN")
         read_session = clinical
     elif current_user.role in {"org_admin", "org_operator"}:
-        rows = await Slice4HealthRecordRepository(institution).institution_health(
-            actor_user_id=current_user.id, service_case_id=case_id,
-            resource="HEALTH_RECORD", page={},
+        rows = await _institution_health_rows(
+            institution,
+            actor_user_id=current_user.id,
+            service_case_id=case_id,
+            resource="HEALTH_RECORD",
+            page={},
         )
         if len(rows) != 1:
             raise _formal_error("INSTITUTION_SCOPE_FORBIDDEN")

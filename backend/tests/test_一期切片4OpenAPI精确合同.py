@@ -157,18 +157,23 @@ ERRORS.update(
         ("GET", f"{THERAPIST}/health-indicators/latest"): _therapist("INVALID_REQUEST", "PROJECTION_SYNC_PENDING", "PROJECTION_READ_UNAVAILABLE"),
         ("GET", f"{THERAPIST}/health-indicators/trends"): _therapist("INVALID_REQUEST", "PROJECTION_SYNC_PENDING", "PROJECTION_READ_UNAVAILABLE"),
         ("GET", f"{INSTITUTION}/health-record"): (
-            "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
+            "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+            "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
         ),
         ("GET", f"{INSTITUTION}/detection-reports"): (
-            "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
+            "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+            "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE",
         ),
         ("GET", f"{INSTITUTION}/health-indicators/latest"): (
-            "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED",
-            "PROJECTION_SYNC_PENDING", "PROJECTION_READ_UNAVAILABLE", "DEPENDENCY_UNAVAILABLE",
+            "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "INSTITUTION_SCOPE_FORBIDDEN",
+            "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "PROJECTION_SYNC_PENDING",
+            "PROJECTION_READ_UNAVAILABLE", "DEPENDENCY_UNAVAILABLE",
         ),
         ("GET", "/api/v1/service-cases/{case_id}/assessment-readiness"): (
-            "ACTOR_CURRENTNESS_FORBIDDEN", "PROXY_PERMISSION_FORBIDDEN", "THERAPIST_SCOPE_FORBIDDEN",
-            "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "DEPENDENCY_UNAVAILABLE",
+            "AUTHENTICATION_REQUIRED", "INVALID_REQUEST", "ACTOR_CURRENTNESS_FORBIDDEN",
+            "PROXY_PERMISSION_FORBIDDEN", "THERAPIST_SCOPE_FORBIDDEN",
+            "INSTITUTION_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND",
+            "DEPENDENCY_UNAVAILABLE",
         ),
     }
 )
@@ -190,10 +195,16 @@ def test_D29_三十四条正式路由及逐路由schema错误与幂等要求独�
     for router in formal_routers:
         app.include_router(router)
     schema = strip_slice4_validation_responses(app.openapi())
+    validation_routes = {
+        ("GET", f"{INSTITUTION}/health-record"),
+        ("GET", f"{INSTITUTION}/detection-reports"),
+        ("GET", f"{INSTITUTION}/health-indicators/latest"),
+        ("GET", "/api/v1/service-cases/{case_id}/assessment-readiness"),
+    }
     for key, (response_name, mutation) in ROUTES.items():
         method, path = key
         operation = schema["paths"][path][method.lower()]
-        assert "422" not in operation["responses"]
+        assert ("422" in operation["responses"]) is (key in validation_routes)
         success = operation["responses"]["201" if method == "POST" and mutation and not path.endswith(("/verify", "/dispute")) else "200"]
         assert success["content"]["application/json"]["schema"]["$ref"].endswith(f"/{response_name}")
         assert operation["x-symbolic-error-codes"] == list(ERRORS[key])
