@@ -19,6 +19,45 @@ class PrivateFileStatus(StrEnum):
     SCAN_FAILED = "SCAN_FAILED"
 
 
+@dataclass(frozen=True, slots=True)
+class DetectionReportAccessContext:
+    actor_type: str
+    actor_current: bool
+    subject_matches: bool
+    case_current: bool
+    tenant_matches: bool
+    permission_codes: tuple[str, ...]
+
+    def may_read_original(self) -> bool:
+        if not all((self.actor_current, self.subject_matches, self.case_current, self.tenant_matches)):
+            return False
+        if self.actor_type == "SELF":
+            return True
+        if self.actor_type == "PROXY":
+            return "DAILY_VIEW" in self.permission_codes
+        return self.actor_type == "THERAPIST"
+
+
+def build_detection_report_access_evidence(
+    *, file_id: UUID, subject_member_id: UUID, service_case_id: UUID,
+    actor_user_id: int, actor_version: int, grant_or_assignment_version: int,
+    expires_at: datetime,
+) -> dict[str, object]:
+    if (
+        any(type(value) is not UUID or value.version != 7 for value in (file_id, subject_member_id, service_case_id))
+        or any(type(value) is not int or value < 1 for value in (actor_user_id, actor_version, grant_or_assignment_version))
+        or expires_at.tzinfo is None or expires_at.utcoffset() is None
+    ):
+        raise PrivateFileConflict("PRIVATE_FILE_ACCESS_INVALID")
+    return {
+        "file_id": file_id, "subject_member_id": subject_member_id,
+        "service_case_id": service_case_id, "actor_user_id": actor_user_id,
+        "actor_version": actor_version,
+        "grant_or_assignment_version": grant_or_assignment_version,
+        "expires_at": expires_at,
+    }
+
+
 _ALLOWED_TYPES = {"application/pdf", "image/jpeg", "image/png"}
 _MAX_SIZE = 10 * 1024 * 1024
 

@@ -8,9 +8,13 @@ HEALTH_PROFILE_TABLE = TableSpec(
     module="user_health",
     columns=(
         ColumnSpec("id", "BIGSERIAL", nullable=False, primary_key=True),
-        ColumnSpec("user_id", "BIGINT", nullable=False, unique=True, foreign_key="user.id"),
-        ColumnSpec("gender", "VARCHAR(5)", nullable=False),
-        ColumnSpec("birth_date", "DATE", nullable=False),
+        ColumnSpec("profile_public_id", "UUID", unique=True),
+        ColumnSpec("subject_member_id", "UUID", unique=True),
+        ColumnSpec("current_revision_id", "UUID"),
+        ColumnSpec("version", "BIGINT", nullable=False, default="1"),
+        ColumnSpec("user_id", "BIGINT", unique=True, foreign_key="user.id"),
+        ColumnSpec("gender", "VARCHAR(5)"),
+        ColumnSpec("birth_date", "DATE"),
         ColumnSpec("height", "DECIMAL(5,1)"),
         ColumnSpec("weight", "DECIMAL(5,1)"),
         ColumnSpec("blood_type", "VARCHAR(5)"),
@@ -26,6 +30,34 @@ HEALTH_PROFILE_TABLE = TableSpec(
         ColumnSpec("updated_at", "TIMESTAMPTZ", nullable=False, default="NOW()"),
     ),
 )
+
+
+def health_profile_truth_v2(
+    subject_member_id,
+    current_revision_id,
+    user_id,
+    gender,
+    birth_date,
+    height,
+    weight,
+) -> bool:
+    """Mirror the exact V1/V2 database truth table without coercion."""
+    is_v1 = (
+        subject_member_id is None
+        and current_revision_id is None
+        and user_id is not None
+        and gender is not None
+        and birth_date is not None
+    )
+    is_v2 = (
+        subject_member_id is not None
+        and current_revision_id is not None
+        and gender is None
+        and birth_date is None
+        and height is None
+        and weight is None
+    )
+    return is_v1 != is_v2
 
 HEALTH_INDICATOR_TABLE = TableSpec(
     name="health_indicator",

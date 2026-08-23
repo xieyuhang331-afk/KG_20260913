@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
@@ -17,8 +18,11 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
 from app.core.database import Base
+
+UUIDType = PostgreSQLUUID(as_uuid=True)
 
 
 class CanonicalHealthFactOrmModel(Base):
@@ -34,14 +38,19 @@ class CanonicalHealthFactOrmModel(Base):
             "supersedes_fact_id",
             name="uq_canonical_health_fact_single_successor",
         ),
-        CheckConstraint("catalog_version = 1", name="catalog_v1"),
+        CheckConstraint(
+            "((catalog_version=1 AND subject_user_id IS NOT NULL AND subject_member_id IS NULL AND fact_ref IS NULL) OR "
+            "(catalog_version=2 AND subject_member_id IS NOT NULL AND fact_ref IS NOT NULL AND source_type IN ('APP','STORE','REPORT')))",
+            name="catalog_v1_v2",
+        ),
         CheckConstraint("value_kind = 'NUMERIC'", name="value_kind_v1_numeric"),
         CheckConstraint(
-            "indicator_code IN ('systolic_bp','diastolic_bp','heart_rate',"
+            "(catalog_version=1 AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate',"
             "'fasting_glucose','postprandial_glucose_2h','hba1c',"
             "'total_cholesterol','triglyceride','hdl_c','ldl_c','weight',"
-            "'bmi','uric_acid','spo2','bone_density_t_score')",
-            name="indicator_v1",
+            "'bmi','uric_acid','spo2','bone_density_t_score')) OR "
+            "(catalog_version=2 AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','hba1c','weight','height','waist'))",
+            name="indicator_v1_v2",
         ),
         CheckConstraint(
             "((indicator_code IN ('systolic_bp','diastolic_bp') AND unit = 'mmHg') OR "
@@ -50,14 +59,22 @@ class CanonicalHealthFactOrmModel(Base):
             "'total_cholesterol','triglyceride','hdl_c','ldl_c') AND unit = 'mmol/L') OR "
             "(indicator_code IN ('hba1c','spo2') AND unit = '%') OR "
             "(indicator_code = 'weight' AND unit = 'kg') OR "
+            "(indicator_code IN ('height','waist') AND unit = 'cm') OR "
             "(indicator_code = 'bmi' AND unit = 'kg/m2') OR "
             "(indicator_code = 'uric_acid' AND unit = 'umol/L') OR "
             "(indicator_code = 'bone_density_t_score' AND unit = 'T-score'))",
-            name="unit_v1",
+            name="unit_v1_v2",
         ),
         CheckConstraint(
-            "source_type IN ('APP','STORE','DEVICE','REPORT')",
-            name="source_type",
+            "(catalog_version=1 AND source_type IN ('APP','STORE','DEVICE','REPORT')) OR "
+            "(catalog_version=2 AND source_type IN ('APP','STORE','REPORT'))",
+            name="source_type_v1_v2",
+        ),
+        CheckConstraint(
+            "(catalog_version=1 AND report_id IS NULL) OR "
+            "(catalog_version=2 AND ((source_type='REPORT' AND report_id IS NOT NULL) "
+            "OR (source_type<>'REPORT' AND report_id IS NULL)))",
+            name="report_binding_v2",
         ),
         CheckConstraint(
             "source_identity_digest ~ '^[0-9a-f]{64}$'",
@@ -88,8 +105,16 @@ class CanonicalHealthFactOrmModel(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    subject_user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("user.id"), nullable=False
+    subject_user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("user.id"), nullable=True
+    )
+    fact_ref: Mapped[UUID | None] = mapped_column(UUIDType, unique=True)
+    # The physical FK is owned by Migration 0028.  The legacy TableSpec mapper
+    # intentionally does not model Slice 4 report columns, so repeating that FK
+    # here would make SQLAlchemy try to resolve a second, incomplete table model.
+    report_id: Mapped[UUID | None] = mapped_column(UUIDType)
+    subject_member_id: Mapped[UUID | None] = mapped_column(
+        UUIDType, ForeignKey("identity.member.member_id")
     )
     indicator_code: Mapped[str] = mapped_column(String(64), nullable=False)
     catalog_version: Mapped[int] = mapped_column(

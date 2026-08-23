@@ -1,16 +1,243 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select, text, update
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
+from app.modules.health_fact.repository import SqlAlchemyHealthFactRepository
 from app.modules.user_health.models import DetectionReport, HealthIndicator, HealthProfile
 
 
 def _ensure_mapped() -> None:
     map_core_model_classes()
+
+
+class Slice4HealthRecordRepository:
+    """Only the bounded Slice 4 database interfaces are reachable here."""
+
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def require_identity_summary_current(
+        self,
+        *,
+        subject_member_id,
+        service_case_id,
+        identity_revision_ref,
+        identity_source_version: int,
+        tenant_public_id,
+    ) -> None:
+        current = await self._session.scalar(
+            select(
+                text(
+                    "public.slice4_identity_summary_current_v1("
+                    ":subject_member_id,:service_case_id,:revision_ref,"
+                    ":source_version,:tenant_public_id)"
+                )
+            ).params(
+                subject_member_id=subject_member_id,
+                service_case_id=service_case_id,
+                revision_ref=identity_revision_ref,
+                source_version=identity_source_version,
+                tenant_public_id=tenant_public_id,
+            )
+        )
+        if current is not True:
+            raise RuntimeError("ACTOR_CURRENTNESS_FORBIDDEN")
+
+    async def create_profile_root(self, **values) -> dict:
+        values = dict(values)
+        values["changed_fields"] = json.dumps(
+            values["changed_fields"], separators=(",", ":"), sort_keys=True
+        )
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_health_profile_root_create_v1("
+                ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
+                ":enrollment_id,:profile_public_id,:profile_revision_id,"
+                ":tenant_public_id,:identity_revision_ref,:identity_source_version,"
+                ":snapshot_ciphertext,:snapshot_key_id,:snapshot_digest,:digest_key_id,"
+                ":reconfirmed_at,:source_type,CAST(:changed_fields AS jsonb),"
+                ":expected_version,:idempotency_key,:request_digest,:expected_postimage_digest)"
+            ),
+            values,
+        )
+        return dict(result.mappings().one())
+
+    async def profile_preimage(self, subject_member_id) -> dict | None:
+        row = (
+            await self._session.execute(
+                text(
+                    "SELECT profile_public_id,current_revision_id,version FROM public.health_profile "
+                    "WHERE subject_member_id=:subject_member_id FOR UPDATE"
+                ),
+                {"subject_member_id": subject_member_id},
+            )
+        ).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def latest_profile_metrics(self, **scope) -> tuple[dict, ...]:
+        return await self.clinical_facts(
+            **scope,
+            page={"limit": 100},
+        )
+
+    async def create_detection_report(self, **values) -> dict:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_detection_report_create_v1("
+                ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
+                ":enrollment_id,:requested_report_id,:report_type,:measured_at,"
+                ":source_type,:private_file_ids,:idempotency_key,:request_digest,"
+                ":expected_postimage_digest)"
+            ),
+            values,
+        )
+        return dict(result.mappings().one())
+
+    async def acquire_health_fact_lock(self, lock_key: int) -> None:
+        await SqlAlchemyHealthFactRepository(self._session).acquire_semantic_lock(lock_key)
+
+    async def require_report_scope(self, **values) -> bool:
+        return await SqlAlchemyHealthFactRepository(self._session).require_report_scope(
+            **values
+        )
+
+    async def find_health_fact(self, **values):
+        return await SqlAlchemyHealthFactRepository(self._session).find_by_semantic_identity(
+            **values
+        )
+
+    async def add_health_fact(self, fact):
+        return await SqlAlchemyHealthFactRepository(self._session).add(fact)
+
+    async def health_fact_by_ref(self, fact_ref):
+        return await SqlAlchemyHealthFactRepository(self._session).get_by_ref(fact_ref)
+
+    async def health_fact_state_transition(self, **values) -> dict:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_health_fact_state_transition_v1("
+                ":fact_ref,:target_state,:expected_state,:actor_user_id,:service_case_id,"
+                ":expected_version,:reason_code,:event_digest)"
+            ),
+            values,
+        )
+        return dict(result.mappings().one())
+
+    async def clinical_facts(
+        self,
+        *,
+        actor_user_id,
+        actor_context,
+        subject_member_id,
+        service_case_id,
+        enrollment_id,
+        page,
+    ) -> tuple[dict, ...]:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_clinical_fact_read_v1("
+                ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
+                ":enrollment_id,CAST(:page AS jsonb))"
+            ),
+            {
+                "actor_user_id": actor_user_id,
+                "actor_context": actor_context,
+                "subject_member_id": subject_member_id,
+                "service_case_id": service_case_id,
+                "enrollment_id": enrollment_id,
+                "page": json.dumps(page, separators=(",", ":"), sort_keys=True),
+            },
+        )
+        return tuple(dict(row) for row in result.mappings())
+
+    async def subject_authority(
+        self,
+        *,
+        actor_user_id,
+        actor_context,
+        enrollment_id=None,
+        service_case_id=None,
+    ) -> dict | None:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_subject_authority_v1("
+                ":enrollment_id,:service_case_id,:actor_user_id,:actor_context)"
+            ),
+            {
+                "enrollment_id": enrollment_id,
+                "service_case_id": service_case_id,
+                "actor_user_id": actor_user_id,
+                "actor_context": actor_context,
+            },
+        )
+        rows = result.mappings().all()
+        return dict(rows[0]) if len(rows) == 1 else None
+
+    async def clinical_profile(self, *, actor_user_id, actor_context, subject_member_id,
+                               service_case_id, enrollment_id) -> dict | None:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_clinical_profile_read_v1("
+                ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
+                ":enrollment_id)"
+            ),
+            {
+                "actor_user_id": actor_user_id,
+                "actor_context": actor_context,
+                "subject_member_id": subject_member_id,
+                "service_case_id": service_case_id,
+                "enrollment_id": enrollment_id,
+            },
+        )
+        row = result.mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def clinical_reports(
+        self,
+        *,
+        actor_user_id,
+        actor_context,
+        subject_member_id,
+        service_case_id,
+        enrollment_id,
+        page,
+    ) -> tuple[dict, ...]:
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_clinical_report_read_v1("
+                ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
+                ":enrollment_id,CAST(:page AS jsonb))"
+            ),
+            {
+                "actor_user_id": actor_user_id,
+                "actor_context": actor_context,
+                "subject_member_id": subject_member_id,
+                "service_case_id": service_case_id,
+                "enrollment_id": enrollment_id,
+                "page": json.dumps(page, separators=(",", ":"), sort_keys=True),
+            },
+        )
+        return tuple(dict(row) for row in result.mappings())
+
+    async def institution_health(self, *, actor_user_id, service_case_id, resource, page):
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.slice4_institution_health_read_v1("
+                ":actor_user_id,:service_case_id,:resource,CAST(:page AS jsonb))"
+            ),
+            {
+                "actor_user_id": actor_user_id,
+                "service_case_id": service_case_id,
+                "resource": resource,
+                "page": json.dumps(page, separators=(",", ":"), sort_keys=True),
+            },
+        )
+        return tuple(dict(row) for row in result.mappings())
 
 
 async def get_member_profile_user_state(session, user_id: int):

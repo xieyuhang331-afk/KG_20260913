@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Mapping
+from uuid import UUID
 
 
 CATALOG_VERSION = 1
@@ -33,7 +34,20 @@ CATALOG_V1 = MappingProxyType(
         "bone_density_t_score": "T-score",
     }
 )
+CATALOG_V2 = MappingProxyType(
+    {
+        "systolic_bp": "mmHg",
+        "diastolic_bp": "mmHg",
+        "heart_rate": "bpm",
+        "fasting_glucose": "mmol/L",
+        "hba1c": "%",
+        "weight": "kg",
+        "height": "cm",
+        "waist": "cm",
+    }
+)
 SOURCE_TYPES = frozenset({"APP", "STORE", "DEVICE", "REPORT"})
+FORMAL_SOURCE_TYPES = frozenset({"APP", "STORE", "REPORT"})
 _KEY_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _MAX_NUMERIC = Decimal("99999999.99")
 
@@ -68,6 +82,63 @@ class HealthFactUnavailable(HealthFactError):
 
 class HealthFactCommitOutcomeUnknown(HealthFactError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class HealthFactCorrectionPlan:
+    supersedes_fact_ref: UUID
+    new_fact_ref: UUID
+    initial_state: str
+    reason_code: str
+    updates_predecessor: bool = False
+
+
+def compute_bmi(*, height_cm: Decimal, weight_kg: Decimal) -> Decimal:
+    if (
+        type(height_cm) is not Decimal
+        or type(weight_kg) is not Decimal
+        or not height_cm.is_finite()
+        or not weight_kg.is_finite()
+        or height_cm <= 0
+        or weight_kg <= 0
+    ):
+        raise HealthFactRequestInvalid("BMI inputs are invalid")
+    height_m = height_cm / Decimal("100")
+    return (weight_kg / (height_m * height_m)).quantize(Decimal("0.1"))
+
+
+def initial_verification_state(source_type: str) -> str:
+    if type(source_type) is not str or source_type not in FORMAL_SOURCE_TYPES:
+        raise HealthFactSourceForbidden("Health fact source is forbidden")
+    return "SELF_REPORTED" if source_type == "APP" else "UNKNOWN"
+
+
+def build_status_transition_plan(
+    *,
+    predecessor: Mapping[str, object],
+    target_state: str,
+    reason_code: str,
+    new_fact_ref: UUID,
+) -> HealthFactCorrectionPlan:
+    predecessor_ref = predecessor.get("fact_ref")
+    if (
+        predecessor.get("state") != "DISPUTED"
+        or target_state != "SELF_REPORTED"
+        or type(predecessor_ref) is not UUID
+        or predecessor_ref.version != 7
+        or type(new_fact_ref) is not UUID
+        or new_fact_ref.version != 7
+        or new_fact_ref == predecessor_ref
+        or type(reason_code) is not str
+        or not _KEY_ID.fullmatch(reason_code)
+    ):
+        raise HealthFactCorrectionConflict("Health fact correction conflict")
+    return HealthFactCorrectionPlan(
+        supersedes_fact_ref=predecessor_ref,
+        new_fact_ref=new_fact_ref,
+        initial_state="SELF_REPORTED",
+        reason_code=reason_code,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +207,7 @@ def _unique_json_object(pairs):
 
 @dataclass(frozen=True, slots=True)
 class CanonicalHealthFactDraft:
-    subject_user_id: int
+    subject_user_id: int | None
     indicator_code: str
     numeric_value: Decimal
     unit: str
@@ -147,11 +218,15 @@ class CanonicalHealthFactDraft:
     supersedes_fact_id: int | None = None
     correction_reason_code: str | None = None
     created_by: int | None = None
+    subject_member_id: UUID | None = None
+    fact_ref: UUID | None = None
+    report_id: UUID | None = None
+    catalog_version: int = CATALOG_VERSION
 
 
 @dataclass(frozen=True, slots=True)
 class CanonicalHealthFact:
-    subject_user_id: int
+    subject_user_id: int | None
     indicator_code: str
     catalog_version: int
     value_kind: str
@@ -169,12 +244,35 @@ class CanonicalHealthFact:
     id: int | None = None
     received_at: datetime | None = None
     created_at: datetime | None = None
+    subject_member_id: UUID | None = None
+    fact_ref: UUID | None = None
+    report_id: UUID | None = None
 
 
 def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
-    if draft.subject_user_id < 1:
+    if draft.catalog_version == 1:
+        identity_valid = (
+            type(draft.subject_user_id) is int
+            and draft.subject_user_id >= 1
+            and draft.subject_member_id is None
+            and draft.fact_ref is None
+        )
+        catalog = CATALOG_V1
+    elif draft.catalog_version == 2:
+        identity_valid = (
+            (draft.subject_user_id is None or (type(draft.subject_user_id) is int and draft.subject_user_id >= 1))
+            and type(draft.subject_member_id) is UUID
+            and draft.subject_member_id.version == 7
+            and type(draft.fact_ref) is UUID
+            and draft.fact_ref.version == 7
+        )
+        catalog = CATALOG_V2
+    else:
+        identity_valid = False
+        catalog = {}
+    if not identity_valid:
         raise HealthFactRequestInvalid("Health fact request is invalid")
-    expected_unit = CATALOG_V1.get(draft.indicator_code)
+    expected_unit = catalog.get(draft.indicator_code)
     if expected_unit is None:
         raise HealthFactCatalogUnknown("Health fact catalog entry is unknown")
     if draft.unit != expected_unit:
@@ -186,8 +284,17 @@ def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
         raise HealthFactRequestInvalid("Health fact numeric value is invalid")
     if draft.measured_at.tzinfo is None or draft.measured_at.utcoffset() is None:
         raise HealthFactRequestInvalid("Health fact measured_at is invalid")
-    if draft.source_type not in SOURCE_TYPES:
+    if draft.source_type not in (
+        SOURCE_TYPES if draft.catalog_version == 1 else FORMAL_SOURCE_TYPES
+    ):
         raise HealthFactSourceForbidden("Health fact source is forbidden")
+    if draft.catalog_version == 2 and (
+        (draft.source_type == "REPORT") != (type(draft.report_id) is UUID)
+        or (draft.report_id is not None and draft.report_id.version != 7)
+    ):
+        raise HealthFactRequestInvalid("Health fact report binding is invalid")
+    if draft.catalog_version == 1 and draft.report_id is not None:
+        raise HealthFactRequestInvalid("Health fact report binding is invalid")
     if not draft.source_identity or len(draft.source_identity) > 512:
         raise HealthFactSourceForbidden("Health fact source is forbidden")
     if not draft.producer_event_key or len(draft.producer_event_key) > 128:
@@ -228,7 +335,7 @@ def _payload_bytes(draft: CanonicalHealthFactDraft) -> bytes:
         "+00:00", "Z"
     )
     payload = {
-        "catalog_version": CATALOG_VERSION,
+        "catalog_version": draft.catalog_version,
         "correction_reason_code": draft.correction_reason_code,
         "created_by": draft.created_by,
         "indicator_code": draft.indicator_code,
@@ -237,6 +344,11 @@ def _payload_bytes(draft: CanonicalHealthFactDraft) -> bytes:
         "producer_event_key": draft.producer_event_key,
         "source_type": draft.source_type,
         "subject_user_id": draft.subject_user_id,
+        "subject_member_id": (
+            str(draft.subject_member_id) if draft.subject_member_id is not None else None
+        ),
+        "fact_ref": str(draft.fact_ref) if draft.fact_ref is not None else None,
+        "report_id": str(draft.report_id) if draft.report_id is not None else None,
         "supersedes_fact_id": draft.supersedes_fact_id,
         "unit": draft.unit,
         "value_kind": "NUMERIC",
@@ -259,12 +371,18 @@ def prepare_fact(
         source_identity=draft.source_identity, keyring=keyring
     )[keyring.current_key_id]
     payload_digest = _hmac_hex(
-        key, b"health-fact-payload-v1", _payload_bytes(draft)
+        key,
+        (
+            b"health-fact-payload-v1"
+            if draft.catalog_version == 1
+            else b"health-fact-payload-v2"
+        ),
+        _payload_bytes(draft),
     )
     return CanonicalHealthFact(
         subject_user_id=draft.subject_user_id,
         indicator_code=draft.indicator_code,
-        catalog_version=CATALOG_VERSION,
+        catalog_version=draft.catalog_version,
         value_kind="NUMERIC",
         numeric_value=draft.numeric_value.quantize(Decimal("0.01")),
         unit=draft.unit,
@@ -277,6 +395,9 @@ def prepare_fact(
         supersedes_fact_id=draft.supersedes_fact_id,
         correction_reason_code=draft.correction_reason_code,
         created_by=draft.created_by,
+        subject_member_id=draft.subject_member_id,
+        fact_ref=draft.fact_ref,
+        report_id=draft.report_id,
     )
 
 
@@ -288,7 +409,15 @@ def verify_payload(
 ) -> bool:
     _validate_draft(draft)
     key = keyring.require_key(stored.digest_key_id)
-    expected = _hmac_hex(key, b"health-fact-payload-v1", _payload_bytes(draft))
+    expected = _hmac_hex(
+        key,
+        (
+            b"health-fact-payload-v1"
+            if draft.catalog_version == 1
+            else b"health-fact-payload-v2"
+        ),
+        _payload_bytes(draft),
+    )
     return hmac.compare_digest(stored.payload_digest, expected)
 
 

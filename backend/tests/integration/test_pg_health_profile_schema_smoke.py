@@ -22,15 +22,17 @@ HEALTH_PROFILE_COLUMNS = {
     "bowel_urination",
     "created_at",
     "updated_at",
+    "profile_public_id",
+    "subject_member_id",
+    "current_revision_id",
+    "version",
 }
 
 EXPECTED_NOT_NULL_COLUMNS = {
     "id",
-    "user_id",
-    "gender",
-    "birth_date",
     "created_at",
     "updated_at",
+    "version",
 }
 
 EXPECTED_NULLABLE_COLUMNS = HEALTH_PROFILE_COLUMNS - EXPECTED_NOT_NULL_COLUMNS
@@ -53,6 +55,10 @@ EXPECTED_UDT_TYPES = {
     "bowel_urination": "varchar",
     "created_at": "timestamptz",
     "updated_at": "timestamptz",
+    "profile_public_id": "uuid",
+    "subject_member_id": "uuid",
+    "current_revision_id": "uuid",
+    "version": "int8",
 }
 
 
@@ -138,9 +144,13 @@ def test_health_profile_user_id_foreign_key_exists(pg_database):
         JOIN information_schema.key_column_usage kcu
           ON tc.constraint_name = kcu.constraint_name
          AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name = tc.constraint_name
-         AND ccu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name = tc.constraint_name
+         AND rc.constraint_schema = tc.table_schema
+        JOIN information_schema.key_column_usage ccu
+          ON ccu.constraint_name = rc.unique_constraint_name
+         AND ccu.constraint_schema = rc.unique_constraint_schema
+         AND ccu.ordinal_position = kcu.position_in_unique_constraint
         WHERE tc.table_schema = 'public'
           AND tc.table_name = 'health_profile'
           AND tc.constraint_type = 'FOREIGN KEY'
@@ -150,7 +160,27 @@ def test_health_profile_user_id_foreign_key_exists(pg_database):
     assert {
         (row["source_column"], row["target_table"], row["target_column"])
         for row in foreign_keys
-    } == {("user_id", "user", "id")}
+    } == {
+        ("user_id", "user", "id"),
+        ("subject_member_id", "member", "member_id"),
+        ("current_revision_id", "health_profile_revision", "profile_revision_id"),
+        ("subject_member_id", "health_profile_revision", "subject_member_id"),
+    }
+
+
+def test_health_profile_v1_v2_truth_constraint_exists(pg_database):
+    definition = pg_database.fetch_value(
+        """
+        SELECT pg_get_constraintdef(oid)
+        FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conrelid = 'public.health_profile'::regclass
+          AND conname = 'ck_health_profile_ck_health_profile_v1_v2_truth'
+        """
+    )
+    assert definition is not None
+    assert "subject_member_id IS NULL" in definition
+    assert "subject_member_id IS NOT NULL" in definition
 
 
 def test_health_profile_user_id_unique_constraint_exists(pg_database):

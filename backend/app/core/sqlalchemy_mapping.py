@@ -53,6 +53,11 @@ def _load_sqlalchemy():
 def _parse_ddl_type(column: ColumnSpec):
     sa, JSONB, _ = _load_sqlalchemy()
     ddl_type = column.ddl_type.upper()
+    if ddl_type == "UUID":
+        from sqlalchemy.dialects.postgresql import UUID
+
+        return UUID(as_uuid=True)
+
     postgres_enum = POSTGRES_ENUM_TYPES.get(ddl_type)
     if postgres_enum is not None:
         from sqlalchemy.dialects import postgresql

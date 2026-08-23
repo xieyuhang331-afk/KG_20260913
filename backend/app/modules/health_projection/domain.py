@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Sequence
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.modules.health_fact.domain import CATALOG_V1
@@ -15,9 +16,13 @@ from app.modules.organization_projection.domain import ProjectionSourceInvalid, 
 
 _FACT_DOMAIN = b"kg:projection:health:core-fact-row:v1\0"
 _SELECTION_DOMAIN = b"kg:projection:health:core-selection:v1\0"
+_FACT_DOMAIN_V2 = b"kg:projection:health:member-fact-row:v2\0"
+_SELECTION_DOMAIN_V2 = b"kg:projection:health:member-selection:v2\0"
 _SOURCE_PRIORITY = {"APP": 1, "REPORT": 2, "STORE": 3, "DEVICE": 4}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 RULE_VERSION = "health-daily-selection-v1"
+RULE_VERSION_V2 = "health-daily-selection-v2"
+_SOURCE_PRIORITY_V2 = {"APP": 1, "REPORT": 2, "STORE": 3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +35,123 @@ class HealthCurrentFact:
     measured_at: datetime
     received_at: datetime
     source_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCurrentFactV2:
+    id: int
+    fact_ref: UUID
+    subject_member_id: UUID
+    subject_user_id: int | None
+    indicator_code: str
+    numeric_value: Decimal
+    unit: str
+    measured_at: datetime
+    received_at: datetime
+    source_type: str
+    verification_state: str
+    status_event_seq: int
+    superseded: bool
+    fact_payload_digest: str | None = None
+    status_event_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthProjectionFactRowV2:
+    fact_id: int
+    fact_ref: UUID
+    subject_member_id: UUID
+    subject_user_id: int | None
+    indicator_code: str
+    numeric_value: Decimal
+    unit: str
+    measured_at: datetime
+    received_at: datetime
+    source_type: str
+    business_day: date
+    window_start_utc: datetime
+    window_end_utc: datetime
+    verification_state: str
+    status_event_seq: int
+    row_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class HealthWindowSelectionV2:
+    subject_member_id: UUID
+    indicator_code: str
+    business_day: date
+    winner_fact_id: int
+    winner_fact_ref: UUID
+    rule_version: str
+    selection_digest: str
+
+
+def select_window_winner_v2(facts: Sequence[HealthCurrentFactV2]) -> HealthCurrentFactV2:
+    if not facts or any(fact.source_type not in _SOURCE_PRIORITY_V2 for fact in facts):
+        raise ProjectionSourceInvalid("Projection source is invalid")
+    candidates = [fact for fact in facts if not fact.superseded and fact.verification_state != "DISPUTED"]
+    if not candidates:
+        raise ProjectionSourceInvalid("Projection source is invalid")
+    return max(candidates, key=lambda fact: (_SOURCE_PRIORITY_V2[fact.source_type], _aware(fact.measured_at), _aware(fact.received_at), fact.id))
+
+
+def build_health_projection_rows_v2(
+    *, facts: Sequence[HealthCurrentFactV2], digest_key: bytes
+) -> tuple[list[HealthProjectionFactRowV2], list[HealthWindowSelectionV2]]:
+    key = _key(digest_key)
+    rows: list[HealthProjectionFactRowV2] = []
+    windows: dict[tuple[UUID, str, date], list[HealthCurrentFactV2]] = {}
+    units = {
+        "systolic_bp": "mmHg", "diastolic_bp": "mmHg", "heart_rate": "bpm",
+        "fasting_glucose": "mmol/L", "hba1c": "%", "weight": "kg",
+        "height": "cm", "waist": "cm",
+    }
+    for fact in facts:
+        if (
+            type(fact) is not HealthCurrentFactV2
+            or fact.source_type not in _SOURCE_PRIORITY_V2
+            or units.get(fact.indicator_code) != fact.unit
+            or fact.subject_member_id.version != 7
+            or fact.fact_ref.version != 7
+            or fact.verification_state not in {"SELF_REPORTED", "VERIFIED", "UNKNOWN", "DISPUTED"}
+            or fact.status_event_seq < 1
+        ):
+            raise ProjectionSourceInvalid("Projection source is invalid")
+        start, end, day = business_window(fact.measured_at)
+        payload = {
+            "fact_id": fact.id, "fact_ref": str(fact.fact_ref),
+            "subject_member_id": str(fact.subject_member_id),
+            "subject_user_id": fact.subject_user_id,
+            "indicator_code": fact.indicator_code,
+            "numeric_value": str(fact.numeric_value), "unit": fact.unit,
+            "measured_at": _utc_text(fact.measured_at),
+            "received_at": _utc_text(fact.received_at),
+            "source_type": fact.source_type, "business_day": day.isoformat(),
+            "verification_state": fact.verification_state,
+            "status_event_seq": fact.status_event_seq,
+        }
+        rows.append(HealthProjectionFactRowV2(
+            fact.id, fact.fact_ref, fact.subject_member_id, fact.subject_user_id,
+            fact.indicator_code, fact.numeric_value, fact.unit, _aware(fact.measured_at),
+            _aware(fact.received_at), fact.source_type, day, start, end,
+            fact.verification_state, fact.status_event_seq,
+            _digest(key, _FACT_DOMAIN_V2, payload),
+        ))
+        windows.setdefault((fact.subject_member_id, fact.indicator_code, day), []).append(fact)
+    selections: list[HealthWindowSelectionV2] = []
+    for (member_id, indicator, day), candidates in sorted(windows.items(), key=lambda item: (str(item[0][0]), item[0][1], item[0][2])):
+        winner = select_window_winner_v2(candidates)
+        payload = {
+            "subject_member_id": str(member_id), "indicator_code": indicator,
+            "business_day": day.isoformat(), "winner_fact_ref": str(winner.fact_ref),
+            "rule_version": RULE_VERSION_V2,
+        }
+        selections.append(HealthWindowSelectionV2(
+            member_id, indicator, day, winner.id, winner.fact_ref, RULE_VERSION_V2,
+            _digest(key, _SELECTION_DOMAIN_V2, payload),
+        ))
+    return rows, selections
 
 
 @dataclass(frozen=True, slots=True)

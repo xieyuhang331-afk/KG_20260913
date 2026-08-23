@@ -38,7 +38,8 @@ class PrivateFileRepository:
 
     async def access_snapshot(self, file_id: str):
         result = await self.session.execute(select(
-            PrivateFileModel.file_id, PrivateFileModel.owner_user_id,
+            PrivateFileModel.file_id, PrivateFileModel.purpose,
+            PrivateFileModel.owner_user_id,
             PrivateFileModel.status, PrivateFileModel.actual_size,
             PrivateFileModel.actual_sha256, PrivateFileModel.bound_application_id,
             PrivateFileModel.created_at,
@@ -48,6 +49,26 @@ class PrivateFileRepository:
             return None
         relation = await self.qualification_relation(file_id)
         return {**row, **relation}
+
+    async def report_file_authority(
+        self,
+        *,
+        file_id: str,
+        actor_user_id: int,
+        context: str,
+    ) -> bool:
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice4_report_file_authority_v1("
+                ":file_id,NULL,:actor_user_id,:context)"
+            ),
+            {
+                "file_id": file_id,
+                "actor_user_id": actor_user_id,
+                "context": context,
+            },
+        )
+        return bool(result.scalar_one())
 
     async def qualification_relation(self, file_id: str):
         result = await self.session.execute(

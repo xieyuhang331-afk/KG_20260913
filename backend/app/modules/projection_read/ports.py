@@ -1,11 +1,14 @@
 from datetime import date, datetime
 from typing import Protocol
+from uuid import UUID
 
 from .domain import (
     HealthFactCursor, HealthProjectionFactDTO, HealthProjectionSelectionDTO,
     HealthReadGrant, HealthSelectionCursor, OrganizationChildCursor,
     OrganizationProjectionNodeDTO, OrganizationReadGrant, ProjectionPageDTO,
     ProjectionReadPrincipal,
+    HealthProjectionCoverageToken, ReadyHealthProjectionEvidence,
+    MemberHealthProjectionFactDTO,
 )
 
 
@@ -30,3 +33,15 @@ class OrganizationProjectionReadPort(Protocol):
 class HealthProjectionReadPort(Protocol):
     async def list_current_facts(self, *, generation_id: int, subject_user_id: int, indicator_codes: tuple[str, ...], measured_from: datetime, measured_to: datetime, cursor: HealthFactCursor | None, limit: int, principal: ProjectionReadPrincipal) -> ProjectionPageDTO[HealthProjectionFactDTO, HealthFactCursor]: ...
     async def list_daily_selections(self, *, generation_id: int, subject_user_id: int, indicator_codes: tuple[str, ...], business_day_from: date, business_day_to: date, cursor: HealthSelectionCursor | None, limit: int, principal: ProjectionReadPrincipal) -> ProjectionPageDTO[HealthProjectionSelectionDTO, HealthSelectionCursor]: ...
+
+
+class HealthProjectionCoverageAuthorityPort(Protocol):
+    async def capture(self, *, subject_member_id: UUID, required_indicator_codes: tuple[str, ...]) -> HealthProjectionCoverageToken: ...
+
+
+class LatestReadyHealthProjectionResolverPort(Protocol):
+    async def resolve(self, *, coverage_token: HealthProjectionCoverageToken, required_projection_version: int = 2) -> ReadyHealthProjectionEvidence | None: ...
+
+
+class MemberHealthProjectionReadPort(Protocol):
+    async def list_current_facts(self, *, resolved_generation: ReadyHealthProjectionEvidence, subject_member_id: UUID, indicator_codes: tuple[str, ...], measured_from: datetime, measured_to: datetime, limit: int) -> ProjectionPageDTO[MemberHealthProjectionFactDTO, None]: ...

@@ -1,6 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date, datetime
+import hashlib
+import json
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -11,13 +14,232 @@ from .domain import (
     OrganizationReadGrant, ProjectionAccessDenied, ProjectionGenerationUnavailable,
     ProjectionIndicatorDenied, ProjectionInvalidRequest, ProjectionPageDTO,
     ProjectionReadPrincipal, ProjectionReadUnavailable, ProjectionScopeDenied,
+    HealthProjectionCoverageToken, ReadyHealthProjectionEvidence,
+    ProjectionGenerationDTO,
 )
-from .repository import HealthProjectionReadRepository, OrganizationProjectionReadRepository
+from .repository import (
+    HealthProjectionReadRepository,
+    MemberHealthProjectionReadRepository,
+    OrganizationProjectionReadRepository,
+)
 
 
 READER_SCHEMA_LOCK_KEY = 4341875042858344256
 INDICATOR_CATALOG_V1 = frozenset(("systolic_bp", "diastolic_bp", "heart_rate", "fasting_glucose", "postprandial_glucose_2h", "hba1c", "total_cholesterol", "triglyceride", "hdl_c", "ldl_c", "weight", "bmi", "uric_acid", "spo2", "bone_density_t_score"))
 AUTHORIZATION_BASES = frozenset(("SELF", "FAMILY_GRANT", "MANAGED_CUSTOMER", "PLATFORM_DUTY"))
+INDICATOR_CATALOG_V2 = frozenset((
+    "systolic_bp", "diastolic_bp", "heart_rate", "fasting_glucose",
+    "hba1c", "weight", "height", "waist",
+))
+
+
+def resolve_latest_ready_generation(
+    *, coverage_token: HealthProjectionCoverageToken,
+    candidates: tuple[ReadyHealthProjectionEvidence, ...],
+    required_projection_version: int = 2,
+) -> ReadyHealthProjectionEvidence | None:
+    if type(coverage_token) is not HealthProjectionCoverageToken or required_projection_version != 2 or coverage_token.catalog_version != 2 or not coverage_token.items:
+        raise ProjectionInvalidRequest() from None
+    matching = [
+        candidate for candidate in candidates
+        if type(candidate) is ReadyHealthProjectionEvidence
+        and candidate.projection_version == 2
+        and candidate.rule_version == "health-daily-selection-v2"
+        and candidate.subject_member_id == coverage_token.subject_member_id
+        and candidate.source_snapshot == coverage_token.source_snapshot
+        and candidate.policy_indicator_digest == coverage_token.policy_indicator_digest
+        and candidate.items == coverage_token.items
+    ]
+    if not matching:
+        return None
+    newest = max(item.generation_no for item in matching)
+    winners = [item for item in matching if item.generation_no == newest]
+    if len(winners) != 1:
+        raise ProjectionReadUnavailable() from None
+    return winners[0]
+
+
+def _member_request(
+    subject_member_id: UUID, indicator_codes: tuple[str, ...]
+) -> tuple[str, ...]:
+    if type(subject_member_id) is not UUID or subject_member_id.version != 7:
+        raise ProjectionInvalidRequest() from None
+    if (
+        type(indicator_codes) is not tuple
+        or not indicator_codes
+        or any(type(code) is not str for code in indicator_codes)
+        or len(set(indicator_codes)) != len(indicator_codes)
+        or not set(indicator_codes).issubset(INDICATOR_CATALOG_V2)
+    ):
+        raise ProjectionInvalidRequest() from None
+    return tuple(sorted(indicator_codes))
+
+
+def _indicator_digest(indicator_codes: tuple[str, ...]) -> str:
+    body = json.dumps(indicator_codes, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("ascii")).hexdigest()
+
+
+def _coverage_token(
+    subject_member_id: UUID,
+    indicator_codes: tuple[str, ...],
+    source_snapshot: str,
+    items,
+) -> HealthProjectionCoverageToken:
+    if tuple(item.indicator_code for item in items) != indicator_codes:
+        raise ProjectionReadUnavailable() from None
+    return HealthProjectionCoverageToken(
+        subject_member_id=subject_member_id,
+        source_snapshot=source_snapshot,
+        catalog_version=2,
+        policy_indicator_digest=_indicator_digest(indicator_codes),
+        items=tuple(items),
+    )
+
+
+class HealthProjectionCoverageAuthorityService:
+    async def capture(
+        self, *, subject_member_id: UUID,
+        required_indicator_codes: tuple[str, ...],
+    ) -> HealthProjectionCoverageToken:
+        indicators = _member_request(subject_member_id, required_indicator_codes)
+        async with _reader("health_reader", MemberHealthProjectionReadRepository) as repo:
+            snapshot, items = await repo.coverage(subject_member_id, indicators)
+            return _coverage_token(subject_member_id, indicators, snapshot, items)
+
+
+class LatestReadyHealthProjectionResolverService:
+    async def resolve(
+        self, *, coverage_token: HealthProjectionCoverageToken,
+        required_projection_version: int = 2,
+    ) -> ReadyHealthProjectionEvidence | None:
+        if type(coverage_token) is not HealthProjectionCoverageToken:
+            raise ProjectionInvalidRequest() from None
+        indicators = _member_request(
+            coverage_token.subject_member_id,
+            tuple(item.indicator_code for item in coverage_token.items),
+        )
+        async with _reader("health_reader", MemberHealthProjectionReadRepository) as repo:
+            snapshot, items = await repo.coverage(coverage_token.subject_member_id, indicators)
+            fresh = _coverage_token(
+                coverage_token.subject_member_id, indicators, snapshot, items
+            )
+            if fresh != coverage_token:
+                return None
+            candidates = await repo.ready_candidates(
+                coverage_token.subject_member_id, indicators
+            )
+            candidates = tuple(
+                ReadyHealthProjectionEvidence(
+                    generation_id=item.generation_id,
+                    generation_no=item.generation_no,
+                    projection_version=item.projection_version,
+                    rule_version=item.rule_version,
+                    subject_member_id=item.subject_member_id,
+                    source_snapshot=item.source_snapshot,
+                    policy_indicator_digest=fresh.policy_indicator_digest,
+                    items=item.items,
+                    ready_at=item.ready_at,
+                )
+                for item in candidates
+            )
+            return resolve_latest_ready_generation(
+                coverage_token=fresh,
+                candidates=candidates,
+                required_projection_version=required_projection_version,
+            )
+
+
+class MemberHealthProjectionReadService:
+    async def list_current_facts(
+        self, *, resolved_generation: ReadyHealthProjectionEvidence,
+        subject_member_id: UUID, indicator_codes: tuple[str, ...],
+        measured_from: datetime, measured_to: datetime, limit: int,
+        cursor: tuple[datetime, UUID] | None = None,
+    ) -> ProjectionPageDTO:
+        indicators = _member_request(subject_member_id, indicator_codes)
+        if (
+            type(resolved_generation) is not ReadyHealthProjectionEvidence
+            or resolved_generation.subject_member_id != subject_member_id
+            or resolved_generation.projection_version != 2
+            or resolved_generation.ready_at is None
+            or type(measured_from) is not datetime
+            or type(measured_to) is not datetime
+            or measured_from.utcoffset() is None
+            or measured_to.utcoffset() is None
+            or measured_from >= measured_to
+        ):
+            raise ProjectionInvalidRequest() from None
+        _limit(limit)
+        async with _reader("health_reader", MemberHealthProjectionReadRepository) as repo:
+            rows = await repo.facts(
+                generation_id=resolved_generation.generation_id,
+                subject_member_id=subject_member_id,
+                indicators=indicators,
+                measured_from=measured_from,
+                measured_to=measured_to,
+                limit=limit,
+                cursor=cursor,
+            )
+        generation = ProjectionGenerationDTO(
+            resolved_generation.generation_id, 2, resolved_generation.ready_at
+        )
+        return ProjectionPageDTO(generation, rows, None)
+
+
+class AssessmentProjectionSnapshotService:
+    """Resolve coverage, READY generation, and facts from one repeatable-read snapshot."""
+
+    async def resolve_and_read(
+        self, *, subject_member_id: UUID, indicator_codes: tuple[str, ...],
+        measured_from: datetime, measured_to: datetime, limit: int,
+        required_projection_version: int = 2,
+    ):
+        indicators = _member_request(subject_member_id, indicator_codes)
+        if (
+            type(measured_from) is not datetime or type(measured_to) is not datetime
+            or measured_from.utcoffset() is None or measured_to.utcoffset() is None
+            or measured_from >= measured_to
+        ):
+            raise ProjectionInvalidRequest() from None
+        _limit(limit)
+        async with _reader("health_reader", MemberHealthProjectionReadRepository) as repo:
+            snapshot, items = await repo.coverage(subject_member_id, indicators)
+            coverage = _coverage_token(subject_member_id, indicators, snapshot, items)
+            candidates = tuple(
+                ReadyHealthProjectionEvidence(
+                    generation_id=item.generation_id,
+                    generation_no=item.generation_no,
+                    projection_version=item.projection_version,
+                    rule_version=item.rule_version,
+                    subject_member_id=item.subject_member_id,
+                    source_snapshot=item.source_snapshot,
+                    policy_indicator_digest=coverage.policy_indicator_digest,
+                    items=item.items,
+                    ready_at=item.ready_at,
+                )
+                for item in await repo.ready_candidates(subject_member_id, indicators)
+            )
+            resolved = resolve_latest_ready_generation(
+                coverage_token=coverage, candidates=candidates,
+                required_projection_version=required_projection_version,
+            )
+            if resolved is None:
+                return coverage, None, None
+            rows = await repo.facts(
+                generation_id=resolved.generation_id,
+                subject_member_id=subject_member_id,
+                indicators=indicators,
+                measured_from=measured_from,
+                measured_to=measured_to,
+                limit=limit,
+            )
+            page = ProjectionPageDTO(
+                ProjectionGenerationDTO(resolved.generation_id, 2, resolved.ready_at),
+                rows,
+                None,
+            )
+            return coverage, resolved, page
 
 
 def _identity(value: int) -> None:

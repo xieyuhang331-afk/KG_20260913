@@ -413,7 +413,7 @@ _EVIDENCE_IDENTITY_FIELDS = (
 )
 
 _EVIDENCE_COUNT_FIELDS = (
-    "source_count", "eligible_count", "projection_count", "coverage_numerator",
+    "source_count", "status_event_count", "eligible_count", "projection_count", "coverage_numerator",
     "coverage_denominator", "current_fact_count", "projection_fact_count",
     "expected_selection_count", "actual_selection_count",
     "fact_coverage_numerator", "fact_coverage_denominator",
@@ -523,7 +523,15 @@ class ProjectionShadowService:
             )
             run_class = getattr(model, f"{self.domain.title()}ProjectionShadowRun")
             audit_class = getattr(model, f"{self.domain.title()}ProjectionShadowAudit")
-            rule_version = "organization-projection-v1" if self.domain == "organization" else "health-daily-selection-v1"
+            rule_version = (
+                "organization-projection-v1"
+                if self.domain == "organization"
+                else (
+                    "health-daily-selection-v2"
+                    if generation.projection_version == 2
+                    else "health-daily-selection-v1"
+                )
+            )
             run = run_class(
                 run_id=run_id, generation_id=generation_id, run_sequence=sequence,
                 status="RUNNING", projection_version=generation.projection_version,

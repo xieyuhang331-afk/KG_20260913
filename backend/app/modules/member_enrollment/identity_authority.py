@@ -13,6 +13,7 @@ from app.modules.auth.identity_submission_crypto import (
     IdentitySubmissionCrypto,
     IdentitySubmissionCryptoUnavailable,
 )
+from app.modules.member_enrollment.ports import VerifiedIdentitySummaryV2
 
 
 _PRC_ID_RE = re.compile(r"^[0-9]{17}[0-9X]$", re.ASCII)
@@ -32,6 +33,12 @@ def parse_prc_resident_identity_birth_date(value: str) -> date:
         return date(int(value[6:10]), int(value[10:12]), int(value[12:14]))
     except ValueError:
         raise ValueError("IDENTITY_DOCUMENT_INVALID") from None
+
+
+def parse_prc_resident_identity_gender(value: str) -> str:
+    """Return the PRC resident identity gender marker after full validation."""
+    parse_prc_resident_identity_birth_date(value)
+    return "MALE" if int(value[16]) % 2 else "FEMALE"
 
 
 def verified_adult_on(birth_date: date, as_of: date) -> bool:
@@ -56,6 +63,93 @@ class VerifiedAdultEvidence:
     decision_ref: UUID
     facts_version: int
     evidence_digest: str
+
+
+class Slice4IdentitySummaryAuthority:
+    """Decrypt the bounded current identity source without exposing source PII."""
+
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def verified_identity_summary(
+        self,
+        *,
+        subject_member_id: UUID,
+        service_case_id: UUID,
+    ) -> VerifiedIdentitySummaryV2:
+        try:
+            result = await self._session.execute(
+                text(
+                    "SELECT * FROM public.slice4_identity_summary_source_v1("
+                    ":subject_member_id,:service_case_id)"
+                ),
+                {
+                    "subject_member_id": subject_member_id,
+                    "service_case_id": service_case_id,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None or row["evidence_status"] != "VERIFIED":
+                raise RuntimeError
+            tenant_public_id = UUID(str(row["tenant_public_id"]))
+            revision_ref = UUID(str(row["identity_revision_ref"]))
+            source_version = row["source_version"]
+            if type(source_version) is not int or source_version < 1:
+                raise RuntimeError
+
+            if row["identity_source_kind"] == "P1":
+                crypto = IdentitySubmissionCrypto.from_environment()
+                if row["identity_key_id"] != crypto.key_id:
+                    raise IdentitySubmissionCryptoUnavailable("authority key unavailable")
+                identity_number = crypto.decrypt(
+                    EncryptedIdentityValue(
+                        ciphertext=bytes(row["identity_ciphertext"]),
+                        nonce=bytes(row["identity_nonce"]),
+                    ),
+                    aad=crypto.aad(
+                        submission_id=str(revision_ref),
+                        user_ref=row["identity_user_ref"],
+                        version=row["identity_storage_version"],
+                        field="id_card",
+                        key_id=row["identity_key_id"],
+                    ),
+                )
+                birth_date = parse_prc_resident_identity_birth_date(identity_number)
+            elif row["identity_source_kind"] == "SLICE3":
+                # Local import prevents the Slice 3 service from depending back on this adapter.
+                from app.modules.member_enrollment.service import MemberEnrollmentSecrets
+
+                secrets = MemberEnrollmentSecrets()
+                identity_number = secrets.decrypt(
+                    bytes(row["identity_ciphertext"]),
+                    row["identity_key_id"],
+                    field="identity-number",
+                    tenant_public_id=tenant_public_id,
+                    object_id=revision_ref,
+                )
+                birth_date = date.fromisoformat(
+                    secrets.decrypt(
+                        bytes(row["birth_date_ciphertext"]),
+                        row["birth_date_key_id"],
+                        field="identity-birth-date",
+                        tenant_public_id=tenant_public_id,
+                        object_id=revision_ref,
+                    )
+                )
+                if birth_date != parse_prc_resident_identity_birth_date(identity_number):
+                    raise RuntimeError
+            else:
+                raise RuntimeError
+            return VerifiedIdentitySummaryV2(
+                gender=parse_prc_resident_identity_gender(identity_number),
+                birth_date=birth_date,
+                identity_revision_ref=revision_ref,
+                source_version=source_version,
+                tenant_public_id=tenant_public_id,
+                evidence_status="VERIFIED",
+            )
+        except Exception:
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
 
 
 async def verified_adult_eligibility_for_update(

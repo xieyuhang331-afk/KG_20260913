@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Generic, TypeVar
+from uuid import UUID
 
 
 class ProjectionReadError(Exception):
@@ -128,3 +129,53 @@ class ProjectionPageDTO(Generic[T, C]):
     generation: ProjectionGenerationDTO
     items: tuple[T, ...]
     next_cursor: C | None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthProjectionCoverageItem:
+    indicator_code: str
+    max_fact_id: int
+    max_status_event_seq: int
+    fact_count: int
+    status_event_count: int
+    current_fact_set_digest: str
+    current_status_set_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class HealthProjectionCoverageToken:
+    subject_member_id: UUID
+    source_snapshot: str
+    catalog_version: int
+    policy_indicator_digest: str
+    items: tuple[HealthProjectionCoverageItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyHealthProjectionEvidence:
+    generation_id: int
+    generation_no: int
+    projection_version: int
+    rule_version: str
+    subject_member_id: UUID
+    source_snapshot: str
+    policy_indicator_digest: str
+    items: tuple[HealthProjectionCoverageItem, ...]
+    ready_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemberHealthProjectionFactDTO:
+    generation_id: int
+    fact_ref: UUID
+    subject_member_id: UUID
+    subject_user_id: int | None
+    indicator_code: str
+    numeric_value: Decimal
+    unit: str
+    measured_at: datetime
+    received_at: datetime
+    source_type: str
+    business_day: date
+    verification_state: str
+    status_event_seq: int

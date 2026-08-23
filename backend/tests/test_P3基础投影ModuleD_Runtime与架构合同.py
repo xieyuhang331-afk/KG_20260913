@@ -8,14 +8,16 @@ from app.core import database
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_Module_D无ACTIVE公共API和消费者接线():
+def test_Module_D无ACTIVE公共API且仅增加Slice4批准的LatestREADY端口():
     module = ROOT / "app/modules/projection_read"
     text = "\n".join(p.read_text("utf-8") for p in module.glob("*.py"))
     assert "ACTIVE" not in text
     assert "APIRouter" not in text
-    assert "latest_ready" not in text.lower()
     assert "user_health" not in text
     assert "health_analysis" not in text
+    assert "LatestReadyHealthProjectionResolverService" in text
+    assert "resolve_latest_ready_generation" in text
+    assert "MemberHealthProjectionReadService" in text
 
 
 def test_Module_D双runtime身份存在且隔离():

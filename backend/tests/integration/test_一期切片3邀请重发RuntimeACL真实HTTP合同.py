@@ -204,7 +204,7 @@ def test_真实Runtime邀请重发与幂等及陈旧版本闭环(
     _assert_acl_matrix(pg_database)
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0027"
+    ) == "20260823_0028"
 
 
 def test_0023升级降级再升级只对称改变四列权限(pg_database) -> None:
@@ -241,11 +241,10 @@ def test_0023升级降级再升级只对称改变四列权限(pg_database) -> No
     assert pg_database.fetch_value(
         "SELECT COUNT(*) FROM public.member_service_invitation"
     ) == before_rows
-
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0027"
+    ) == "20260823_0028"
     _assert_acl_matrix(pg_database)
     assert pg_database.fetch_value(
         "SELECT COUNT(*) FROM public.member_service_invitation"

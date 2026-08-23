@@ -11,6 +11,7 @@ PRIVATE_FILE_QUEUE = "private-file"
 PRIVATE_FILE_SCAN_TASK_NAME = "phase1.private_file.scan"
 THERAPIST_WORKFLOW_QUEUE = "therapist-workflow"
 MEMBER_ENROLLMENT_QUEUE = "member-enrollment-workflow"
+SLICE4_HEALTH_QUEUE = "slice4-health-workflow"
 _DECLARED_QUEUES = (
     "ai",
     "judgment",
@@ -22,6 +23,7 @@ _DECLARED_QUEUES = (
     PRIVATE_FILE_QUEUE,
     THERAPIST_WORKFLOW_QUEUE,
     MEMBER_ENROLLMENT_QUEUE,
+    SLICE4_HEALTH_QUEUE,
 )
 
 
@@ -36,7 +38,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks"),
+        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks", "app.tasks.slice4_health_data_tasks"),
     )
     app.conf.update(
         accept_content=("json",),
@@ -64,6 +66,12 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             "phase1.member_enrollment.consume_outbox": {"queue": MEMBER_ENROLLMENT_QUEUE},
             "phase1.member_enrollment.recover_outbox": {"queue": MEMBER_ENROLLMENT_QUEUE},
             "phase1.member_enrollment.expire_invitations": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            "phase1.slice4.dispatch_outbox": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.consume_outbox": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.recover_outbox": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.recompute_readiness": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.sweep_readiness": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.build_projection_v2": {"queue": SLICE4_HEALTH_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {
@@ -110,6 +118,21 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
                 "task": "phase1.member_enrollment.expire_invitations",
                 "schedule": 60.0,
                 "options": {"queue": MEMBER_ENROLLMENT_QUEUE},
+            },
+            "slice4-health-dispatch": {
+                "task": "phase1.slice4.dispatch_outbox",
+                "schedule": 5.0,
+                "options": {"queue": SLICE4_HEALTH_QUEUE},
+            },
+            "slice4-health-recovery": {
+                "task": "phase1.slice4.recover_outbox",
+                "schedule": 60.0,
+                "options": {"queue": SLICE4_HEALTH_QUEUE},
+            },
+            "slice4-readiness-sweep": {
+                "task": "phase1.slice4.sweep_readiness",
+                "schedule": 60.0,
+                "options": {"queue": SLICE4_HEALTH_QUEUE},
             },
         },
     )
