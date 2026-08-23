@@ -5,33 +5,44 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemberInvitationPage } from "./pages/MemberInvitationPage";
 import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
 import { MemberEnrollmentDetailPage } from "./pages/MemberEnrollmentDetailPage";
+import { institutionNavigation } from "./navigation";
 import { InstitutionShell } from "@/shells/InstitutionShell";
 import { setCurrentUser } from "@/shared/auth/authStore";
 import { USER_ROLES } from "@/shared/constants/roles";
 
-describe("机构会员邀请与服务准备", () => {
+describe("机构客户服务邀约与服务接入", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
 		setCurrentUser(null);
 	});
 
-	it("提供会员邀请与一次性短码说明", () => {
-		render(<MemberInvitationPage />, { wrapper: MemoryRouter });
-		expect(
-			screen.getByRole("heading", { name: "会员邀请" }),
-		).toBeInTheDocument();
-		expect(screen.getByText(/短码只会展示一次/)).toBeInTheDocument();
+	it("正式导航使用客户服务术语并保留原有路由合同", () => {
+		expect(institutionNavigation).toEqual(
+			expect.arrayContaining([
+				{ label: "客户服务邀约", path: "/institution/member-invitations" },
+				{ label: "服务客户列表", path: "/institution/member-enrollments" },
+			]),
+		);
+		expect(institutionNavigation.map((item) => item.label)).not.toEqual(
+			expect.arrayContaining(["会员邀请", "会员入组", "健管师邀请", "试点健管师接入"]),
+		);
 	});
 
-	it("会员入组列表说明 cursor 批次而非总页数", () => {
+	it("客户服务邀约不包装为会员开通并保留一次性短码说明", () => {
+		render(<MemberInvitationPage />, { wrapper: MemoryRouter });
+		expect(screen.getByRole("heading", { name: "客户服务邀约" })).toBeInTheDocument();
+		expect(screen.getByText(/短码只会展示一次/)).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /会员开通|会员购买/ })).not.toBeInTheDocument();
+	});
+
+	it("服务客户列表不包装为会员购买并说明 cursor 批次而非总页数", () => {
 		render(<MemberEnrollmentPage />, { wrapper: MemoryRouter });
-		expect(
-			screen.getByRole("heading", { name: "会员入组" }),
-		).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "服务客户列表" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "上一批" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "下一批" })).toBeInTheDocument();
 		expect(screen.queryByText(/共\s*\d+\s*页/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /会员开通|会员购买/ })).not.toBeInTheDocument();
 	});
 
 	it("机构Shell不展示内部数值型门店ID", () => {
@@ -147,7 +158,7 @@ describe("机构会员邀请与服务准备", () => {
 		});
 	});
 
-	it("会员入组详情使用业务文案而非后端状态枚举", async () => {
+	it("客户服务接入详情使用业务文案且不把服务客户显示为付费会员", async () => {
 		mockSequence(
 			success(
 				enrollmentDetail({
@@ -181,6 +192,8 @@ describe("机构会员邀请与服务准备", () => {
 		expect(screen.queryByText("Revision")).not.toBeInTheDocument();
 		expect(screen.queryByText(/0198b963…000031/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/0198b963…000033/)).not.toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "客户服务接入详情" })).toBeInTheDocument();
+		expect(screen.queryByText(/付费会员|会员购买/)).not.toBeInTheDocument();
 	});
 });
 

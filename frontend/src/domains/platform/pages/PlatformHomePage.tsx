@@ -33,7 +33,7 @@ export function PlatformHomePage() {
 							</span>
 						</div>
 					}
-					description="集中查看待审核事项，按机构、人员与会员对象进入对应治理工作台。"
+					description="集中查看待审核事项，按机构、人员与用户对象进入对应治理工作台。"
 					eyebrow="运营总览"
 					title="平台审核工作台"
 				/>
@@ -134,8 +134,8 @@ export function PlatformHomePage() {
 							to="/platform/institution-reviews"
 						/>
 						<WorkbenchLink
-							description="领取并处理会员实名审核"
-							label="会员实名审核"
+							description="领取并处理用户实名审核"
+							label="用户实名审核"
 							to="/platform/identity-reviews"
 						/>
 					</nav>

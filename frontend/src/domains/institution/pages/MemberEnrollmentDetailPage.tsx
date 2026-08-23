@@ -120,7 +120,7 @@ export function MemberEnrollmentDetailPage() {
 		event.preventDefault();
 		if (!detail?.identity) {
 			setFeedback({
-				message: "会员尚未提交实名资料，当前不能核验。",
+				message: "服务客户尚未提交实名资料，当前不能核验。",
 				tone: "error",
 			});
 			return;
@@ -201,7 +201,7 @@ export function MemberEnrollmentDetailPage() {
 		);
 	}
 
-	if (loading) return <LoadingPanel label="正在加载会员服务准备详情…" />;
+	if (loading) return <LoadingPanel label="正在加载客户服务接入详情…" />;
 
 	return (
 		<main className="mx-auto w-full max-w-[1280px] space-y-5">
@@ -211,15 +211,15 @@ export function MemberEnrollmentDetailPage() {
 					to="/institution/member-enrollments"
 				>
 					<ArrowLeft aria-hidden="true" className="mr-1" size={16} />
-					返回会员入组
+					返回服务客户列表
 				</Link>
 			</div>
 			<header className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<p className="text-xs font-semibold tracking-wide text-teal-700">
-						会员服务 / 服务准备详情
+						客户服务 / 接入详情
 					</p>
-					<h1 className="mt-1 text-2xl font-semibold">会员入组详情</h1>
+					<h1 className="mt-1 text-2xl font-semibold">客户服务接入详情</h1>
 				</div>
 				<button
 					className={secondaryButtonClassName}
@@ -235,7 +235,7 @@ export function MemberEnrollmentDetailPage() {
 			{detail ? (
 				<>
 					<section
-						aria-label="会员旅程"
+						aria-label="客户服务接入流程"
 						className="grid gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-panel sm:grid-cols-5"
 					>
 						{journey(detail).map((step) => (
@@ -363,7 +363,7 @@ export function MemberEnrollmentDetailPage() {
 									</>
 								) : (
 									<p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-										会员尚未提交实名资料，机构不能提前核验。
+										服务客户尚未提交实名资料，机构不能提前核验。
 									</p>
 								)}
 							</article>
@@ -492,7 +492,7 @@ export function MemberEnrollmentDetailPage() {
 												className="mr-2"
 												size={17}
 											/>
-											查看健康档案与评估准备
+											查看客户健康档案与评估准备
 										</Link>
 									</>
 								) : (

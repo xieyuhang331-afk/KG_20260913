@@ -63,9 +63,9 @@ export function MemberEnrollmentPage() {
     <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-teal-700">会员服务 / 服务准备</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">会员入组</h1>
-          <p className="mt-2 text-sm text-slate-500">沿邀请、实名、同意、分配和服务准备中案例推进。</p>
+          <p className="text-xs font-semibold tracking-wide text-teal-700">客户服务 / 服务准备</p>
+          <h1 className="mt-1 text-2xl font-semibold text-slate-950">服务客户列表</h1>
+          <p className="mt-2 text-sm text-slate-500">查看已与当前机构建立健康管理服务关系的用户；服务接入不代表付费会员关系。</p>
         </div>
         <button className={secondaryButtonClassName} disabled={loading} onClick={() => void load(cursor)} type="button">
           <RefreshCw aria-hidden="true" className="mr-2" size={16} />
@@ -76,7 +76,7 @@ export function MemberEnrollmentPage() {
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div>
-            <h2 className="font-semibold">当前机构会员</h2>
+            <h2 className="font-semibold">当前机构服务客户</h2>
             <p className="mt-1 text-xs text-slate-500">上一批 / 下一批按 opaque cursor 获取，不显示总页数。</p>
           </div>
           <select
@@ -96,11 +96,11 @@ export function MemberEnrollmentPage() {
         </div>
         {loading ? (
           <div className="p-5">
-            <LoadingPanel label="正在加载会员入组…" />
+            <LoadingPanel label="正在加载服务客户…" />
           </div>
         ) : items.length === 0 ? (
           <div className="p-5">
-            <EmptyPanel title="当前批次没有会员" description="先创建会员邀请，或调整状态筛选后重试。" />
+            <EmptyPanel title="当前批次没有服务客户" description="先创建客户服务邀约，或调整状态筛选后重试。" />
           </div>
         ) : (
           <div className="overflow-x-auto">

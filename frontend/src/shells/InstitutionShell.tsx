@@ -5,7 +5,6 @@ import {
 	HeartPulse,
 	MailPlus,
 	Store,
-	UserRoundPlus,
 	UsersRound,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -16,17 +15,16 @@ const navigationIcons = {
 	受控入驻: <BadgeCheck aria-hidden="true" size={17} />,
 	我的申请: <ClipboardList aria-hidden="true" size={17} />,
 	组织资料: <Building2 aria-hidden="true" size={17} />,
-	健管师邀请: <UserRoundPlus aria-hidden="true" size={17} />,
-	健管师名单: <UsersRound aria-hidden="true" size={17} />,
+	健管师团队: <UsersRound aria-hidden="true" size={17} />,
 	服务就绪: <HeartPulse aria-hidden="true" size={17} />,
-	会员邀请: <MailPlus aria-hidden="true" size={17} />,
-	会员入组: <UsersRound aria-hidden="true" size={17} />,
+	客户服务邀约: <MailPlus aria-hidden="true" size={17} />,
+	服务客户列表: <UsersRound aria-hidden="true" size={17} />,
 } as const;
 
 const navigationGroups = [
 	{ label: "机构管理", items: ["受控入驻", "我的申请", "组织资料"] },
-	{ label: "服务团队", items: ["健管师邀请", "健管师名单", "服务就绪"] },
-	{ label: "会员服务", items: ["会员邀请", "会员入组"] },
+	{ label: "服务团队", items: ["健管师团队", "服务就绪"] },
+	{ label: "客户服务", items: ["客户服务邀约", "服务客户列表"] },
 ];
 
 export function InstitutionShell() {

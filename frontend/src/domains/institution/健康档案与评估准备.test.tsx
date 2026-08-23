@@ -84,7 +84,7 @@ describe("机构健康档案与评估准备", () => {
 		);
 
 		expect(
-			await screen.findByRole("link", { name: "查看健康档案与评估准备" }),
+			await screen.findByRole("link", { name: "查看客户健康档案与评估准备" }),
 		).toHaveAttribute(
 			"href",
 			`/institution/service-cases/${caseId}/health-record`,
@@ -96,7 +96,7 @@ describe("机构健康档案与评估准备", () => {
 		renderHealthPage();
 
 		expect(
-			await screen.findByRole("heading", { name: "健康档案与评估准备" }),
+			await screen.findByRole("heading", { name: "客户健康档案与评估准备" }),
 		).toBeInTheDocument();
 		expect(screen.getByText("当前服务案例")).toBeInTheDocument();
 		expect(screen.getAllByText("档案已完整")).not.toHaveLength(0);

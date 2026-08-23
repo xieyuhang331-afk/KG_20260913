@@ -58,7 +58,7 @@ export function ConsentDocumentPage() {
         createIdempotencyKey(),
       );
       setDocument(value);
-      setFeedback({ message: "同意文档已发布；适用会员需重新确认同意。", tone: "success" });
+      setFeedback({ message: "同意文档已发布；适用用户需重新确认同意。", tone: "success" });
     } catch (error) {
       const safe = getSafeApiError(error);
       if (safe.refreshRequired) setDocument(null);
@@ -105,7 +105,7 @@ export function ConsentDocumentPage() {
       <header>
         <p className="text-xs font-semibold tracking-wide text-teal-700">平台治理 / 版本化同意</p>
         <h1 className="mt-1 text-2xl font-semibold">同意文档</h1>
-        <p className="mt-2 text-sm text-slate-500">创建简体中文版本；发布新版本后，适用会员需要重新确认同意。</p>
+        <p className="mt-2 text-sm text-slate-500">创建简体中文版本；发布新版本后，适用用户需要重新确认同意。</p>
       </header>
       {feedback ? (
         <section
@@ -173,7 +173,7 @@ export function ConsentDocumentPage() {
             <span>
               <strong>发布后要求重新同意</strong>
               <br />
-              发布新版本后，适用会员必须按服务端规则重新同意。
+              发布新版本后，适用用户必须按服务端规则重新同意。
             </span>
           </label>
           <button

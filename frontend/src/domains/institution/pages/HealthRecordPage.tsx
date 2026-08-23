@@ -52,7 +52,7 @@ export function HealthRecordPage() {
 	const load = useCallback(
 		async (signal?: AbortSignal) => {
 			if (!isUuidV7(caseId)) {
-				setFeedback("服务案例标识无效，请返回会员入组详情后重试。");
+				setFeedback("服务案例标识无效，请返回客户服务接入详情后重试。");
 				setLoading(false);
 				return;
 			}
@@ -122,16 +122,16 @@ export function HealthRecordPage() {
 				to="/institution/member-enrollments"
 			>
 				<ArrowLeft aria-hidden="true" className="mr-1" size={16} />
-				返回会员入组
+				返回服务客户列表
 			</Link>
 
 			<header className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<p className="text-xs font-semibold tracking-wide text-teal-700">
-						会员服务 / 评估输入准备
+						客户服务 / 评估输入准备
 					</p>
 					<h1 className="mt-1 text-2xl font-semibold text-slate-950">
-						健康档案与评估准备
+						客户健康档案与评估准备
 					</h1>
 					<p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
 						查看当前服务范围内的档案完成度、最新指标和报告记录，确认是否具备进入健康评估的输入条件。
@@ -151,7 +151,7 @@ export function HealthRecordPage() {
 				aria-label="当前健康服务上下文"
 				className="grid overflow-hidden rounded-xl border border-primary-100 bg-white shadow-panel sm:grid-cols-3"
 			>
-				<ContextField label="当前会员" value="当前入组会员（已脱敏）" />
+				<ContextField label="当前服务客户" value="当前服务对象（已脱敏）" />
 				<ContextField label="当前服务案例" value="健康管理服务" />
 				<ContextField label="数据边界" value="本机构 · 当前服务范围" />
 			</section>
@@ -479,7 +479,7 @@ function ReportPanel({
 				</div>
 			) : (
 				<p className="px-5 py-10 text-center text-sm text-slate-500">
-					当前批次没有检测报告记录，可等待会员完成受控报告提交。
+					当前批次没有检测报告记录，可等待服务客户完成受控报告提交。
 				</p>
 			)}
 		</article>

@@ -746,7 +746,12 @@ describe("Organization Frontend Prototype Alignment V1", () => {
 			screen.getByRole("navigation", { name: "机构端主导航" }),
 		).toBeInTheDocument();
 		expect(screen.getAllByRole("img", { name: "康邻智汇" })).toHaveLength(2);
-		expect(screen.getByText("会员服务")).toBeInTheDocument();
+		expect(screen.getByText("客户服务")).toBeInTheDocument();
+		expect(screen.getAllByRole("link", { name: "客户服务邀约" }).length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByRole("link", { name: "服务客户列表" }).length).toBeGreaterThanOrEqual(1);
+		expect(screen.queryByRole("link", { name: "会员邀请" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "会员入组" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: /健管师邀请|试点健管师接入/ })).not.toBeInTheDocument();
 		expect(screen.getByText("平台治理归属")).toBeInTheDocument();
 		expect(screen.getByText("只读资料")).toBeInTheDocument();
 	});

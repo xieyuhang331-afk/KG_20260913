@@ -22,7 +22,7 @@ const navigationIcons: Record<string, ReactNode> = {
 	受控入驻审核: <ClipboardList aria-hidden="true" size={17} />,
 	健管师资质审核: <UserRoundCheck aria-hidden="true" size={17} />,
 	健管师状态: <HeartPulse aria-hidden="true" size={17} />,
-	会员实名审核: <BadgeCheck aria-hidden="true" size={17} />,
+	用户实名审核: <BadgeCheck aria-hidden="true" size={17} />,
 	同意文档: <FileCheck2 aria-hidden="true" size={17} />,
 	组织治理: <Building2 aria-hidden="true" size={17} />,
 };
@@ -40,7 +40,7 @@ const navigationGroups = [
 		items: ["入驻审核", "机构邀请", "受控入驻审核", "组织治理"],
 	},
 	{ label: "人员服务", items: ["健管师资质审核", "健管师状态"] },
-	{ label: "会员合规", items: ["会员实名审核", "同意文档"] },
+	{ label: "用户合规", items: ["用户实名审核", "同意文档"] },
 ];
 
 export function PlatformShell() {

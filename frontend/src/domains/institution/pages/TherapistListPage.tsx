@@ -78,7 +78,7 @@ export function TherapistListPage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">人员管理 / 本机构</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">健管师名单</h1>
+          <h1 className="mt-1 text-2xl font-semibold text-slate-950">健管师团队</h1>
           <p className="mt-2 text-sm text-slate-500">查看当前机构健管师的资质、工作状态和服务容量。</p>
         </div>
         <button className={secondaryButtonClassName} disabled={loading} onClick={() => void load(cursor)} type="button">
@@ -112,7 +112,7 @@ export function TherapistListPage() {
           ) : error ? (
             <div className="p-5">
               <EmptyPanel
-                title="健管师名单暂时不可用"
+                title="健管师团队暂时不可用"
                 description={error}
                 action={
                   <button className={secondaryButtonClassName} onClick={() => void load()} type="button">

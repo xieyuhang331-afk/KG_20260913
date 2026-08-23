@@ -107,9 +107,11 @@ describe("健管师邀请与资格", () => {
     setCurrentUser(null);
   });
 
-  it("创建邀请后关闭短码且不把短码放入URL或持久缓存", async () => {
-    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
-    render(<TherapistInvitationPage />);
+	it("创建邀请后关闭短码且不把短码放入URL或持久缓存", async () => {
+		const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+		render(<TherapistInvitationPage />);
+		expect(screen.getByRole("heading", { name: "试点健管师接入" })).toBeInTheDocument();
+		expect(screen.getByText("仅用于一期定向试点接入，不代表正式开放注册流程。")).toBeInTheDocument();
     await screen.findByText(/\*{7}0001/);
     await userEvent.type(screen.getByRole("textbox", { name: "手机号" }), "13800000001");
     await userEvent.click(screen.getByRole("button", { name: "创建邀请" }));
@@ -142,8 +144,9 @@ describe("健管师邀请与资格", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("已刷新");
   });
 
-  it("健管师列表展示资质风险负载并按当前tenant读取详情", async () => {
-    render(<TherapistListPage />);
+	it("健管师列表展示资质风险负载并按当前tenant读取详情", async () => {
+		render(<TherapistListPage />);
+		expect(screen.getByRole("heading", { name: "健管师团队" })).toBeInTheDocument();
     expect(await screen.findByText("合成健管师甲")).toBeInTheDocument();
     expect(screen.getByText("3 / 30")).toBeInTheDocument();
     expect(screen.getByText("即将到期")).toBeInTheDocument();
@@ -217,7 +220,7 @@ describe("健管师邀请与资格", () => {
 
     vi.mocked(institutionApi.listMemberEnrollments).mockResolvedValue({ items: [], next_cursor: null });
     render(<MemberEnrollmentPage />, { wrapper: MemoryRouter });
-    expect(screen.getByText(/服务准备中案例推进/)).toBeInTheDocument();
+		expect(screen.getByText(/服务接入不代表付费会员关系/)).toBeInTheDocument();
     expect(screen.queryByText(/PREPARING/)).not.toBeInTheDocument();
   });
 });

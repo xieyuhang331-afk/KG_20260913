@@ -114,9 +114,9 @@ export function TherapistInvitationPage() {
     <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-teal-700">人员管理 / 受控邀请</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">健管师邀请</h1>
-          <p className="mt-2 text-sm text-slate-500">创建当前机构邀请，跟踪激活、到期和撤销状态。</p>
+          <p className="text-xs font-semibold tracking-wide text-teal-700">人员管理 / 一期试点</p>
+          <h1 className="mt-1 text-2xl font-semibold text-slate-950">试点健管师接入</h1>
+          <p className="mt-2 text-sm text-slate-500">仅用于一期定向试点接入，不代表正式开放注册流程。</p>
         </div>
         <button
           className={secondaryButtonClassName}

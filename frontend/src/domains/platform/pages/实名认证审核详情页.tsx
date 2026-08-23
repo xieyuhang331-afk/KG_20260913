@@ -197,7 +197,7 @@ export function IdentityReviewDetailPage() {
 			<header className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<p className="text-xs font-semibold tracking-wide text-teal-700">
-						会员治理 / 身份终审详情
+						用户治理 / 身份终审详情
 					</p>
 					<h1 className="mt-1 text-2xl font-semibold">实名认证审核详情</h1>
 				</div>
@@ -442,7 +442,7 @@ function reviewStatusLabel(status: string) {
 			INSTITUTION_CHECKED: "机构核验通过，待平台终审",
 			CLAIMED: "审核员已领取",
 			PLATFORM_REVIEWING: "平台审核中",
-			NEEDS_CORRECTION: "待会员补正",
+			NEEDS_CORRECTION: "待用户补正",
 			VERIFIED: "审核已通过",
 			APPROVED: "审核已通过",
 			REJECTED: "审核未通过",

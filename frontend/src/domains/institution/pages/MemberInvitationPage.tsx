@@ -155,9 +155,9 @@ export function MemberInvitationPage() {
     <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-teal-700">会员服务 / 受控邀请</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">会员邀请</h1>
-          <p className="mt-2 text-sm text-slate-500">邀请本人或代办老人进入本机构服务准备旅程。</p>
+          <p className="text-xs font-semibold tracking-wide text-teal-700">客户服务 / 受控邀约</p>
+          <h1 className="mt-1 text-2xl font-semibold text-slate-950">客户服务邀约</h1>
+          <p className="mt-2 text-sm text-slate-500">邀请本人或代办长者建立本机构健康管理服务关系，不代表会员购买或权益开通。</p>
         </div>
         <button
           className={secondaryButtonClassName}
@@ -179,7 +179,7 @@ export function MemberInvitationPage() {
               <MailPlus aria-hidden="true" size={20} />
             </span>
             <div>
-              <h2 className="font-semibold text-slate-950">创建会员邀请</h2>
+              <h2 className="font-semibold text-slate-950">创建客户服务邀约</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
                 短码只会展示一次，不写入浏览器存储、地址栏或日志。
               </p>
@@ -193,8 +193,8 @@ export function MemberInvitationPage() {
                 onChange={(event) => setMode(event.target.value as MemberInvitationMode)}
                 value={mode}
               >
-                <option value="SELF">本人入组</option>
-                <option value="PROXY_ELDER">代办老人入组</option>
+                <option value="SELF">本人接入服务</option>
+                <option value="PROXY_ELDER">代办长者接入服务</option>
               </select>
             </label>
             <label className="text-sm font-medium text-slate-700">
@@ -236,7 +236,7 @@ export function MemberInvitationPage() {
           </div>
           {loading ? (
             <div className="p-5">
-              <LoadingPanel label="正在加载会员邀请…" />
+              <LoadingPanel label="正在加载客户服务邀约…" />
             </div>
           ) : items.length === 0 ? (
             <div className="p-5">
