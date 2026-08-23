@@ -243,4 +243,58 @@ export interface PreparingServiceCase {
   created_at: string;
   version: number;
 }
+
+export type AssessmentReadinessStatus = "DATA_INSUFFICIENT" | "DATA_SYNC_PENDING" | "DISPUTED" | "ASSESSMENT_READY";
+
+export interface InstitutionHealthRecord {
+  case_id: UUIDv7;
+  profile_completion_status: "COMPLETE" | "INCOMPLETE";
+  missing_section_codes: string[];
+  indicator_codes: string[];
+  indicator_states: Record<string, string>;
+  report_metadata_count: number;
+  readiness_status: AssessmentReadinessStatus;
+  updated_at: string;
+}
+
+export interface DetectionReportMetadata {
+  report_id: UUIDv7;
+  subject_ref: UUIDv7;
+  report_type: string;
+  measured_at: string;
+  received_at: string;
+  status: string;
+  source: "APP" | "STORE";
+  attachment_count: number;
+  structured_indicator_codes: string[];
+  supersedes_report_id: UUIDv7 | null;
+  version: number;
+  created_at: string;
+}
+
+export interface HealthIndicatorFact {
+  fact_ref: UUIDv7;
+  indicator_code: string;
+  value: string | number;
+  unit: string;
+  measured_at: string;
+  received_at: string;
+  source: "APP" | "REPORT" | "STORE";
+  verification_state: "SELF_REPORTED" | "VERIFIED" | "UNKNOWN" | "DISPUTED";
+}
+
+export interface AssessmentReadiness {
+  service_case_id: UUIDv7;
+  status: AssessmentReadinessStatus;
+  reason_codes: string[];
+  missing_indicator_codes: string[];
+  expired_indicator_codes: string[];
+  disputed_indicator_codes: string[];
+  profile_revision_id: UUIDv7 | null;
+  policy_version: string | null;
+  projection_status: "CURRENT" | "SYNC_PENDING" | "UNAVAILABLE" | null;
+  data_as_of: string | null;
+  generated_at: string | null;
+  assembly_id?: UUIDv7 | null;
+}
 import type { UUIDv7 } from "@/shared/api/slice3";
