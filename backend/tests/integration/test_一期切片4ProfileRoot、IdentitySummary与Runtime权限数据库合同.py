@@ -1163,6 +1163,177 @@ async def test_PG10_PG22_Clinical与Institution只经受限函数按当前Case�
         )
 
 
+@pytest.mark.asyncio
+async def test_Slice4四个只读接口真实HTTP错误边界与正向响应保持稳定(
+    pg_database,
+    health_record_writer_database,
+    real_db_client,
+) -> None:
+    from app.core.database import dispose_projection_runtime
+    from app.core.security import create_access_token
+    from app.tasks import slice4_health_data_tasks as projection_tasks
+
+    generated = Uuid7Generator()
+    tenant_id = 99670
+    tenant_public_id = generated.generate()
+    subject_member_id = generated.generate()
+    enrollment_id, case_id, identity_revision_id, actor_user_id = await _seed_case(
+        pg_database,
+        ordinal=13,
+        mode="SELF",
+        tenant_id=tenant_id,
+        tenant_public_id=tenant_public_id,
+        actor_user_id=99671,
+        actor_member_id=subject_member_id,
+        subject_member_id=subject_member_id,
+        proxy_member_id=None,
+    )
+    await health_record_writer_database._fetch_rows(
+        "SELECT * FROM public.slice4_health_profile_root_create_v1("
+        "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,"
+        "$16,$17::jsonb,$18,$19,$20,$21)",
+        actor_user_id,
+        "SELF",
+        subject_member_id,
+        case_id,
+        enrollment_id,
+        generated.generate(),
+        generated.generate(),
+        tenant_public_id,
+        identity_revision_id,
+        1,
+        b"http-contract-profile-snapshot",
+        "profile-k1",
+        b"http-contract-profile-digest",
+        "digest-k1",
+        datetime(2026, 8, 23, tzinfo=timezone.utc),
+        "APP",
+        '["medical_history"]',
+        0,
+        generated.generate(),
+        b"http-contract-request-digest",
+        b"http-contract-postimage-digest",
+    )
+    fact_ref = generated.generate()
+    fact_id = await pg_database._fetch_value(
+        "INSERT INTO public.canonical_health_fact(subject_user_id,subject_member_id,fact_ref,"
+        "report_id,indicator_code,catalog_version,value_kind,numeric_value,unit,measured_at,"
+        "source_type,source_identity_digest,producer_event_key,payload_digest,digest_key_id,"
+        "created_by) VALUES($1,$2,$3,NULL,'weight',2,'NUMERIC',71.20,'kg',"
+        "'2026-08-23T04:00:00+00','APP',$4,$5,$6,'k1',$1) RETURNING id",
+        actor_user_id,
+        subject_member_id,
+        fact_ref,
+        "a" * 64,
+        "slice4-http-contract-fact-0067",
+        "b" * 64,
+    )
+    await pg_database._execute(
+        "INSERT INTO public.health_fact_status_event(status_event_id,fact_id,event_no,"
+        "predecessor_event_id,state,reason_code,actor_user_id,service_case_id,event_digest,"
+        "digest_key_id,created_at) VALUES ("
+        f"'{generated.generate()}',{fact_id},1,NULL,'SELF_REPORTED','FACT_CREATED',"
+        f"{actor_user_id},'{case_id}',decode(repeat('c',64),'hex'),'k1',now())"
+    )
+    try:
+        await projection_tasks._build_projection_v2(
+            generation_no=99670,
+            builder_id=generated.generate(),
+            operation_id=generated.generate(),
+        )
+    finally:
+        for kind in (
+            "health",
+            "confirmation",
+            "health_shadow",
+            "ready_gate",
+            "shadow_confirmation",
+        ):
+            await dispose_projection_runtime(kind)
+
+    institution_user_id = actor_user_id + 200
+    institution_headers = {
+        "Authorization": "Bearer "
+        + create_access_token(
+            {
+                "sub": str(institution_user_id),
+                "role": "org_admin",
+                "tenant_id": tenant_id,
+            }
+        )
+    }
+    routes = (
+        f"/api/v1/institution/service-cases/{case_id}/health-record",
+        f"/api/v1/institution/service-cases/{case_id}/detection-reports",
+        f"/api/v1/institution/service-cases/{case_id}/health-indicators/latest?indicator_codes=weight",
+        f"/api/v1/service-cases/{case_id}/assessment-readiness",
+    )
+    for route in routes:
+        response = real_db_client.get(route, headers=institution_headers)
+        assert response.status_code == 200, (route, response.json())
+
+    invalid_authorizations = (
+        {},
+        {"Authorization": "Basic invalid"},
+        {"Authorization": "Bearer invalid"},
+        {
+            "Authorization": "Bearer "
+            + create_access_token(
+                {"sub": str(institution_user_id), "role": "org_admin", "exp": 0}
+            )
+        },
+    )
+    for route in routes:
+        for headers in invalid_authorizations:
+            response = real_db_client.get(route, headers=headers)
+            assert response.status_code == 401
+            assert response.json()["code"] == "AUTHENTICATION_REQUIRED"
+
+    platform_headers = {
+        "Authorization": "Bearer "
+        + create_access_token({"sub": str(actor_user_id + 300), "role": "super_admin"})
+    }
+    for route in routes:
+        response = real_db_client.get(route, headers=platform_headers)
+        assert response.status_code == 403
+
+    await pg_database._execute(
+        "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
+        "VALUES (199671,NULL,'Slice4 HTTP other root','S4-HTTP-OTHER','county','active',1);"
+        "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
+        "VALUES (199670,199671,'S4-HTTP-OTHER-TENANT','Slice4 HTTP other tenant',"
+        "'store','test','test','active',now(),now());"
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
+        "VALUES (199672,'00000009998','test-only','org_admin','active',199670)"
+    )
+    cross_tenant_headers = {
+        "Authorization": "Bearer "
+        + create_access_token(
+            {"sub": "199672", "role": "org_admin", "tenant_id": 199670}
+        )
+    }
+    for route in routes:
+        response = real_db_client.get(route, headers=cross_tenant_headers)
+        assert response.status_code == 403
+        assert response.json()["code"] == "INSTITUTION_SCOPE_FORBIDDEN"
+
+    missing_case_id = generated.generate()
+    for route in routes:
+        response = real_db_client.get(
+            route.replace(str(case_id), str(missing_case_id)),
+            headers=institution_headers,
+        )
+        assert response.status_code == 404
+        assert response.json()["code"] == "SERVICE_CASE_NOT_FOUND"
+
+    for route in routes:
+        response = real_db_client.get(
+            route.replace(str(case_id), "not-a-uuid"), headers=institution_headers
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "INVALID_REQUEST"
+
+
 def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     pg_database,
     health_record_writer_database,
