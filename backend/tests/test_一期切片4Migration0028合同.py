@@ -73,6 +73,49 @@ def test_0028保持P3_v1_shadow规则版本兼容且只冻结v2规则() -> None:
     assert "projection_version=1 AND rule_version='health-daily-selection-v1'" not in source
 
 
+def test_0028评估权威按入组模式锁定完整当前同意集合() -> None:
+    source = _source()
+    assert "JOIN public.service_enrollment e" in source
+    assert source.count(
+        "d.document_type<>'PROXY_AUTHORIZATION'"
+    ) == 2
+    assert source.count("OR e.mode='PROXY_ELDER'") == 2
+    assert (
+        "WHERE c.case_id=value_service_case_id FOR SHARE OF d"
+    ) in source
+    assert "'authorization_complete',(EXISTS" in source
+
+
+def test_0028为v2_shadow新增水位列传播最小且对称的列级权限() -> None:
+    source = _source()
+    assert (
+        "GRANT SELECT(status_event_count), UPDATE(status_event_count)\n"
+        "        ON TABLE public.health_projection_shadow_run TO \"{health_shadow}\""
+    ) in source
+    assert (
+        "GRANT SELECT(status_event_count) ON TABLE public.health_projection_shadow_run\n"
+        "        TO \"{ready_gate}\", \"{shadow_confirmation}\""
+    ) in source
+    assert (
+        "REVOKE SELECT(status_event_count), UPDATE(status_event_count)\n"
+        "        ON TABLE public.health_projection_shadow_run FROM \"{health_shadow}\""
+    ) in source
+    assert (
+        "REVOKE SELECT(status_event_count) ON TABLE public.health_projection_shadow_run\n"
+        "        FROM \"{ready_gate}\", \"{shadow_confirmation}\""
+    ) in source
+    assert "GRANT ALL ON TABLE public.health_projection_shadow_run" not in source
+    assert "session_user NOT IN ('{health_builder}','{os.environ['KG_HEALTH_PROJECTION_SHADOW_ROLE']}')" in source
+    assert (
+        'os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]: (\n'
+        '            "health_projection_builder_source_v2(BIGINT,JSONB,VARCHAR)",'
+    ) in source
+    assert 'GRANT SELECT(subject_member_id,fact_ref,status_event_seq)' in source
+    assert 'GRANT SELECT(subject_member_id,winner_fact_ref)' in source
+    assert 'REVOKE SELECT(subject_member_id,fact_ref,status_event_seq)' in source
+    assert 'REVOKE SELECT(subject_member_id,winner_fact_ref)' in source
+
+
 def test_0028非空downgrade在REVOKE_DROP_ALTER前fail_closed() -> None:
     source = _source()
     downgrade = source[source.index("def downgrade()") :]
@@ -98,6 +141,7 @@ def test_0028保留PR53四列权限且不修改历史Migration() -> None:
     for column in exact_columns:
         assert f"has_column_privilege" in source
         assert column in source
+    assert "if not" in source[source.index("def _grant_acl"):source.index("def upgrade")]
     downgrade = source[source.index("def downgrade()") :]
     assert "member_service_invitation" not in downgrade or "has_column_privilege" in downgrade
 
@@ -167,6 +211,7 @@ def test_D40_D44_PG16_受限读取投影确认边界与权限目录完整() -> N
         ("slice4_subject_authority_v1", "UUID,UUID,BIGINT,VARCHAR"),
         ("slice4_readiness_currentness_v1", "UUID,BIGINT"),
         ("slice4_projection_coverage_v2", "UUID,JSONB"),
+        ("slice4_report_fact_authority_v1", "UUID,UUID,UUID"),
         ("slice4_report_file_authority_v1", "UUID,UUID,BIGINT,VARCHAR"),
         ("slice4_clinical_profile_read_v1", "BIGINT,VARCHAR,UUID,UUID,UUID"),
         ("slice4_clinical_report_read_v1", "BIGINT,VARCHAR,UUID,UUID,UUID,JSONB"),
@@ -199,5 +244,18 @@ def test_D40_D44_PG16_受限读取投影确认边界与权限目录完整() -> N
     assert "SECURITY DEFINER SET search_path=pg_catalog,pg_temp" in source
     assert "health_projection_builder_source_v2" in source
     assert "health_projection_subject_evidence_verify_v2" in source
+
+
+def test_0028_downgrade预检覆盖全部v2投影和readiness附件状态() -> None:
+    source = _source()
+    downgrade = source[source.index("def downgrade()") :]
+    for table in (
+        "health_projection_generation",
+        "health_projection_shadow_run",
+        "health_projection_window_selection",
+        "assessment_readiness_case_pointer",
+        "detection_report_attachment",
+    ):
+        assert table in downgrade
     assert "GRANT SELECT ON TABLE public.health_projection_source_visibility_v2" not in source
     assert "GRANT SELECT ON TABLE public.health_projection_status_visibility_v2" not in source

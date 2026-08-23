@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from datetime import datetime, timezone
 from uuid import UUID
@@ -53,6 +54,7 @@ async def _seed_case(
     therapist_user_id = actor_user_id + 100
     issuer_user_id = actor_user_id + 200
     reviewer_user_id = actor_user_id + 300
+    digest_digit = format(ordinal % 16, "x")
     proxy_sql = "NULL" if proxy_member_id is None else f"'{proxy_member_id}'"
     actor_link_member = actor_member_id
     member_rows_sql = (
@@ -114,8 +116,8 @@ async def _seed_case(
         "INSERT INTO public.member_service_invitation(invitation_id,tenant_id,mode,phone_ciphertext,"
         "phone_key_id,phone_digest,phone_digest_key_id,phone_masked,code_digest,code_key_id,status,"
         "failed_attempts,expires_at,issued_by,issued_at,accepted_at,revoked_at,version) VALUES ("
-        f"'{invitation_id}',{tenant_id},'{mode}',decode('00','hex'),'k1',repeat('a',63)||'{ordinal}',"
-        f"'k1','*******0000',repeat('b',63)||'{ordinal}','k1','ACCEPTED',0,now()+interval '1 day',"
+        f"'{invitation_id}',{tenant_id},'{mode}',decode('00','hex'),'k1',repeat('a',63)||'{digest_digit}',"
+        f"'k1','*******0000',repeat('b',63)||'{digest_digit}','k1','ACCEPTED',0,now()+interval '1 day',"
         f"{issuer_user_id},now(),now(),NULL,1);"
         "INSERT INTO public.service_enrollment(enrollment_id,invitation_id,tenant_id,subject_member_id,"
         "proxy_member_id,mode,status,service_scope_tags,current_identity_verification_id,current_assignment_id,"
@@ -132,23 +134,23 @@ async def _seed_case(
         "real_name_ciphertext,real_name_key_id,id_ciphertext,id_key_id,birth_date_ciphertext,birth_date_key_id,"
         "id_masked,identity_fingerprint,fingerprint_key_id,input_digest,submitted_by_member_id,created_at) VALUES ("
         f"'{revision_id}','{verification_id}',1,'PRC_RESIDENT_ID',decode('00','hex'),'k1',decode('01','hex'),"
-        f"'k1',decode('02','hex'),'k1','**************0000',repeat('c',63)||'{ordinal}','k1',"
-        f"repeat('d',63)||'{ordinal}','{subject_member_id}',now());"
+        f"'k1',decode('02','hex'),'k1','**************0000',repeat('c',63)||'{digest_digit}','k1',"
+        f"repeat('d',63)||'{digest_digit}','{subject_member_id}',now());"
         "INSERT INTO public.member_identity_review_decision(decision_id,verification_id,revision_id,phase,"
         "reviewer_user_id,decision,reason_code,correction_fields,attestation_code,represented_elder_eligible,"
         "request_digest,evidence_digest,created_at) VALUES ("
         f"'{decision_id}','{verification_id}','{revision_id}','PLATFORM',{reviewer_user_id},'APPROVED',"
-        f"'OFFLINE_VERIFIED',NULL,'SLICE4',true,repeat('e',63)||'{ordinal}',repeat('f',63)||'{ordinal}',now());"
+        f"'OFFLINE_VERIFIED',NULL,'SLICE4',true,repeat('e',63)||'{digest_digit}',repeat('f',63)||'{digest_digit}',now());"
         "INSERT INTO identity.identity_subject_claim_registry(claim_id,identity_fingerprint,fingerprint_key_id,"
         "user_ref,member_id,source_kind,p1_submission_id,p1_decision_ref,slice3_revision_id,slice3_decision_id,"
         "source_facts_version,source_evidence_digest,adult_eligible,represented_elder_eligible,claimed_at,version) VALUES ("
-        f"'{claim_id}',repeat('{ordinal}',64),'k1',NULL,'{subject_member_id}','SLICE3',NULL,NULL,"
+        f"'{claim_id}',repeat('{digest_digit}',64),'k1',NULL,'{subject_member_id}','SLICE3',NULL,NULL,"
         f"'{revision_id}','{decision_id}',1,repeat('1',64),NULL,true,now(),1);"
         "INSERT INTO public.therapist_invitation(invitation_id,tenant_id,phone_ciphertext,phone_encryption_key_id,"
         "phone_digest,phone_digest_key_id,phone_masked,code_digest,code_digest_key_id,expires_at,status,"
         "failed_attempts,issued_by,issued_at,activated_at,version) VALUES ("
-        f"'{therapist_invitation_id}',{tenant_id},decode('00','hex'),'k1',repeat('2',63)||'{ordinal}','k1',"
-        f"'*******0000',repeat('3',63)||'{ordinal}','k1',now()+interval '1 day','ACTIVATED',0,"
+        f"'{therapist_invitation_id}',{tenant_id},decode('00','hex'),'k1',repeat('2',63)||'{digest_digit}','k1',"
+        f"'*******0000',repeat('3',63)||'{digest_digit}','k1',now()+interval '1 day','ACTIVATED',0,"
         f"{issuer_user_id},now(),now(),1);"
         "INSERT INTO public.therapist_profile(therapist_id,user_id,tenant_id,invitation_id,status,capacity_limit,"
         "active_case_count,current_revision_no,totp_secret_ciphertext,totp_encryption_key_id,totp_enabled,"
@@ -245,6 +247,7 @@ async def test_PG27_SELF与PROXY老人仅经受限函数原子创建ProfileRoot(
             datetime(2026, 8, 21, tzinfo=timezone.utc),
             "APP",
             '["medical_history"]',
+            0,
             idempotency_key,
             b"request-digest-value",
             b"expected-postimage-value",
@@ -252,7 +255,7 @@ async def test_PG27_SELF与PROXY老人仅经受限函数原子创建ProfileRoot(
         sql = (
             "SELECT * FROM public.slice4_health_profile_root_create_v1("
             "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,"
-            "$16,$17::jsonb,$18,$19,$20)"
+            "$16,$17::jsonb,$18,$19,$20,$21)"
         )
         rows = await health_record_writer_database._fetch_rows(sql, *values)
         assert len(rows) == 1
@@ -324,6 +327,7 @@ async def test_PG27_SELF与PROXY老人仅经受限函数原子创建ProfileRoot(
 async def test_PG06_PG29_报告Owner函数原子绑定排序附件并稳定回放(
     pg_database,
     health_record_writer_database,
+    health_fact_writer_database,
 ) -> None:
     generated = Uuid7Generator()
     tenant_public_id = generated.generate()
@@ -401,6 +405,87 @@ async def test_PG06_PG29_报告Owner函数原子绑定排序附件并稳定回�
         subject_member_id,
         idempotency_key,
     ) == 1
+    authority_sql = (
+        "SELECT public.slice4_report_fact_authority_v1($1,$2,$3)"
+    )
+    assert await health_fact_writer_database._fetch_value(
+        authority_sql, requested_report_id, subject_member_id, case_id
+    ) is True
+    assert await health_fact_writer_database._fetch_value(
+        "SELECT has_table_privilege(current_user,'public.detection_report','SELECT')"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_最终整改_C_REPORT事实权威只允许同TenantMemberCase的CLEAN报告(
+    pg_database,
+    health_fact_writer_database,
+) -> None:
+    generated = Uuid7Generator()
+    first_member = generated.generate()
+    second_member = generated.generate()
+    first_tenant = generated.generate()
+    second_tenant = generated.generate()
+    _, first_case, _, first_user = await _seed_case(
+        pg_database,
+        ordinal=11,
+        mode="SELF",
+        tenant_id=141010,
+        tenant_public_id=first_tenant,
+        actor_user_id=141011,
+        actor_member_id=first_member,
+        subject_member_id=first_member,
+        proxy_member_id=None,
+    )
+    _, second_case, _, _ = await _seed_case(
+        pg_database,
+        ordinal=12,
+        mode="SELF",
+        tenant_id=142010,
+        tenant_public_id=second_tenant,
+        actor_user_id=142011,
+        actor_member_id=second_member,
+        subject_member_id=second_member,
+        proxy_member_id=None,
+    )
+    report_id = generated.generate()
+    await pg_database._execute(
+        "INSERT INTO public.detection_report(user_id,store_id,report_type,detection_time,report_data,"
+        "report_id,subject_member_id,tenant_id,service_case_id,schema_version,source_type,"
+        "measured_at,received_at,report_status,version,supersedes_report_id,created_by) "
+        f"VALUES(NULL,NULL,'LAB_REPORT',now(),'{{}}'::jsonb,'{report_id}','{first_member}',141010,"
+        f"'{first_case}',1,'APP',now(),now(),'CLEAN',1,NULL,{first_user})"
+    )
+    authority_sql = "SELECT public.slice4_report_fact_authority_v1($1,$2,$3)"
+    assert await health_fact_writer_database._fetch_value(
+        authority_sql, report_id, first_member, first_case
+    ) is True
+    for member_id, case_id in (
+        (second_member, first_case),
+        (first_member, second_case),
+        (second_member, second_case),
+    ):
+        assert await health_fact_writer_database._fetch_value(
+            authority_sql, report_id, member_id, case_id
+        ) is False
+    assert await health_fact_writer_database._fetch_value(
+        authority_sql, generated.generate(), first_member, first_case
+    ) is False
+    before = {
+        table: await pg_database._fetch_value(f"SELECT count(*) FROM public.{table}")
+        for table in ("canonical_health_fact", "slice4_audit", "slice4_outbox")
+    }
+    await pg_database._execute(
+        f"UPDATE public.detection_report SET report_status='SUPERSEDED' "
+        f"WHERE report_id='{report_id}'"
+    )
+    assert await health_fact_writer_database._fetch_value(
+        authority_sql, report_id, first_member, first_case
+    ) is False
+    assert {
+        table: await pg_database._fetch_value(f"SELECT count(*) FROM public.{table}")
+        for table in before
+    } == before
 
 
 @pytest.mark.asyncio
@@ -465,6 +550,13 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         "qualification_valid_until=current_date+365,submitted_at=now(),reviewed_at=now(),"
         f"updated_at=now(),version=2 WHERE therapist_id='{therapist_id}'; COMMIT;"
     )
+    await pg_database._execute(
+        "INSERT INTO public.institution_service_readiness(tenant_id,readiness_status,"
+        "reason_codes,qualified_therapist_count,computed_at,evidence_version,input_digest,"
+        "result_digest,source_versions,next_expiry_at,version) VALUES ("
+        "98810,'SERVICE_READY','{}'::text[],1,now(),1,repeat('7',64),repeat('5',64),"
+        "'{}'::jsonb,current_date+365,1)"
+    )
     profile_id = generated.generate()
     profile_revision_id = generated.generate()
     profile_values = (
@@ -485,6 +577,7 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         datetime(2026, 8, 21, tzinfo=timezone.utc),
         "APP",
         '["medical_history"]',
+        0,
         generated.generate(),
         b"profile-request-digest",
         b"profile-postimage-digest",
@@ -492,7 +585,7 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
     await health_record_writer_database._fetch_rows(
         "SELECT * FROM public.slice4_health_profile_root_create_v1("
         "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,"
-        "$16,$17::jsonb,$18,$19,$20)",
+        "$16,$17::jsonb,$18,$19,$20,$21)",
         *profile_values,
     )
     policy_version_id = generated.generate()
@@ -503,7 +596,7 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         "rule_version,professionally_approved,approved_by,approved_at,effective_from,retired_at,"
         "policy_digest,digest_key_id,created_at) VALUES ("
         f"'{policy_version_id}',1,'PUBLISHED','[\"medical_history\"]'::jsonb,"
-        "'[\"height\",\"weight\"]'::jsonb,'[\"VERIFIED\"]'::jsonb,2,'slice4-v1',true,"
+        "'[\"fasting_glucose\"]'::jsonb,'[\"VERIFIED\"]'::jsonb,2,'health-daily-selection-v2',true,"
         f"{reviewer_user_id},now(),now()-interval '1 minute',NULL,decode(repeat('a',64),'hex'),"
         "'policy-k1',now())"
     )
@@ -535,7 +628,7 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         profile_revision_id,
         policy_version_id,
         2,
-        "slice4-v1",
+        "health-daily-selection-v2",
         "snapshot-v1",
         json.dumps(source_vector, separators=(",", ":")),
         "[]",
@@ -652,6 +745,272 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         fact_ref,
     ) == 1
 
+    document_version_id = generated.generate()
+    rendition_id = generated.generate()
+    consent_record_id = generated.generate()
+    await pg_database._execute(
+        "INSERT INTO public.consent_document_version(document_version_id,document_type,"
+        "semantic_version,status,requires_reconsent,manifest_digest,effective_at,retired_at,"
+        "published_by,created_at,version) VALUES ("
+        f"'{document_version_id}','ASSESSMENT_CONSENT','slice4-ready-v1','PUBLISHED',true,"
+        f"repeat('8',64),now()-interval '1 minute',NULL,{reviewer_user_id},now(),1);"
+        "INSERT INTO public.consent_document_rendition(rendition_id,document_version_id,locale,"
+        "title,body,content_sha256,created_at) VALUES ("
+        f"'{rendition_id}','{document_version_id}','zh-CN','Slice4 Consent','Synthetic consent',"
+        "repeat('9',64),now());"
+        "INSERT INTO public.consent_record(consent_record_id,enrollment_id,subject_member_id,"
+        "proxy_member_id,document_type,document_version_id,rendition_id,purpose_codes,choice,"
+        "status,predecessor_id,presented_at,accepted_at,withdrawn_at,version) VALUES ("
+        f"'{consent_record_id}','{enrollment_id}','{subject_member_id}',NULL,'ASSESSMENT_CONSENT',"
+        f"'{document_version_id}','{rendition_id}','[\"ASSESSMENT\"]'::jsonb,'ACCEPTED',"
+        "'ACCEPTED',NULL,now()-interval '2 minutes',now()-interval '1 minute',NULL,1)"
+    )
+
+    from app.tasks import slice4_health_data_tasks as projection_tasks
+
+    try:
+        generation_id = await projection_tasks._build_projection_v2(
+            generation_no=8805,
+            builder_id=generated.generate(),
+            operation_id=generated.generate(),
+        )
+    finally:
+        for kind in (
+            "health", "confirmation", "health_shadow", "ready_gate",
+            "shadow_confirmation",
+        ):
+            await dispose_projection_runtime(kind)
+    assert await pg_database._fetch_value(
+        "SELECT status FROM public.health_projection_generation WHERE id=$1",
+        generation_id,
+    ) == "READY"
+
+    factory = await get_slice4_session_factory("assessment_readiness_writer")
+    try:
+        async with factory() as session:
+            async with session.begin():
+                ready = await recompute_assessment_readiness(
+                    AssessmentReadinessRepository(session), service_case_id=case_id
+                )
+    finally:
+        await dispose_projection_runtime("health_reader")
+        await dispose_slice4_runtime("assessment_readiness_writer")
+    assert ready["readiness_status"] == "ASSESSMENT_READY"
+    ready_assembly = (await pg_database._fetch_rows(
+        "SELECT resolved_generation_id,required_max_fact_id,required_max_status_event_seq "
+        "FROM public.assessment_input_assembly WHERE assembly_id=$1",
+        ready["assembly_id"],
+    ))[0]
+    assert ready_assembly["resolved_generation_id"] == generation_id
+    assert ready_assembly["required_max_fact_id"] >= fact_id
+    assert ready_assembly["required_max_status_event_seq"] >= state_first[0]["status_event_seq"]
+
+    stored = (await pg_database._fetch_rows(
+        "SELECT * FROM public.assessment_input_assembly WHERE assembly_id=$1",
+        ready["assembly_id"],
+    ))[0]
+    stored_facts = await pg_database._fetch_rows(
+        "SELECT f.*,p.status_event_seq FROM public.assessment_input_assembly_fact f "
+        "JOIN public.health_ready_projection_fact_v2 p "
+        "ON p.generation_id=$2 AND p.fact_ref=f.fact_ref "
+        "WHERE f.assembly_id=$1 ORDER BY f.indicator_code",
+        ready["assembly_id"], generation_id,
+    )
+
+    def _json(value):
+        return json.loads(value) if isinstance(value, str) else value
+
+    base_vector = {
+        "consent_version_ids": _json(stored["consent_version_ids"]),
+        "resolved_generation_id": str(stored["resolved_generation_id"]),
+        "required_max_fact_id": stored["required_max_fact_id"],
+        "required_max_status_event_seq": stored["required_max_status_event_seq"],
+        "missing_codes": _json(stored["missing_codes"]),
+        "expired_codes": _json(stored["expired_codes"]),
+        "disputed_codes": _json(stored["disputed_codes"]),
+        "source_vector_digest": bytes(stored["source_vector_digest"]).hex(),
+        "source_digest": bytes(stored["source_digest"]).hex(),
+        "assembly_digest": bytes(stored["assembly_digest"]).hex(),
+        "digest_key_id": stored["digest_key_id"],
+        "generated_at": stored["generated_at"].isoformat(),
+    }
+    base_fact_rows = [{
+        "indicator_code": row["indicator_code"],
+        "fact_ref": str(row["fact_ref"]),
+        "measured_at": row["measured_at"].isoformat(),
+        "received_at": row["received_at"].isoformat(),
+        "source_type": row["source_type"],
+        "verification_state": row["verification_state"],
+        "status_event_seq": row["status_event_seq"],
+        "value_ciphertext": bytes(row["value_ciphertext"]).hex(),
+        "value_key_id": row["value_key_id"],
+        "unit": row["unit"],
+        "row_digest": bytes(row["row_digest"]).hex(),
+    } for row in stored_facts]
+
+    async def assert_ready_rejected(*, vector=None, facts=None, profile_revision=profile_revision_id):
+        rejected_assembly_id = generated.generate()
+        audit_id = generated.generate()
+        event_id = generated.generate()
+        receipt_id = generated.generate()
+        candidate = dict(base_vector if vector is None else vector)
+        candidate.update({
+            "audit_id": str(audit_id),
+            "event_id": str(event_id),
+            "receipt_id": str(receipt_id),
+        })
+        with pytest.raises(Exception, match="SLICE4_ASSEMBLY_CURRENTNESS_INVALID"):
+            await assessment_readiness_writer_database._fetch_rows(
+                sql,
+                case_id, rejected_assembly_id, subject_member_id, tenant_public_id,
+                therapist_id, profile_revision, policy_version_id, 2,
+                "health-daily-selection-v2", stored["source_snapshot"],
+                json.dumps(candidate, separators=(",", ":")),
+                json.dumps(base_fact_rows if facts is None else facts, separators=(",", ":")),
+                "ASSESSMENT_READY", "[]", generated.generate(),
+                b"rejected-request-digest", b"rejected-postimage-digest",
+            )
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.assessment_input_assembly WHERE assembly_id=$1",
+            rejected_assembly_id,
+        ) == 0
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.slice4_audit WHERE audit_id=$1", audit_id
+        ) == 0
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.slice4_outbox WHERE event_id=$1", event_id
+        ) == 0
+        assert await pg_database._fetch_value(
+            "SELECT count(*) FROM public.slice4_idempotency WHERE receipt_id=$1", receipt_id
+        ) == 0
+
+    tampered_vector = dict(base_vector)
+    tampered_vector["required_max_fact_id"] += 1
+    await assert_ready_rejected(vector=tampered_vector)
+    tampered_facts = [dict(item) for item in base_fact_rows]
+    tampered_facts[0]["fact_ref"] = str(generated.generate())
+    await assert_ready_rejected(facts=tampered_facts)
+
+    await pg_database._execute(
+        "UPDATE public.consent_record SET status='WITHDRAWN',withdrawn_at=now(),version=version+1 "
+        f"WHERE consent_record_id='{consent_record_id}'"
+    )
+    await assert_ready_rejected()
+    await pg_database._execute(
+        "UPDATE public.consent_record SET status='ACCEPTED',withdrawn_at=NULL,version=version+1 "
+        f"WHERE consent_record_id='{consent_record_id}'"
+    )
+
+    next_profile_revision_id = generated.generate()
+    await pg_database._execute(
+        "INSERT INTO public.health_profile_revision(profile_revision_id,subject_member_id,"
+        "subject_user_id,revision_no,tenant_public_id,identity_source_kind,identity_revision_ref,"
+        "identity_source_version,snapshot_ciphertext,snapshot_key_id,reconfirmed_at,source_type,"
+        "changed_fields,supersedes_revision_id,actor_user_id,actor_type,snapshot_digest,"
+        "digest_key_id,created_at) SELECT "
+        f"'{next_profile_revision_id}',subject_member_id,subject_user_id,revision_no+1,"
+        "tenant_public_id,identity_source_kind,identity_revision_ref,identity_source_version,"
+        "snapshot_ciphertext,snapshot_key_id,reconfirmed_at,source_type,changed_fields,"
+        f"profile_revision_id,actor_user_id,actor_type,snapshot_digest,digest_key_id,now() "
+        f"FROM public.health_profile_revision WHERE profile_revision_id='{profile_revision_id}';"
+        "UPDATE public.health_profile SET "
+        f"current_revision_id='{next_profile_revision_id}',version=version+1,updated_at=now() "
+        f"WHERE profile_public_id='{profile_id}'"
+    )
+    await assert_ready_rejected(profile_revision=profile_revision_id)
+    await pg_database._execute(
+        "UPDATE public.health_profile SET "
+        f"current_revision_id='{profile_revision_id}',version=version+1,updated_at=now() "
+        f"WHERE profile_public_id='{profile_id}'"
+    )
+
+    replacement_fact_ref = generated.generate()
+    replacement_event_id = generated.generate()
+    replacement_fact_id = await pg_database._fetch_value(
+        "INSERT INTO public.canonical_health_fact(subject_user_id,indicator_code,catalog_version,"
+        "value_kind,numeric_value,unit,measured_at,received_at,created_at,source_type,"
+        "source_identity_digest,producer_event_key,payload_digest,digest_key_id,supersedes_fact_id,"
+        "correction_reason_code,created_by,fact_ref,subject_member_id) VALUES (NULL,'fasting_glucose',"
+        "2,'NUMERIC',6.20,'mmol/L',now()-interval '30 minutes',now(),now(),'APP',repeat('a',64),"
+        f"'slice4-replacement-{replacement_fact_ref}',repeat('b',64),'health-k1',{fact_id},"
+        f"'CORRECTION',{actor_user_id},'{replacement_fact_ref}','{subject_member_id}') RETURNING id"
+    )
+    await pg_database._execute(
+        "INSERT INTO public.health_fact_status_event(status_event_id,fact_id,event_no,"
+        "predecessor_event_id,state,reason_code,actor_user_id,service_case_id,event_digest,"
+        "digest_key_id,created_at) VALUES ("
+        f"'{replacement_event_id}',{replacement_fact_id},1,NULL,'VERIFIED','THERAPIST_VERIFIED',"
+        f"{actor_user_id + 100},'{case_id}',decode(repeat('c',64),'hex'),'health-k1',now())"
+    )
+    await assert_ready_rejected()
+
+    try:
+        replacement_generation_id = await projection_tasks._build_projection_v2(
+            generation_no=8806,
+            builder_id=generated.generate(),
+            operation_id=generated.generate(),
+        )
+    finally:
+        for kind in (
+            "health", "confirmation", "health_shadow", "ready_gate",
+            "shadow_confirmation",
+        ):
+            await dispose_projection_runtime(kind)
+    factory = await get_slice4_session_factory("assessment_readiness_writer")
+    try:
+        async with factory() as session:
+            async with session.begin():
+                replacement_ready = await recompute_assessment_readiness(
+                    AssessmentReadinessRepository(session), service_case_id=case_id
+                )
+    finally:
+        await dispose_projection_runtime("health_reader")
+        await dispose_slice4_runtime("assessment_readiness_writer")
+    assert replacement_ready["readiness_status"] == "ASSESSMENT_READY"
+    replacement_stored = (await pg_database._fetch_rows(
+        "SELECT * FROM public.assessment_input_assembly WHERE assembly_id=$1",
+        replacement_ready["assembly_id"],
+    ))[0]
+    assert replacement_stored["resolved_generation_id"] == replacement_generation_id
+    replacement_rows = await pg_database._fetch_rows(
+        "SELECT f.*,p.status_event_seq FROM public.assessment_input_assembly_fact f "
+        "JOIN public.health_ready_projection_fact_v2 p "
+        "ON p.generation_id=$2 AND p.fact_ref=f.fact_ref "
+        "WHERE f.assembly_id=$1 ORDER BY f.indicator_code",
+        replacement_ready["assembly_id"], replacement_generation_id,
+    )
+    stored = replacement_stored
+    base_fact_rows = [{
+        "indicator_code": row["indicator_code"],
+        "fact_ref": str(row["fact_ref"]),
+        "measured_at": row["measured_at"].isoformat(),
+        "received_at": row["received_at"].isoformat(),
+        "source_type": row["source_type"],
+        "verification_state": row["verification_state"],
+        "status_event_seq": row["status_event_seq"],
+        "value_ciphertext": bytes(row["value_ciphertext"]).hex(),
+        "value_key_id": row["value_key_id"],
+        "unit": row["unit"],
+        "row_digest": bytes(row["row_digest"]).hex(),
+    } for row in replacement_rows]
+    base_vector = {
+        "consent_version_ids": _json(stored["consent_version_ids"]),
+        "resolved_generation_id": str(stored["resolved_generation_id"]),
+        "required_max_fact_id": stored["required_max_fact_id"],
+        "required_max_status_event_seq": stored["required_max_status_event_seq"],
+        "missing_codes": _json(stored["missing_codes"]),
+        "expired_codes": _json(stored["expired_codes"]),
+        "disputed_codes": _json(stored["disputed_codes"]),
+        "source_vector_digest": bytes(stored["source_vector_digest"]).hex(),
+        "source_digest": bytes(stored["source_digest"]).hex(),
+        "assembly_digest": bytes(stored["assembly_digest"]).hex(),
+        "digest_key_id": stored["digest_key_id"],
+        "generated_at": stored["generated_at"].isoformat(),
+    }
+    stale_generation_vector = dict(base_vector)
+    stale_generation_vector["resolved_generation_id"] = str(generation_id)
+    await assert_ready_rejected(vector=stale_generation_vector)
+
 
 @pytest.mark.asyncio
 async def test_PG31_PG32_IdentityAuthority只返回六字段当前证据(pg_database) -> None:
@@ -738,7 +1097,7 @@ async def test_PG10_PG22_Clinical与Institution只经受限函数按当前Case�
     await health_record_writer_database._fetch_rows(
         "SELECT * FROM public.slice4_health_profile_root_create_v1("
         "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::timestamptz,"
-        "$16,$17::jsonb,$18,$19,$20)",
+        "$16,$17::jsonb,$18,$19,$20,$21)",
         actor_user_id,
         "SELF",
         subject_member_id,
@@ -756,6 +1115,7 @@ async def test_PG10_PG22_Clinical与Institution只经受限函数按当前Case�
         datetime(2026, 8, 21, tzinfo=timezone.utc),
         "APP",
         '["medical_history"]',
+        0,
         generated.generate(),
         b"clinical-request-digest",
         b"clinical-postimage-digest",
@@ -837,7 +1197,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
 
     writer, readiness, worker, clinical, institution, identity = expected_roles
     functions = {
-        "root": "public.slice4_health_profile_root_create_v1(bigint,character varying,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,bytea,character varying,bytea,character varying,timestamp with time zone,character varying,jsonb,uuid,bytea,bytea)",
+        "root": "public.slice4_health_profile_root_create_v1(bigint,character varying,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,bytea,character varying,bytea,character varying,timestamp with time zone,character varying,jsonb,bigint,uuid,bytea,bytea)",
         "report": "public.slice4_detection_report_create_v1(bigint,character varying,uuid,uuid,uuid,uuid,character varying,timestamp with time zone,character varying,uuid[],uuid,bytea,bytea)",
         "state": "public.slice4_health_fact_state_transition_v1(uuid,character varying,character varying,bigint,uuid,bigint,character varying,character varying)",
         "assembly": "public.slice4_assessment_assembly_write_v1(uuid,uuid,uuid,uuid,uuid,uuid,uuid,smallint,character varying,character varying,jsonb,jsonb,character varying,jsonb,uuid,bytea,bytea)",
@@ -911,6 +1271,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
         "subject": "public.slice4_subject_authority_v1(uuid,uuid,bigint,character varying)",
         "readiness_current": "public.slice4_readiness_currentness_v1(uuid,bigint)",
         "coverage": "public.slice4_projection_coverage_v2(uuid,jsonb)",
+        "report_fact_authority": "public.slice4_report_fact_authority_v1(uuid,uuid,uuid)",
         "file_authority": "public.slice4_report_file_authority_v1(uuid,uuid,bigint,character varying)",
         "clinical_profile": "public.slice4_clinical_profile_read_v1(bigint,character varying,uuid,uuid,uuid)",
         "clinical_report": "public.slice4_clinical_report_read_v1(bigint,character varying,uuid,uuid,uuid,jsonb)",
@@ -927,12 +1288,13 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
         "subject": {writer, readiness, clinical},
         "readiness_current": {readiness, worker},
         "coverage": {health_reader},
-        "file_authority": {writer, clinical},
+        "report_fact_authority": {health_fact_writer},
+        "file_authority": {writer, clinical, institution},
         "clinical_profile": {clinical},
         "clinical_report": {clinical},
         "clinical_fact": {clinical},
         "institution": {institution},
-        "builder": {health_builder},
+        "builder": {health_builder, _role("KG_TEST_HEALTH_PROJECTION_SHADOW_ROLE")},
         "evidence": evidence_roles,
         "profile_confirm": {writer},
         "report_confirm": {writer},
@@ -996,6 +1358,10 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     )
     assert not pg_database.fetch_value(
         f"SELECT has_table_privilege('{writer}','public.detection_report_attachment','INSERT')"
+    )
+    assert not pg_database.fetch_value(
+        f"SELECT has_table_privilege('{health_fact_writer}',"
+        "'public.detection_report','SELECT')"
     )
     for table in (
         "assessment_input_assembly",
@@ -1115,7 +1481,11 @@ async def test_D01_D13_PG10_本人正式HTTP原子创建Profile并可稳定重�
     first = real_db_client.put("/api/v1/family/health-profile", headers=headers, json=payload)
     assert first.status_code == 200, first.json()
     replay = real_db_client.put("/api/v1/family/health-profile", headers=headers, json=payload)
-    assert replay.status_code == 200 and replay.json() == first.json()
+    assert replay.status_code == 200, replay.json()
+    replay_mismatches = {
+        key for key in first.json() if first.json().get(key) != replay.json().get(key)
+    }
+    assert replay_mismatches == set(), replay_mismatches
     read = real_db_client.get("/api/v1/family/health-profile", headers=authorization)
     assert read.status_code == 200 and read.json() == first.json()
     assert UUID(first.json()["profile_id"]).version == 7
@@ -1145,15 +1515,17 @@ async def test_D01_D13_PG10_本人正式HTTP原子创建Profile并可稳定重�
 async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列表(
     pg_database,
     real_db_client,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     from app.core.security import create_access_token
 
     generated = Uuid7Generator()
     tenant_public_id = generated.generate()
     subject_member_id = generated.generate()
-    _, _, _, actor_user_id = await _seed_case(
+    _, case_id, _, actor_user_id = await _seed_case(
         pg_database,
-        ordinal=0,
+        ordinal=10,
         mode="SELF",
         tenant_id=99640,
         tenant_public_id=tenant_public_id,
@@ -1163,12 +1535,19 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
         proxy_member_id=None,
     )
     file_id = generated.generate()
+    file_content = b"PDFDATA8"
+    file_digest = hashlib.sha256(file_content).hexdigest()
+    monkeypatch.setenv("KG_PRIVATE_FILE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv(
+        "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY",
+        "slice4-disposable-private-file-access-key",
+    )
     await pg_database._execute(
         "INSERT INTO public.private_file(file_id,purpose,owner_user_id,declared_size,"
         "declared_mime_type,declared_sha256,actual_size,actual_mime_type,actual_sha256,"
         "object_key,status,bound_application_id,created_at,expires_at,scanned_at,bound_at,deleted_at) "
         f"VALUES('{file_id}','DETECTION_REPORT',{actor_user_id},8,'application/pdf',"
-        "repeat('a',64),8,'application/pdf',repeat('a',64),"
+        f"'{file_digest}',8,'application/pdf','{file_digest}',"
         f"'slice4-http-report-{file_id}','CLEAN',NULL,now(),"
         "now()+interval '1 day',now(),NULL,NULL)"
     )
@@ -1199,11 +1578,153 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
     assert detail.json()["attachments"] == [
         {"file_id": str(file_id), "mime_type": "application/pdf", "size": 8, "status": "CLEAN"}
     ]
+    created_at = await pg_database._fetch_value(
+        "SELECT created_at FROM public.private_file WHERE file_id=$1", file_id
+    )
+    stored_path = (
+        tmp_path / "slice1" / f"{created_at:%Y}" / f"{created_at:%m}" / str(file_id)
+    )
+    stored_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_path.write_bytes(file_content)
+    access = real_db_client.post(
+        f"/api/v1/private-files/{file_id}/access",
+        headers=authorization,
+        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+    )
+    assert access.status_code == 200, access.json()
+    content = real_db_client.get(
+        access.json()["data"]["access_path"], headers=authorization
+    )
+    assert content.status_code == 200
+    assert content.content == file_content
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.slice4_audit WHERE aggregate_ref=$1 "
+        "AND event_type='REPORT_ORIGINAL_ACCESSED'",
+        report_id,
+    ) == 1
+    institution_user_id = await pg_database._fetch_value(
+        "SELECT id FROM public.\"user\" WHERE tenant_id=$1 AND role='org_admin'",
+        99640,
+    )
+    institution_authorization = {
+        "Authorization": f"Bearer {create_access_token({'sub': str(institution_user_id), 'role': 'org_admin', 'tenant_id': 99640})}"
+    }
+    institution_access = real_db_client.post(
+        f"/api/v1/private-files/{file_id}/access",
+        headers=institution_authorization,
+        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+    )
+    assert institution_access.status_code == 200, institution_access.json()
+    institution_content = real_db_client.get(
+        institution_access.json()["data"]["access_path"],
+        headers=institution_authorization,
+    )
+    assert institution_content.status_code == 200
+    assert institution_content.content == file_content
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.slice4_audit WHERE aggregate_ref=$1 "
+        "AND event_type='REPORT_ORIGINAL_ACCESSED'",
+        report_id,
+    ) == 2
+    await pg_database._execute(
+        "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
+        "VALUES (199641,NULL,'Slice4 other root','S4-OTHER-ROOT','county','active',1);"
+        "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
+        "VALUES (199640,199641,'S4-OTHER-TENANT','Slice4 other tenant','store','test','test','active',now(),now());"
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
+        "VALUES (199642,'00000009999','test-only','org_admin','active',199640);"
+    )
+    cross_tenant_authorization = {
+        "Authorization": f"Bearer {create_access_token({'sub': '199642', 'role': 'org_admin', 'tenant_id': 199640})}"
+    }
+    cross_tenant_access = real_db_client.post(
+        f"/api/v1/private-files/{file_id}/access",
+        headers=cross_tenant_authorization,
+        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+    )
+    assert cross_tenant_access.status_code == 404
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.slice4_audit WHERE aggregate_ref=$1 "
+        "AND event_type='REPORT_ORIGINAL_ACCESSED'",
+        report_id,
+    ) == 2
+    therapist_user_id = await pg_database._fetch_value(
+        "SELECT p.user_id FROM public.service_case c "
+        "JOIN public.therapist_profile p ON p.therapist_id=c.primary_therapist_id "
+        "WHERE c.case_id=$1",
+        case_id,
+    )
+    therapist_id = await pg_database._fetch_value(
+        "SELECT primary_therapist_id FROM public.service_case WHERE case_id=$1",
+        case_id,
+    )
+    therapist_revision_id = generated.generate()
+    qualification_id = generated.generate()
+    qualification_file_id = generated.generate()
+    await pg_database._execute(
+        "BEGIN; SET CONSTRAINTS ALL DEFERRED;"
+        "INSERT INTO public.private_file(file_id,purpose,owner_user_id,declared_size,"
+        "declared_mime_type,declared_sha256,actual_size,actual_mime_type,actual_sha256,"
+        "object_key,status,bound_application_id,created_at,expires_at,scanned_at,bound_at,deleted_at) "
+        f"VALUES('{qualification_file_id}','THERAPIST_QUALIFICATION',{therapist_user_id},8,"
+        "'application/pdf',repeat('a',64),8,'application/pdf',repeat('a',64),"
+        f"'slice4-report-qualification-{qualification_file_id}','CLEAN',NULL,now(),"
+        "now()+interval '365 days',now(),NULL,NULL);"
+        "INSERT INTO public.therapist_profile_revision(revision_id,therapist_id,revision_no,"
+        "profile_snapshot,input_digest,created_at) VALUES ("
+        f"'{therapist_revision_id}','{therapist_id}',1,'{{}}'::jsonb,repeat('1',64),now());"
+        "INSERT INTO public.therapist_qualification_version(qualification_version_id,therapist_id,"
+        "profile_revision_id,previous_version_id,qualification_type,certificate_no_ciphertext,"
+        "certificate_encryption_key_id,certificate_no_digest,certificate_digest_key_id,"
+        "certificate_no_masked,issuer_name,valid_from,valid_until,attachment_count,version_no,created_at) VALUES ("
+        f"'{qualification_id}','{therapist_id}','{therapist_revision_id}',NULL,"
+        "'METABOLIC_HEALTH_PRACTICE',decode('00','hex'),'k1',repeat('2',64),'k1',"
+        "'*******0000','Slice4 Report',current_date,current_date+365,1,1,now());"
+        "INSERT INTO public.therapist_profile_revision_qualification(therapist_id,revision_id,"
+        "qualification_version_id,position) VALUES ("
+        f"'{therapist_id}','{therapist_revision_id}','{qualification_id}',1);"
+        "INSERT INTO public.therapist_qualification_attachment(qualification_version_id,slot,"
+        f"private_file_id,created_at) VALUES ('{qualification_id}',1,'{qualification_file_id}',now());"
+        "UPDATE public.therapist_profile SET real_name_ciphertext=decode('00','hex'),"
+        "real_name_encryption_key_id='k1',real_name_digest=repeat('3',64),"
+        "real_name_digest_key_id='k1',display_name='Slice4 Therapist',practice_summary='Slice4',"
+        "service_tags='[\"GLUCOSE_METABOLISM\"]'::jsonb,status='APPROVED_ACTIVE',"
+        f"current_qualification_version_id='{qualification_id}',current_revision_no=1,"
+        "qualification_valid_until=current_date+365,submitted_at=now(),reviewed_at=now(),"
+        f"updated_at=now(),version=2 WHERE therapist_id='{therapist_id}'; COMMIT;"
+    )
+    therapist_authorization = {
+        "Authorization": f"Bearer {create_access_token({'sub': str(therapist_user_id), 'role': 'therapist'})}"
+    }
+    fact = real_db_client.post(
+        f"/api/v1/therapist/service-cases/{case_id}/health-indicators",
+        headers={
+            **therapist_authorization,
+            "Idempotency-Key": "slice4-report-fact-http-0010",
+        },
+        json={"items": [{
+            "indicator_code": "weight",
+            "value": "72.30",
+            "unit": "kg",
+            "measured_at": "2026-08-20T09:00:00+08:00",
+            "source_type": "REPORT",
+            "report_id": str(report_id),
+        }]},
+    )
+    assert fact.status_code == 201, fact.json()
+    fact_ref = UUID(fact.json()["items"][0]["fact_ref"])
+    assert await pg_database._fetch_value(
+        "SELECT report_id=$2 FROM public.canonical_health_fact WHERE fact_ref=$1",
+        fact_ref,
+        report_id,
+    )
     assert await pg_database._fetch_value(
         "SELECT count(*) FROM public.detection_report WHERE report_id=$1", report_id
     ) == 1
     assert await pg_database._fetch_value(
-        "SELECT count(*) FROM public.slice4_audit WHERE aggregate_ref=$1", report_id
+        "SELECT count(*) FROM public.slice4_audit WHERE aggregate_ref=$1 "
+        "AND event_type='DETECTION_REPORT_CREATED'",
+        report_id,
     ) == 1
     assert await pg_database._fetch_value(
         "SELECT count(*) FROM public.slice4_outbox WHERE aggregate_ref=$1", report_id
@@ -1283,15 +1804,9 @@ async def test_PG07_D16_D19_真实HealthReader按Member双水位解析READY并�
     pg_database,
     real_db_client,
 ) -> None:
-    import asyncpg
     from app.core.security import create_access_token
-
-    async def execute(sql: str, *args) -> None:
-        connection = await asyncpg.connect(pg_database.database_url)
-        try:
-            await connection.execute(sql, *args)
-        finally:
-            await connection.close()
+    from app.core.database import dispose_projection_runtime
+    from app.tasks import slice4_health_data_tasks as projection_tasks
 
     generated = Uuid7Generator()
     tenant_public_id = generated.generate()
@@ -1330,80 +1845,30 @@ async def test_PG07_D16_D19_真实HealthReader按Member双水位解析READY并�
         "SELECT e.status_event_seq FROM public.health_fact_status_event e "
         "JOIN public.canonical_health_fact f ON f.id=e.fact_id WHERE f.fact_ref=$1", fact_ref
     )
-    digest = "a" * 64
-    upper_digest = "A" * 64
-    generation_id = await pg_database._fetch_value(
-        "INSERT INTO public.health_projection_generation("
-        "projection_version,generation_no,status,high_watermark,digest_key_id,input_digest,"
-        "start_operation_id,builder_id,lease_epoch,lease_expires_at,completed_at,version) "
-        "VALUES(2,9001,'BUILD_COMPLETE',jsonb_build_object('max_fact_id',$1::bigint,"
-        "'max_status_event_seq',$2::bigint,'source_snapshot','slice4:ready:9'),'k1',$3,$4,"
-        "NULL,0,NULL,now(),1) RETURNING id",
-        fact_id, status_seq, digest, generated.generate(),
+    try:
+        generation_id = await projection_tasks._build_projection_v2(
+            generation_no=9001,
+            builder_id=generated.generate(),
+            operation_id=generated.generate(),
+        )
+    finally:
+        for kind in (
+            "health", "confirmation", "health_shadow", "ready_gate",
+            "shadow_confirmation",
+        ):
+            await dispose_projection_runtime(kind)
+    generation = await pg_database._fetch_rows(
+        "SELECT status,shadow_success_count,high_watermark FROM "
+        "public.health_projection_generation WHERE id=$1",
+        generation_id,
     )
-    run_id = generated.generate()
-    await execute(
-        "INSERT INTO public.health_projection_shadow_run("
-        "run_id,generation_id,run_sequence,status,projection_version,rule_version,high_watermark,"
-        "high_watermark_digest,digest_key_id,generation_input_digest,source_digest,mapping_digest,"
-        "projection_digest,coverage_digest,evidence_digest,currentness_digest,selection_digest,"
-        "blocker_count,review_required_count,informational_count,category_counts,source_count,"
-        "current_fact_count,projection_fact_count,expected_selection_count,actual_selection_count,"
-        "fact_coverage_numerator,fact_coverage_denominator,selection_coverage_numerator,"
-        "selection_coverage_denominator,status_event_count,start_operation_id,complete_operation_id,"
-        "validator_id,lease_epoch,lease_expires_at,completed_at,version) VALUES("
-        "$1,$2,1,'PASSED',2,'health-daily-selection-v2',jsonb_build_object('max_fact_id',$3::bigint,"
-        "'max_status_event_seq',$4::bigint,'source_snapshot','slice4:ready:9'),$5,'k1',$6,"
-        "$5,$5,$5,$5,$5,$5,$5,0,0,0,'{}'::jsonb,1,1,1,1,1,1,1,1,1,1,$7,$8,$9,0,NULL,now(),1)",
-        run_id, generation_id, fact_id, status_seq, upper_digest, digest,
-        generated.generate(), generated.generate(), generated.generate(),
-    )
-    measured_at = await pg_database._fetch_value(
-        "SELECT measured_at FROM public.canonical_health_fact WHERE id=$1", fact_id
-    )
-    await execute(
-        "INSERT INTO public.health_projection_fact("
-        "generation_id,fact_id,subject_user_id,subject_member_id,fact_ref,status_event_seq,"
-        "indicator_code,numeric_value,unit,measured_at,received_at,source_type,business_day,"
-        "window_start_utc,window_end_utc,row_digest,digest_key_id) SELECT "
-        "$1,f.id,f.subject_user_id,f.subject_member_id,f.fact_ref,$2,f.indicator_code,"
-        "f.numeric_value,f.unit,f.measured_at,f.received_at,f.source_type,"
-        "(f.measured_at AT TIME ZONE 'Asia/Shanghai')::date,"
-        "(((f.measured_at AT TIME ZONE 'Asia/Shanghai')::date)::timestamp AT TIME ZONE 'Asia/Shanghai'),"
-        "((((f.measured_at AT TIME ZONE 'Asia/Shanghai')::date+1)::timestamp) AT TIME ZONE 'Asia/Shanghai'),"
-        "$3,'k1' FROM public.canonical_health_fact f WHERE f.id=$4",
-        generation_id, status_seq, digest, fact_id,
-    )
-    fact_count = await pg_database._fetch_value(
-        "SELECT fact_count FROM public.slice4_projection_coverage_source_v2 "
-        "WHERE subject_member_id=$1 AND indicator_code='weight'", subject_member_id
-    )
-    status_count = await pg_database._fetch_value(
-        "SELECT status_event_count FROM public.slice4_projection_coverage_source_v2 "
-        "WHERE subject_member_id=$1 AND indicator_code='weight'", subject_member_id
-    )
-    fact_digest = await pg_database._fetch_value(
-        "SELECT fact_set_digest FROM public.slice4_projection_coverage_source_v2 "
-        "WHERE subject_member_id=$1 AND indicator_code='weight'", subject_member_id
-    )
-    status_digest = await pg_database._fetch_value(
-        "SELECT status_set_digest FROM public.slice4_projection_coverage_source_v2 "
-        "WHERE subject_member_id=$1 AND indicator_code='weight'", subject_member_id
-    )
-    await execute(
-        "INSERT INTO public.health_projection_subject_indicator_evidence_v2("
-        "generation_id,subject_member_id,indicator_code,fact_count,status_event_count,max_fact_id,"
-        "max_status_event_seq,source_snapshot,fact_set_digest,status_set_digest,evidence_digest,"
-        "digest_key_id,created_at) VALUES($1,$2,'weight',$3,$4,$5,$6,'slice4:ready:9',"
-        "$7,$8,$9,'k1',now())",
-        generation_id, subject_member_id, fact_count, status_count, fact_id, status_seq,
-        fact_digest, status_digest, digest,
-    )
-    await execute(
-        "UPDATE public.health_projection_generation SET status='READY',current_shadow_run_id=$1,"
-        "shadow_success_count=2,ready_at=now(),ready_operation_id=$2,version=2 WHERE id=$3",
-        run_id, generated.generate(), generation_id,
-    )
+    assert generation[0]["status"] == "READY"
+    assert generation[0]["shadow_success_count"] == 2
+    high_watermark = generation[0]["high_watermark"]
+    if isinstance(high_watermark, str):
+        high_watermark = json.loads(high_watermark)
+    assert high_watermark["max_fact_id"] >= fact_id
+    assert high_watermark["max_status_event_seq"] >= status_seq
     response = real_db_client.get(
         "/api/v1/family/health-indicators/history?indicator_code=weight",
         headers=authorization,
@@ -1411,3 +1876,137 @@ async def test_PG07_D16_D19_真实HealthReader按Member双水位解析READY并�
     assert response.status_code == 200, response.json()
     assert response.json()["items"][0]["fact_ref"] == str(fact_ref)
     assert response.json()["items"][0]["verification_state"] == "SELF_REPORTED"
+
+
+@pytest.mark.asyncio
+async def test_D16_D19_生产v2Builder真实生成Member投影选择与覆盖证据(
+    pg_database,
+) -> None:
+    from app.core.database import dispose_projection_runtime
+    from app.tasks import slice4_health_data_tasks as projection_tasks
+
+    generated = Uuid7Generator()
+    tenant_public_id = generated.generate()
+    subject_member_id = generated.generate()
+    _, case_id, _, actor_user_id = await _seed_case(
+        pg_database,
+        ordinal=0,
+        mode="SELF",
+        tenant_id=130050,
+        tenant_public_id=tenant_public_id,
+        actor_user_id=130051,
+        actor_member_id=subject_member_id,
+        subject_member_id=subject_member_id,
+        proxy_member_id=None,
+    )
+    fact_ref = generated.generate()
+    fact_id = await pg_database._fetch_value(
+        "INSERT INTO public.canonical_health_fact(subject_user_id,subject_member_id,fact_ref,"
+        "report_id,indicator_code,catalog_version,value_kind,numeric_value,unit,measured_at,"
+        "source_type,source_identity_digest,producer_event_key,payload_digest,digest_key_id,"
+        "created_by) VALUES($1,$2,$3,NULL,'weight',2,'NUMERIC',73.20,'kg',"
+        "'2026-08-20T04:00:00+00','APP',$4,$5,$6,'k1',$1) RETURNING id",
+        actor_user_id, subject_member_id, fact_ref, "a" * 64,
+        "slice4-v2-builder-fact-0001", "b" * 64,
+    )
+    inserted = await pg_database._fetch_value(
+        "INSERT INTO public.health_fact_status_event(status_event_id,fact_id,event_no,"
+        "predecessor_event_id,state,reason_code,actor_user_id,service_case_id,event_digest,"
+        "digest_key_id,created_at) VALUES($1,$2,1,NULL,'SELF_REPORTED','FACT_CREATED',"
+        "$3,$4,$5,'k1',now()) RETURNING 1",
+        generated.generate(), fact_id, actor_user_id, case_id, b"status-digest",
+    )
+    assert inserted == 1
+
+    primary = None
+    builder_id = generated.generate()
+    operation_id = generated.generate()
+    try:
+        generation_id = await projection_tasks._build_projection_v2(
+            generation_no=9100,
+            builder_id=builder_id,
+            operation_id=operation_id,
+        )
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        for kind in (
+            "health", "confirmation", "health_shadow", "ready_gate",
+            "shadow_confirmation",
+        ):
+            try:
+                await dispose_projection_runtime(kind)
+            except BaseException as exc:
+                if primary is None:
+                    raise AssertionError(f"V2_DISPOSE_{type(exc).__name__.upper()}") from None
+    generation = await pg_database._fetch_rows(
+        "SELECT projection_version,status,high_watermark FROM public.health_projection_generation "
+        "WHERE id=$1",
+        generation_id,
+    )
+    assert len(generation) == 1
+    assert generation[0]["projection_version"] == 2
+    assert generation[0]["status"] == "READY"
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.health_projection_shadow_run "
+        "WHERE generation_id=$1 AND status='PASSED'",
+        generation_id,
+    ) == 2
+    high_watermark = generation[0]["high_watermark"]
+    if isinstance(high_watermark, str):
+        high_watermark = json.loads(high_watermark)
+    assert set(high_watermark) == {
+        "max_fact_id", "max_status_event_seq", "source_snapshot"
+    }
+    projection = await pg_database._fetch_rows(
+        "SELECT subject_member_id,fact_ref,status_event_seq FROM public.health_projection_fact "
+        "WHERE generation_id=$1 AND subject_member_id=$2",
+        generation_id, subject_member_id,
+    )
+    assert projection == [{
+        "subject_member_id": subject_member_id,
+        "fact_ref": fact_ref,
+        "status_event_seq": projection[0]["status_event_seq"],
+    }]
+    assert projection[0]["status_event_seq"] >= 1
+    selections = await pg_database._fetch_rows(
+        "SELECT subject_member_id,winner_fact_ref,rule_version "
+        "FROM public.health_projection_window_selection WHERE generation_id=$1 "
+        "AND subject_member_id=$2",
+        generation_id, subject_member_id,
+    )
+    assert selections == [{
+        "subject_member_id": subject_member_id,
+        "winner_fact_ref": fact_ref,
+        "rule_version": "health-daily-selection-v2",
+    }]
+    evidence = await pg_database._fetch_rows(
+        "SELECT subject_member_id,indicator_code,fact_count,status_event_count "
+        "FROM public.health_projection_subject_indicator_evidence_v2 WHERE generation_id=$1 "
+        "AND subject_member_id=$2",
+        generation_id, subject_member_id,
+    )
+    assert evidence == [{
+        "subject_member_id": subject_member_id,
+        "indicator_code": "weight",
+        "fact_count": 1,
+        "status_event_count": 1,
+    }]
+    try:
+        replay_generation_id = await projection_tasks._build_projection_v2(
+            generation_no=9100,
+            builder_id=builder_id,
+            operation_id=operation_id,
+        )
+    finally:
+        for kind in (
+            "health", "confirmation", "health_shadow", "ready_gate",
+            "shadow_confirmation",
+        ):
+            await dispose_projection_runtime(kind)
+    assert replay_generation_id == generation_id
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.health_projection_shadow_run WHERE generation_id=$1",
+        generation_id,
+    ) == 2

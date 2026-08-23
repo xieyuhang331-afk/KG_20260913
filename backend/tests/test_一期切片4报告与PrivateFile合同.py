@@ -43,3 +43,14 @@ def test_D12_D15_报告原件读取每次复核currentness与permission且证据
     assert not DetectionReportAccessContext("THERAPIST", False, True, True, True, ()).may_read_original()
     evidence = build_detection_report_access_evidence(file_id=_u(20), subject_member_id=_u(21), service_case_id=_u(22), actor_user_id=1, actor_version=2, grant_or_assignment_version=3, expires_at=datetime(2026, 8, 20, 1, tzinfo=timezone.utc))
     assert "object_key" not in evidence
+
+
+def test_PrivateFile生产访问必须调用Slice4受限权威并写访问审计():
+    import inspect
+    from app.modules.private_file import service
+
+    authorize = inspect.getsource(service.authorize_file_access)
+    content = inspect.getsource(service.read_authorized_content)
+    for source in (authorize, content):
+        assert "report_file_authority" in source
+    assert "REPORT_ORIGINAL_ACCESSED" in content

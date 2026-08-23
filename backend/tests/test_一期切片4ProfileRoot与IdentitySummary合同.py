@@ -197,6 +197,13 @@ def test_D52_Writer事务内currentness函数冻结全部证据与锁() -> None:
     compact = "".join(function.split())
     assert "identity_source_kind='P1'" in compact
     assert "identity_source_kind='SLICE3'" in compact
+    for comparison in (
+        "v.status='APPROVED'",
+        "d.decision_id=v.platform_decision_id",
+        "g.slice3_revision_id=r.revision_id",
+        "g.slice3_decision_id=d.decision_id",
+    ):
+        assert comparison in compact
     validation_positions = [compact.index(value) for value in (
         "c.case_id=value_service_case_id",
         "a.tenant_public_id=value_tenant_public_id",

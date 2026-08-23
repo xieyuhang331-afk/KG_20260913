@@ -1,5 +1,6 @@
 from dataclasses import replace
 import asyncio
+import inspect
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import MappingProxyType
@@ -137,6 +138,13 @@ def test_D13_D15_D32_详细档案只在主体与IdentitySummary版本一致时�
                 "updated_at": datetime(2026, 8, 20, 1, tzinfo=timezone.utc),
             }
 
+        async def latest_profile_metrics(self, **scope):
+            return (
+                {"indicator_code": "height", "numeric_value": Decimal("175.0")},
+                {"indicator_code": "weight", "numeric_value": Decimal("70.0")},
+                {"indicator_code": "waist", "numeric_value": Decimal("82.0")},
+            )
+
     class Authority:
         source_version = 2
 
@@ -166,6 +174,9 @@ def test_D13_D15_D32_详细档案只在主体与IdentitySummary版本一致时�
         )
     )
     assert value.subject_ref == subject and value.identity_summary.source_version == 2
+    assert (value.height_cm, value.weight_kg, value.waist_cm, value.bmi) == (
+        Decimal("175.0"), Decimal("70.0"), Decimal("82.0"), Decimal("22.9")
+    )
     assert not ({"snapshot_ciphertext", "snapshot_key_id"} & set(value.model_dump()))
     authority.source_version = 3
     with pytest.raises(RuntimeError, match="^ACTOR_CURRENTNESS_FORBIDDEN$"):
@@ -175,3 +186,45 @@ def test_D13_D15_D32_详细档案只在主体与IdentitySummary版本一致时�
                 subject_member_id=subject, service_case_id=case_id, enrollment_id=enrollment_id,
             )
         )
+
+
+def test_Profile_PUT允许expected_version追加且最新身高体重腰围生成BMI():
+    from app.modules.health_fact.domain import compute_bmi
+    from app.modules.user_health import service
+
+    source = inspect.getsource(service.create_formal_profile_root)
+    assert "payload.expected_version != 0" not in source
+    assert "expected_version=payload.expected_version" in source
+    assert compute_bmi(height_cm=Decimal("175.0"), weight_kg=Decimal("70.0")) == Decimal("22.9")
+    assert "latest_profile_metrics" in inspect.getsource(service.read_formal_health_profile)
+
+
+def test_REPORT事实必须将report_id写入canonical事实():
+    from app.modules.health_fact.domain import CanonicalHealthFactDraft
+    from app.modules.health_fact.models import CanonicalHealthFactOrmModel
+
+    assert "report_id" in CanonicalHealthFactDraft.__dataclass_fields__
+    assert hasattr(CanonicalHealthFactOrmModel, "report_id")
+
+
+def test_最终整改_C_REPORT事实写入前必须调用受限主体权威():
+    import inspect
+    from pathlib import Path
+    from app.modules.user_health import service
+
+    assert "require_report_scope" in inspect.getsource(service.create_formal_health_facts)
+    migration = (
+        Path(__file__).parents[1]
+        / "app/migrations/versions/20260823_0028_phase1_slice4_health_record_assessment_readiness.py"
+    ).read_text(encoding="utf-8")
+    authority = migration[migration.index("slice4_report_fact_authority_v1"):]
+    for token in (
+        "value_report_id UUID",
+        "value_subject_member_id UUID",
+        "value_service_case_id UUID",
+        "d.tenant_id=c.tenant_id",
+        "d.subject_member_id=value_subject_member_id",
+        "d.service_case_id=value_service_case_id",
+        "FOR SHARE OF d,c",
+    ):
+        assert token in authority

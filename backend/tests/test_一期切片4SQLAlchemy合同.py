@@ -70,3 +70,20 @@ def test_共享解析器的既有类型与未知类型处理保持不变() -> No
     assert isinstance(table.c.payload.type, postgresql.JSONB)
     assert isinstance(table.c.legacy_unknown.type, sa.String)
 
+
+def test_v2窗口选择ORM使用非空Winner作为稳定Identity() -> None:
+    from app.modules.health_projection.models import (
+        HealthProjectionWindowSelectionModel,
+    )
+
+    primary_key_columns = {
+        column.name
+        for column in HealthProjectionWindowSelectionModel.__mapper__.primary_key
+    }
+    assert primary_key_columns == {
+        "generation_id", "winner_fact_id", "indicator_code", "business_day"
+    }
+    assert "subject_user_id" not in primary_key_columns
+    assert "subject_member_id" not in primary_key_columns
+    assert HealthProjectionWindowSelectionModel.__table__.c.subject_user_id.nullable
+    assert HealthProjectionWindowSelectionModel.__table__.c.subject_member_id.nullable

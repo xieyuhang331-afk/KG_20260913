@@ -15,6 +15,7 @@ pytestmark = pytest.mark.integration
 def test_G04_G06_Slice4队列路由Beat与Outbox真值合同() -> None:
     from app.tasks.celery_app import SLICE4_HEALTH_QUEUE, celery_app
     from app.tasks.slice4_health_data_tasks import (
+        BUILD_PROJECTION_TASK,
         CONSUME_TASK,
         DISPATCH_TASK,
         RECOVER_TASK,
@@ -24,6 +25,7 @@ def test_G04_G06_Slice4队列路由Beat与Outbox真值合同() -> None:
 
     assert SLICE4_HEALTH_QUEUE == "slice4-health-workflow"
     for task_name in (
+        BUILD_PROJECTION_TASK,
         DISPATCH_TASK,
         CONSUME_TASK,
         RECOVER_TASK,
