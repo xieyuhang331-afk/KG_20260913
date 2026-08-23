@@ -152,7 +152,7 @@ export function MemberInvitationPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">会员服务 / 受控邀请</p>
@@ -172,147 +172,151 @@ export function MemberInvitationPage() {
 
       <Feedback message={feedback.message} tone={feedback.tone} />
 
-      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
-        <div className="flex items-start gap-3">
-          <span className="rounded-lg bg-teal-50 p-2 text-teal-700">
-            <MailPlus aria-hidden="true" size={20} />
-          </span>
-          <div>
-            <h2 className="font-semibold text-slate-950">创建会员邀请</h2>
-            <p className="mt-1 text-xs leading-5 text-slate-500">短码只会展示一次，不写入浏览器存储、地址栏或日志。</p>
+      <div className="grid items-start gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel xl:sticky xl:top-24">
+          <div className="flex items-start gap-3">
+            <span className="rounded-lg bg-teal-50 p-2 text-teal-700">
+              <MailPlus aria-hidden="true" size={20} />
+            </span>
+            <div>
+              <h2 className="font-semibold text-slate-950">创建会员邀请</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                短码只会展示一次，不写入浏览器存储、地址栏或日志。
+              </p>
+            </div>
           </div>
-        </div>
-        <form className="mt-5 grid gap-3 md:grid-cols-[180px_1fr_auto] md:items-end" onSubmit={create}>
-          <label className="text-sm font-medium text-slate-700">
-            邀请模式
-            <select
-              className={fieldClassName}
-              onChange={(event) => setMode(event.target.value as MemberInvitationMode)}
-              value={mode}
-            >
-              <option value="SELF">本人入组</option>
-              <option value="PROXY_ELDER">代办老人入组</option>
-            </select>
-          </label>
-          <label className="text-sm font-medium text-slate-700">
-            接收手机号
-            <input
-              aria-label="接收手机号"
-              autoComplete="off"
-              className={fieldClassName}
-              inputMode="numeric"
-              maxLength={11}
-              ref={phoneRef}
-              required
-            />
-          </label>
-          <button className={primaryButtonClassName} disabled={busyId !== null} type="submit">
-            {busyId === "create" ? "创建中…" : "创建邀请"}
-          </button>
-        </form>
-      </section>
+          <form className="mt-5 grid gap-3" onSubmit={create}>
+            <label className="text-sm font-medium text-slate-700">
+              邀请模式
+              <select
+                className={fieldClassName}
+                onChange={(event) => setMode(event.target.value as MemberInvitationMode)}
+                value={mode}
+              >
+                <option value="SELF">本人入组</option>
+                <option value="PROXY_ELDER">代办老人入组</option>
+              </select>
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              接收手机号
+              <input
+                aria-label="接收手机号"
+                autoComplete="off"
+                className={fieldClassName}
+                inputMode="numeric"
+                maxLength={11}
+                ref={phoneRef}
+                required
+              />
+            </label>
+            <button className={primaryButtonClassName} disabled={busyId !== null} type="submit">
+              {busyId === "create" ? "创建中…" : "创建邀请"}
+            </button>
+          </form>
+        </section>
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
-          <div>
-            <h2 className="font-semibold text-slate-950">邀请记录</h2>
-            <p className="mt-1 text-xs text-slate-500">使用服务端 cursor 浏览批次，不推算总页数。</p>
+        <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+            <div>
+              <h2 className="font-semibold text-slate-950">邀请记录</h2>
+              <p className="mt-1 text-xs text-slate-500">使用服务端 cursor 浏览批次，不推算总页数。</p>
+            </div>
+            <select
+              aria-label="邀请状态"
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              onChange={(event) => void changeStatus(event.target.value as MemberInvitationStatus | "")}
+              value={status}
+            >
+              <option value="">全部状态</option>
+              <option value="INVITED">待接受</option>
+              <option value="ACCEPTED">已接受</option>
+              <option value="REVOKED">已撤销</option>
+              <option value="EXPIRED">已到期</option>
+            </select>
           </div>
-          <select
-            aria-label="邀请状态"
-            className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            onChange={(event) => void changeStatus(event.target.value as MemberInvitationStatus | "")}
-            value={status}
-          >
-            <option value="">全部状态</option>
-            <option value="INVITED">待接受</option>
-            <option value="ACCEPTED">已接受</option>
-            <option value="REVOKED">已撤销</option>
-            <option value="EXPIRED">已到期</option>
-          </select>
-        </div>
-        {loading ? (
-          <div className="p-5">
-            <LoadingPanel label="正在加载会员邀请…" />
-          </div>
-        ) : items.length === 0 ? (
-          <div className="p-5">
-            <EmptyPanel title="当前批次没有邀请" description="创建邀请，或调整状态筛选后重试。" />
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-500">
-                <tr>
-                  <th className="px-5 py-3">接收人</th>
-                  <th className="px-5 py-3">模式</th>
-                  <th className="px-5 py-3">状态</th>
-                  <th className="px-5 py-3">有效期</th>
-                  <th className="px-5 py-3 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {items.map((item) => (
-                  <tr key={item.invitation_id}>
-                    <td className="px-5 py-4 font-medium">{item.phone_masked}</td>
-                    <td className="px-5 py-4">{item.mode === "SELF" ? "本人" : "代办老人"}</td>
-                    <td className="px-5 py-4">
-                      <Status status={item.status} />
-                    </td>
-                    <td className="px-5 py-4 text-slate-500">
-                      <Clock3 aria-hidden="true" className="mr-1 inline" size={14} />
-                      {formatTime(item.expires_at)}
-                    </td>
-                    <td className="space-x-2 px-5 py-4 text-right">
-                      {item.status === "INVITED" ? (
-                        <>
-                          <button
-                            className={secondaryButtonClassName}
-                            disabled={busyId !== null}
-                            onClick={() => void resend(item)}
-                            type="button"
-                          >
-                            <RotateCw aria-hidden="true" className="mr-1 inline" size={14} />
-                            重发
-                          </button>
-                          <button
-                            className={secondaryButtonClassName}
-                            disabled={busyId !== null}
-                            onClick={() => void revoke(item)}
-                            type="button"
-                          >
-                            撤销
-                          </button>
-                        </>
-                      ) : (
-                        <span className="text-xs text-slate-400">无可用操作</span>
-                      )}
-                    </td>
+          {loading ? (
+            <div className="p-5">
+              <LoadingPanel label="正在加载会员邀请…" />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-5">
+              <EmptyPanel title="当前批次没有邀请" description="创建邀请，或调整状态筛选后重试。" />
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[680px] text-left text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-500">
+                  <tr>
+                    <th className="px-5 py-3">接收人</th>
+                    <th className="px-5 py-3">模式</th>
+                    <th className="px-5 py-3">状态</th>
+                    <th className="px-5 py-3">有效期</th>
+                    <th className="px-5 py-3 text-right">操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((item) => (
+                    <tr key={item.invitation_id}>
+                      <td className="px-5 py-4 font-medium">{item.phone_masked}</td>
+                      <td className="px-5 py-4">{item.mode === "SELF" ? "本人" : "代办老人"}</td>
+                      <td className="px-5 py-4">
+                        <Status status={item.status} />
+                      </td>
+                      <td className="px-5 py-4 text-slate-500">
+                        <Clock3 aria-hidden="true" className="mr-1 inline" size={14} />
+                        {formatTime(item.expires_at)}
+                      </td>
+                      <td className="space-x-2 px-5 py-4 text-right">
+                        {item.status === "INVITED" ? (
+                          <>
+                            <button
+                              className={secondaryButtonClassName}
+                              disabled={busyId !== null}
+                              onClick={() => void resend(item)}
+                              type="button"
+                            >
+                              <RotateCw aria-hidden="true" className="mr-1 inline" size={14} />
+                              重发
+                            </button>
+                            <button
+                              className={secondaryButtonClassName}
+                              disabled={busyId !== null}
+                              onClick={() => void revoke(item)}
+                              type="button"
+                            >
+                              撤销
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400">无可用操作</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+            <button
+              className={secondaryButtonClassName}
+              disabled={loading || history.length === 0}
+              onClick={() => void previous()}
+              type="button"
+            >
+              上一批
+            </button>
+            <button
+              className={secondaryButtonClassName}
+              disabled={loading || !nextCursor}
+              onClick={() => void next()}
+              type="button"
+            >
+              下一批
+            </button>
           </div>
-        )}
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
-          <button
-            className={secondaryButtonClassName}
-            disabled={loading || history.length === 0}
-            onClick={() => void previous()}
-            type="button"
-          >
-            上一批
-          </button>
-          <button
-            className={secondaryButtonClassName}
-            disabled={loading || !nextCursor}
-            onClick={() => void next()}
-            type="button"
-          >
-            下一批
-          </button>
-        </div>
-      </section>
+        </section>
+      </div>
 
       {secret ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">

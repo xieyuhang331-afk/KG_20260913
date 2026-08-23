@@ -10,31 +10,34 @@ export function InstitutionShell() {
 
   return (
     <div className="min-h-screen bg-[#EEF3F8] text-slate-950">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-slate-200 bg-white lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-16 flex-col border-r border-slate-200 bg-white lg:flex xl:w-64">
         <div className="bg-navy px-4 py-5 text-white">
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-500 text-white shadow-lg shadow-black/15">
               <Store aria-hidden="true" size={22} />
             </span>
-            <div>
+            <div className="hidden xl:block">
               <div className="text-lg font-semibold tracking-wide">康邻智汇</div>
               <div className="text-xs text-slate-300">机构端运营后台</div>
             </div>
           </div>
-          <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.07] px-3 py-3">
+          <div className="mt-5 hidden rounded-xl border border-white/10 bg-white/[0.07] px-3 py-3 xl:block">
             <div className="text-[11px] font-medium text-slate-300">当前空间</div>
             <div className="mt-1 text-sm font-semibold">门店运营</div>
           </div>
         </div>
 
         <nav className="min-h-0 flex-1 px-3 py-5" aria-label="机构端主导航">
-          <div className="mb-2 px-2 text-[11px] font-semibold tracking-[0.12em] text-slate-400">机构工作区</div>
+          <div className="mb-2 hidden px-2 text-[11px] font-semibold tracking-[0.12em] text-slate-400 xl:block">
+            机构工作区
+          </div>
           <div className="space-y-1">
             {institutionNavigation.map((item) => (
               <NavLink
+                aria-label={item.label}
                 className={({ isActive }) =>
                   [
-                    "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
+                    "group flex items-center justify-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors xl:justify-start",
                     isActive
                       ? "bg-teal-50 text-slate-950 ring-1 ring-teal-200"
                       : "text-slate-600 hover:bg-slate-50 hover:text-slate-950",
@@ -54,14 +57,14 @@ export function InstitutionShell() {
                     <ClipboardList aria-hidden="true" size={17} />
                   )}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                <span className="h-1.5 w-1.5 rounded-full bg-teal-500 opacity-0 group-aria-[current=page]:opacity-100" />
+                <span className="hidden min-w-0 flex-1 truncate xl:block">{item.label}</span>
+                <span className="hidden h-1.5 w-1.5 rounded-full bg-teal-500 opacity-0 group-aria-[current=page]:opacity-100 xl:block" />
               </NavLink>
             ))}
           </div>
         </nav>
 
-        <div className="border-t border-slate-200 p-3">
+        <div className="hidden border-t border-slate-200 p-3 xl:block">
           <div className="rounded-xl bg-slate-50 px-3 py-3 text-xs text-slate-500 ring-1 ring-slate-200">
             <div className="flex items-center gap-2 font-semibold text-slate-700">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />
@@ -72,7 +75,7 @@ export function InstitutionShell() {
         </div>
       </aside>
 
-      <div className="min-w-0 lg:ml-64">
+      <div className="min-w-0 lg:ml-16 xl:ml-64">
         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur md:px-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -113,7 +116,7 @@ export function InstitutionShell() {
           </nav>
         </header>
         <main className="min-h-[calc(100vh-65px)] px-4 py-5 md:px-6">
-          <div className="mx-auto w-full max-w-[1440px]">
+          <div className="mx-auto w-full max-w-[1280px]">
             <Outlet />
           </div>
         </main>

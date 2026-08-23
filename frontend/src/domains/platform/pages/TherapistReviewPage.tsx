@@ -148,89 +148,114 @@ export function TherapistReviewPage() {
           续期审核
         </button>
       </div>
-      {loading ? (
-        <LoadingPanel label="正在加载审核队列…" />
-      ) : !items.length ? (
-        <EmptyPanel
-          title={`暂无${mode === "INITIAL" ? "初始" : "续期"}审核`}
-          description="当前没有待处理记录，可稍后刷新查看。"
-        />
-      ) : (
-        <section className="rounded-xl border bg-white">
-          {items.map((item) => (
-            <article className="flex items-center justify-between border-b p-4 last:border-0" key={item.review_item_id}>
-              <div>
-                <strong>{item.review_kind === "INITIAL" ? "初始资质审核" : "续期资质审核"}</strong>
-                <p className="text-sm text-slate-500">
-                  {item.status} · 版本 {item.version}
-                </p>
-              </div>
-              <button className={secondaryButtonClassName} onClick={() => void open(item)} type="button">
-                查看审核详情
-              </button>
-            </article>
-          ))}
-          {cursor ? (
-            <div className="p-4 text-right">
-              <button className={secondaryButtonClassName} onClick={() => void load(mode, cursor)} type="button">
-                下一批审核
-              </button>
-            </div>
-          ) : null}
-        </section>
-      )}
-      {detail ? (
-        <section className="rounded-xl border bg-white p-5">
-          <p className="text-sm text-slate-500">当前 Revision v{detail.profile.current_revision_no}</p>
-          <h2 className="text-xl font-semibold">{detail.profile.display_name || "未设置展示名称"}</h2>
-          {!current ? (
-            <Feedback message="审核资质集合已变化，请刷新后重新打开详情。" tone="error" />
+      <div className="grid items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="min-w-0">
+          {loading ? (
+            <LoadingPanel label="正在加载审核队列…" />
+          ) : !items.length ? (
+            <EmptyPanel
+              title={`暂无${mode === "INITIAL" ? "初始" : "续期"}审核`}
+              description="当前没有待处理记录，可稍后刷新查看。"
+            />
           ) : (
-            <>
-              <h3 className="mt-5 font-semibold">当前资格</h3>
-              {current.map((q) => (
-                <p className="mt-2 text-sm" key={q.qualification_version_id}>
-                  代谢健康执业资格 v{q.version_no} · {q.masked_certificate_no} · 材料 {q.attachment_count} 份
-                </p>
-              ))}
-              <h3 className="mt-5 font-semibold">历史版本</h3>
-              {history.map((q) => (
-                <p className="mt-2 text-sm text-slate-500" key={q.qualification_version_id}>
-                  v{q.version_no} · {q.derived_review_status}
-                </p>
-              ))}
-              {detail.review_item.status !== "DECIDED" ? (
-                <section
-                  aria-label="审核操作"
-                  className="sticky bottom-4 mt-6 flex justify-end gap-2 rounded-xl border bg-white/95 p-4 shadow-lg"
+            <section className="overflow-hidden rounded-xl border bg-white shadow-panel">
+              {items.map((item) => (
+                <article
+                  className="flex items-center justify-between gap-3 border-b p-4 last:border-0"
+                  key={item.review_item_id}
                 >
-                  {detail.review_item.status === "QUEUED" ? (
-                    <button className={primaryButtonClassName} onClick={() => setPending("START_REVIEW")} type="button">
-                      领取审核
-                    </button>
-                  ) : (
-                    <>
+                  <div className="min-w-0">
+                    <strong>{item.review_kind === "INITIAL" ? "初始资质审核" : "续期资质审核"}</strong>
+                    <p className="text-sm text-slate-500">
+                      {item.status} · 版本 {item.version}
+                    </p>
+                  </div>
+                  <button
+                    aria-label="查看审核详情"
+                    className={secondaryButtonClassName}
+                    onClick={() => void open(item)}
+                    type="button"
+                  >
+                    查看
+                  </button>
+                </article>
+              ))}
+              {cursor ? (
+                <div className="p-4 text-right">
+                  <button className={secondaryButtonClassName} onClick={() => void load(mode, cursor)} type="button">
+                    下一批审核
+                  </button>
+                </div>
+              ) : null}
+            </section>
+          )}
+        </div>
+        {detail ? (
+          <section className="min-w-0 rounded-xl border bg-white p-5 shadow-panel">
+            <p className="text-sm text-slate-500">当前 Revision v{detail.profile.current_revision_no}</p>
+            <h2 className="text-xl font-semibold">{detail.profile.display_name || "未设置展示名称"}</h2>
+            {!current ? (
+              <Feedback message="审核资质集合已变化，请刷新后重新打开详情。" tone="error" />
+            ) : (
+              <>
+                <h3 className="mt-5 font-semibold">当前资格</h3>
+                {current.map((q) => (
+                  <p className="mt-2 text-sm" key={q.qualification_version_id}>
+                    代谢健康执业资格 v{q.version_no} · {q.masked_certificate_no} · 材料 {q.attachment_count} 份
+                  </p>
+                ))}
+                <h3 className="mt-5 font-semibold">历史版本</h3>
+                {history.map((q) => (
+                  <p className="mt-2 text-sm text-slate-500" key={q.qualification_version_id}>
+                    v{q.version_no} · {q.derived_review_status}
+                  </p>
+                ))}
+                {detail.review_item.status !== "DECIDED" ? (
+                  <section
+                    aria-label="审核操作"
+                    className="sticky bottom-4 mt-6 flex justify-end gap-2 rounded-xl border bg-white/95 p-4 shadow-lg"
+                  >
+                    {detail.review_item.status === "QUEUED" ? (
                       <button
-                        className={secondaryButtonClassName}
-                        onClick={() => setPending("NEEDS_CORRECTION")}
+                        className={primaryButtonClassName}
+                        onClick={() => setPending("START_REVIEW")}
                         type="button"
                       >
-                        要求补正
+                        领取审核
                       </button>
-                      <button className={secondaryButtonClassName} onClick={() => setPending("REJECTED")} type="button">
-                        驳回
-                      </button>
-                      <button className={primaryButtonClassName} onClick={() => setPending("APPROVED")} type="button">
-                        批准
-                      </button>
-                    </>
-                  )}
-                </section>
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
+                    ) : (
+                      <>
+                        <button
+                          className={secondaryButtonClassName}
+                          onClick={() => setPending("NEEDS_CORRECTION")}
+                          type="button"
+                        >
+                          要求补正
+                        </button>
+                        <button
+                          className={secondaryButtonClassName}
+                          onClick={() => setPending("REJECTED")}
+                          type="button"
+                        >
+                          驳回
+                        </button>
+                        <button className={primaryButtonClassName} onClick={() => setPending("APPROVED")} type="button">
+                          批准
+                        </button>
+                      </>
+                    )}
+                  </section>
+                ) : null}
+              </>
+            )}
+          </section>
+        ) : (
+          <section className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-panel">
+            <p className="font-semibold text-slate-800">选择左侧审核任务</p>
+            <p className="mt-2 text-sm text-slate-500">详情、当前资质和审核操作将在这里同步展开。</p>
+          </section>
+        )}
+      </div>
       {pending ? (
         <ConfirmDialog
           busy={busy}

@@ -111,7 +111,7 @@ export function TherapistInvitationPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">人员管理 / 受控邀请</p>
@@ -131,116 +131,118 @@ export function TherapistInvitationPage() {
 
       <Feedback message={feedback.message} tone={feedback.tone} />
 
-      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
-        <div className="flex items-start gap-3">
-          <span className="rounded-lg bg-teal-50 p-2 text-teal-700">
-            <MailPlus aria-hidden="true" size={20} />
-          </span>
-          <div>
-            <h2 className="font-semibold text-slate-950">创建受控邀请</h2>
-            <p className="mt-1 text-xs leading-5 text-slate-500">短码只展示一次，不会写入浏览器存储或地址栏。</p>
+      <div className="grid items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel xl:sticky xl:top-24">
+          <div className="flex items-start gap-3">
+            <span className="rounded-lg bg-teal-50 p-2 text-teal-700">
+              <MailPlus aria-hidden="true" size={20} />
+            </span>
+            <div>
+              <h2 className="font-semibold text-slate-950">创建受控邀请</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-500">短码只展示一次，不会写入浏览器存储或地址栏。</p>
+            </div>
           </div>
-        </div>
-        <form className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={create}>
-          <label className="min-w-0 flex-1 text-sm font-medium text-slate-700">
-            手机号
-            <input
-              aria-label="手机号"
-              autoComplete="off"
-              className={fieldClassName}
-              inputMode="numeric"
-              maxLength={11}
-              name="phone"
-              pattern="1[3-9][0-9]{9}"
-              ref={phoneRef}
-              required
-            />
-          </label>
-          <button className={primaryButtonClassName} disabled={busy} type="submit">
-            {busy ? "创建中…" : "创建邀请"}
-          </button>
-        </form>
-      </section>
+          <form className="mt-5 grid gap-3" onSubmit={create}>
+            <label className="min-w-0 flex-1 text-sm font-medium text-slate-700">
+              手机号
+              <input
+                aria-label="手机号"
+                autoComplete="off"
+                className={fieldClassName}
+                inputMode="numeric"
+                maxLength={11}
+                name="phone"
+                pattern="1[3-9][0-9]{9}"
+                ref={phoneRef}
+                required
+              />
+            </label>
+            <button className={primaryButtonClassName} disabled={busy} type="submit">
+              {busy ? "创建中…" : "创建邀请"}
+            </button>
+          </form>
+        </section>
 
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <div>
-            <h2 className="font-semibold text-slate-950">邀请记录</h2>
-            <p className="mt-1 text-xs text-slate-500">按服务端批次向前或返回，不显示虚构总页数。</p>
+        <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <div>
+              <h2 className="font-semibold text-slate-950">邀请记录</h2>
+              <p className="mt-1 text-xs text-slate-500">按服务端批次向前或返回，不显示虚构总页数。</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+              当前批次 {items.length} 条
+            </span>
           </div>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-            当前批次 {items.length} 条
-          </span>
-        </div>
-        {loading ? (
-          <div className="p-5">
-            <LoadingPanel label="正在加载邀请记录…" />
-          </div>
-        ) : items.length === 0 ? (
-          <div className="p-5">
-            <EmptyPanel title="还没有邀请记录" description="填写手机号创建第一条受控邀请；邀请过期后需重新创建。" />
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-[720px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
-                <tr>
-                  <th className="px-5 py-3">手机号</th>
-                  <th className="px-5 py-3">状态</th>
-                  <th className="px-5 py-3">有效期</th>
-                  <th className="px-5 py-3 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {items.map((item) => (
-                  <tr key={item.invitation_id}>
-                    <td className="px-5 py-4 font-medium text-slate-950">{item.masked_phone}</td>
-                    <td className="px-5 py-4">
-                      <StatusBadge status={item.status} />
-                    </td>
-                    <td className="px-5 py-4 text-slate-600">
-                      <Clock3 aria-hidden="true" className="mr-1 inline" size={14} />
-                      {formatTime(item.expires_at)}
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      {item.status === "INVITED" ? (
-                        <button
-                          className={secondaryButtonClassName}
-                          disabled={busy}
-                          onClick={() => setPendingRevoke(item)}
-                          type="button"
-                        >
-                          撤销邀请
-                        </button>
-                      ) : (
-                        <span className="text-xs text-slate-400">不可操作</span>
-                      )}
-                    </td>
+          {loading ? (
+            <div className="p-5">
+              <LoadingPanel label="正在加载邀请记录…" />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-5">
+              <EmptyPanel title="还没有邀请记录" description="填写手机号创建第一条受控邀请；邀请过期后需重新创建。" />
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-[720px] w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
+                  <tr>
+                    <th className="px-5 py-3">手机号</th>
+                    <th className="px-5 py-3">状态</th>
+                    <th className="px-5 py-3">有效期</th>
+                    <th className="px-5 py-3 text-right">操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((item) => (
+                    <tr key={item.invitation_id}>
+                      <td className="px-5 py-4 font-medium text-slate-950">{item.masked_phone}</td>
+                      <td className="px-5 py-4">
+                        <StatusBadge status={item.status} />
+                      </td>
+                      <td className="px-5 py-4 text-slate-600">
+                        <Clock3 aria-hidden="true" className="mr-1 inline" size={14} />
+                        {formatTime(item.expires_at)}
+                      </td>
+                      <td className="px-5 py-4 text-right">
+                        {item.status === "INVITED" ? (
+                          <button
+                            className={secondaryButtonClassName}
+                            disabled={busy}
+                            onClick={() => setPendingRevoke(item)}
+                            type="button"
+                          >
+                            撤销邀请
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-400">不可操作</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+            <button
+              className={secondaryButtonClassName}
+              disabled={loading || cursorHistory.length === 0}
+              onClick={() => void previousPage()}
+              type="button"
+            >
+              上一批
+            </button>
+            <button
+              className={secondaryButtonClassName}
+              disabled={loading || !nextCursor}
+              onClick={() => void nextPage()}
+              type="button"
+            >
+              下一批
+            </button>
           </div>
-        )}
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
-          <button
-            className={secondaryButtonClassName}
-            disabled={loading || cursorHistory.length === 0}
-            onClick={() => void previousPage()}
-            type="button"
-          >
-            上一批
-          </button>
-          <button
-            className={secondaryButtonClassName}
-            disabled={loading || !nextCursor}
-            onClick={() => void nextPage()}
-            type="button"
-          >
-            下一批
-          </button>
-        </div>
-      </section>
+        </section>
+      </div>
 
       {pendingRevoke ? (
         <ConfirmDialog

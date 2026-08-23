@@ -57,7 +57,7 @@ export function IdentityReviewListPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">会员治理 / 身份终审</p>

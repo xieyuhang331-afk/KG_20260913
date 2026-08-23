@@ -1,14 +1,29 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as platformApi from "@/domains/platform/api";
+import { PlatformHomePage } from "@/domains/platform/pages/PlatformHomePage";
+import { TenantReviewListPage } from "@/domains/platform/pages/TenantReviewListPage";
 import { ApiError } from "@/shared/api/errors";
+import { setCurrentUser } from "@/shared/auth/authStore";
+import { USER_ROLES } from "@/shared/constants/roles";
+import { PlatformShell } from "@/shells/PlatformShell";
 import * as institutionApi from "./api";
+import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
 import { TherapistInvitationPage } from "./pages/TherapistInvitationPage";
 import { TherapistListPage } from "./pages/TherapistListPage";
 import { ServiceReadinessPage } from "./pages/ServiceReadinessPage";
 import type { TherapistProfile, TherapistQualification } from "./types";
 
 vi.mock("./api");
+vi.mock("@/domains/platform/api");
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.search}</output>;
+}
 
 const invitation = {
   invitation_id: "00000000-0000-7000-8000-000000000101",
@@ -88,6 +103,10 @@ describe("健管师邀请与资格", () => {
     });
   });
 
+  afterEach(() => {
+    setCurrentUser(null);
+  });
+
   it("创建邀请后关闭短码且不把短码放入URL或持久缓存", async () => {
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     render(<TherapistInvitationPage />);
@@ -145,14 +164,60 @@ describe("健管师邀请与资格", () => {
     expect(screen.getByText(/先创建邀请/)).toBeInTheDocument();
   });
 
-  it("SERVICE_READY只展示服务端原因与Evidence且不提供写入口", async () => {
+  it("SERVICE_READY只展示服务端原因与中文就绪证据且不提供写入口", async () => {
     render(<ServiceReadinessPage />);
     expect(await screen.findByText("服务暂未就绪")).toBeInTheDocument();
     expect(screen.getByText("机构许可证缺失、尚未生效或已过期")).toBeInTheDocument();
     expect(screen.getByText("暂无审核通过且资质有效的健管师")).toBeInTheDocument();
-    expect(screen.getByText("Evidence v3")).toBeInTheDocument();
+    expect(screen.getByText("就绪证据 v3")).toBeInTheDocument();
+    expect(screen.queryByText(/Evidence/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /设为.*就绪/ })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Evidence下一批" }));
+    await userEvent.click(screen.getByRole("button", { name: "就绪证据下一批" }));
     expect(institutionApi.getServiceReadinessEvidence).toHaveBeenLastCalledWith({ cursor: "opaque-c", limit: 20 });
+  });
+
+  it("门店审核使用标准submit更新筛选且不写入React控制台错误", async () => {
+    vi.mocked(platformApi.listTenantReviewQueue).mockResolvedValue({ items: [], page: 1, page_size: 10, total: 0 });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/platform/stores/reviews"]}>
+          <TenantReviewListPage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.type(screen.getByPlaceholderText("搜索门店名称/编码"), "演示门店");
+    await userEvent.click(screen.getByRole("button", { name: "查询" }));
+
+    expect(screen.getByTestId("location")).toHaveTextContent("keyword=%E6%BC%94%E7%A4%BA%E9%97%A8%E5%BA%97");
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("客户展示将平台角色和服务准备状态映射为业务中文", async () => {
+    setCurrentUser({ id: 1, role: USER_ROLES.superAdmin, tenant_id: null, org_id: null });
+    vi.mocked(platformApi.listTenantReviewQueue).mockResolvedValue({ items: [], page: 1, page_size: 5, total: 0 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/platform/home"]}>
+          <Routes>
+            <Route element={<PlatformShell />} path="/platform">
+              <Route element={<PlatformHomePage />} path="home" />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getAllByText("平台管理员").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("超级管理员")).not.toBeInTheDocument();
+    expect(screen.queryByText("super_admin")).not.toBeInTheDocument();
+
+    vi.mocked(institutionApi.listMemberEnrollments).mockResolvedValue({ items: [], next_cursor: null });
+    render(<MemberEnrollmentPage />, { wrapper: MemoryRouter });
+    expect(screen.getByText(/服务准备中案例推进/)).toBeInTheDocument();
+    expect(screen.queryByText(/PREPARING/)).not.toBeInTheDocument();
   });
 });
