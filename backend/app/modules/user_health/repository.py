@@ -61,11 +61,29 @@ class Slice4HealthRecordRepository:
                 ":tenant_public_id,:identity_revision_ref,:identity_source_version,"
                 ":snapshot_ciphertext,:snapshot_key_id,:snapshot_digest,:digest_key_id,"
                 ":reconfirmed_at,:source_type,CAST(:changed_fields AS jsonb),"
-                ":idempotency_key,:request_digest,:expected_postimage_digest)"
+                ":expected_version,:idempotency_key,:request_digest,:expected_postimage_digest)"
             ),
             values,
         )
         return dict(result.mappings().one())
+
+    async def profile_preimage(self, subject_member_id) -> dict | None:
+        row = (
+            await self._session.execute(
+                text(
+                    "SELECT profile_public_id,current_revision_id,version FROM public.health_profile "
+                    "WHERE subject_member_id=:subject_member_id FOR UPDATE"
+                ),
+                {"subject_member_id": subject_member_id},
+            )
+        ).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def latest_profile_metrics(self, **scope) -> tuple[dict, ...]:
+        return await self.clinical_facts(
+            **scope,
+            page={"limit": 100},
+        )
 
     async def create_detection_report(self, **values) -> dict:
         result = await self._session.execute(
@@ -82,6 +100,11 @@ class Slice4HealthRecordRepository:
 
     async def acquire_health_fact_lock(self, lock_key: int) -> None:
         await SqlAlchemyHealthFactRepository(self._session).acquire_semantic_lock(lock_key)
+
+    async def require_report_scope(self, **values) -> bool:
+        return await SqlAlchemyHealthFactRepository(self._session).require_report_scope(
+            **values
+        )
 
     async def find_health_fact(self, **values):
         return await SqlAlchemyHealthFactRepository(self._session).find_by_semantic_identity(

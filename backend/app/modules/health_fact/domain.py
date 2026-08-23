@@ -220,6 +220,7 @@ class CanonicalHealthFactDraft:
     created_by: int | None = None
     subject_member_id: UUID | None = None
     fact_ref: UUID | None = None
+    report_id: UUID | None = None
     catalog_version: int = CATALOG_VERSION
 
 
@@ -245,6 +246,7 @@ class CanonicalHealthFact:
     created_at: datetime | None = None
     subject_member_id: UUID | None = None
     fact_ref: UUID | None = None
+    report_id: UUID | None = None
 
 
 def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
@@ -286,6 +288,13 @@ def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
         SOURCE_TYPES if draft.catalog_version == 1 else FORMAL_SOURCE_TYPES
     ):
         raise HealthFactSourceForbidden("Health fact source is forbidden")
+    if draft.catalog_version == 2 and (
+        (draft.source_type == "REPORT") != (type(draft.report_id) is UUID)
+        or (draft.report_id is not None and draft.report_id.version != 7)
+    ):
+        raise HealthFactRequestInvalid("Health fact report binding is invalid")
+    if draft.catalog_version == 1 and draft.report_id is not None:
+        raise HealthFactRequestInvalid("Health fact report binding is invalid")
     if not draft.source_identity or len(draft.source_identity) > 512:
         raise HealthFactSourceForbidden("Health fact source is forbidden")
     if not draft.producer_event_key or len(draft.producer_event_key) > 128:
@@ -339,6 +348,7 @@ def _payload_bytes(draft: CanonicalHealthFactDraft) -> bytes:
             str(draft.subject_member_id) if draft.subject_member_id is not None else None
         ),
         "fact_ref": str(draft.fact_ref) if draft.fact_ref is not None else None,
+        "report_id": str(draft.report_id) if draft.report_id is not None else None,
         "supersedes_fact_id": draft.supersedes_fact_id,
         "unit": draft.unit,
         "value_kind": "NUMERIC",
@@ -387,6 +397,7 @@ def prepare_fact(
         created_by=draft.created_by,
         subject_member_id=draft.subject_member_id,
         fact_ref=draft.fact_ref,
+        report_id=draft.report_id,
     )
 
 

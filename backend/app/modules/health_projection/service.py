@@ -2,6 +2,7 @@ import hashlib
 import hmac
 from datetime import UTC, datetime, timedelta
 from dataclasses import asdict
+from uuid import UUID
 
 from app.modules.organization_projection.service import (
     BuildCheckpoint, BuildState, ConfirmationResult, ProjectionCheckpointConflict,
@@ -13,7 +14,11 @@ from app.modules.organization_projection.service import (
     ShadowEvidence, _canonical_shadow_payload, _component_payload,
     _count_categories, _evidence_payload, shadow_component_digest,
 )
-from .domain import RULE_VERSION, build_health_projection_rows
+from .domain import (
+    RULE_VERSION,
+    build_health_projection_rows,
+    build_health_projection_rows_v2,
+)
 from .models import HealthProjectionCheckpoint, HealthProjectionGeneration
 
 
@@ -47,13 +52,18 @@ def build_health_shadow_evidence(
     mappings, projected_rows, selections, visibility_rows, digest_key: bytes,
     post_hwm_facts=(),
 ) -> ShadowEvidence:
-    if set(high_watermark) != {"max_fact_id", "source_snapshot"}:
+    expected_hwm = (
+        {"max_fact_id", "max_status_event_seq", "source_snapshot"}
+        if projection_version == 2
+        else {"max_fact_id", "source_snapshot"}
+    )
+    if projection_version not in {1, 2} or set(high_watermark) != expected_hwm:
         raise ProjectionUnavailable("Projection shadow evidence is unavailable") from None
     high_watermark_digest = hashlib.sha256(_canonical_shadow_payload(high_watermark)).hexdigest().upper()
     categories: list[str] = []
-    expected_rows, expected_selections = build_health_projection_rows(
-        facts=current_facts, digest_key=digest_key
-    )
+    rule_version = "health-daily-selection-v2" if projection_version == 2 else RULE_VERSION
+    row_builder = build_health_projection_rows_v2 if projection_version == 2 else build_health_projection_rows
+    expected_rows, expected_selections = row_builder(facts=current_facts, digest_key=digest_key)
     expected = {row.fact_id: row for row in expected_rows}
     if len(expected) != len(expected_rows):
         categories.append("HEALTH_FACT_DUPLICATE")
@@ -72,15 +82,28 @@ def build_health_shadow_evidence(
         actual_value = asdict(actual) if hasattr(actual, "__dataclass_fields__") else {
             key: getattr(actual, key) for key in source_value
         }
+        if projection_version == 2:
+            for value in (source_value, actual_value):
+                value["fact_ref"] = str(value["fact_ref"])
+                value["subject_member_id"] = str(value["subject_member_id"])
         if source_value != actual_value:
             categories.append("HEALTH_FACT_DIGEST_MISMATCH" if source.row_digest != actual.row_digest else "HEALTH_FACT_FIELD_MISMATCH")
+    subject_field = "subject_member_id" if projection_version == 2 else "subject_user_id"
     wanted_selections = {
-        (row.subject_user_id, row.indicator_code, row.business_day): row
+        (
+            str(getattr(row, subject_field)) if projection_version == 2 else getattr(row, subject_field),
+            row.indicator_code,
+            row.business_day,
+        ): row
         for row in expected_selections
     }
     actual_selections = {}
     for row in selections:
-        identity = (row.subject_user_id, row.indicator_code, row.business_day)
+        identity = (
+            str(getattr(row, subject_field)) if projection_version == 2 else getattr(row, subject_field),
+            row.indicator_code,
+            row.business_day,
+        )
         if identity in actual_selections:
             categories.append("HEALTH_SELECTION_DUPLICATE")
         actual_selections[identity] = row
@@ -89,12 +112,22 @@ def build_health_shadow_evidence(
         actual = actual_selections.get(identity)
         if wanted is None or actual is None:
             categories.append("HEALTH_SELECTION_MISSING")
-        elif actual.rule_version != RULE_VERSION:
+        elif actual.rule_version != rule_version:
             categories.append("HEALTH_RULE_VERSION_MISMATCH")
-        elif wanted.winner_fact_id != actual.winner_fact_id or wanted.selection_digest != actual.selection_digest:
+        elif (
+            wanted.winner_fact_id != actual.winner_fact_id
+            or wanted.selection_digest != actual.selection_digest
+            or (
+                projection_version == 2
+                and str(wanted.winner_fact_ref) != str(actual.winner_fact_ref)
+            )
+        ):
             categories.append("HEALTH_WINNER_MISMATCH")
     mapping_items = []
     for mapping in mappings:
+        if projection_version == 2:
+            categories.append("HEALTH_MAPPING_TARGET_MISMATCH")
+            continue
         payload = {key: getattr(mapping, key) for key in (
             "legacy_indicator_id", "legacy_recorded_at", "canonical_fact_id",
             "mapping_version", "source_fingerprint", "digest_key_id",
@@ -111,12 +144,17 @@ def build_health_shadow_evidence(
             "fact_id": row.fact_id, "supersedes_fact_id": row.supersedes_fact_id,
             "is_current": row.is_current, "inserting_xid": row.inserting_xid,
         }
+        if projection_version == 2:
+            payload["status_event_seq"] = row.status_event_seq
+            payload["fact_payload_digest"] = row.fact_payload_digest
+            payload["status_event_digest"] = row.status_event_digest
         currentness_items.append(hmac.new(digest_key, b"kg:projection:shadow:health:currentness-item:v1\0" + _canonical_shadow_payload(payload), hashlib.sha256).hexdigest())
         if not isinstance(row.is_current, bool):
             categories.append("HEALTH_CURRENTNESS_UNPROVEN")
     categories.extend("HEALTH_POST_HWM_NEW_FACT" for row in post_hwm_facts if row.id > high_watermark["max_fact_id"])
     counts = {
         "source_count": len(visibility_rows),
+        "status_event_count": len(visibility_rows),
         "current_fact_count": len(expected),
         "projection_fact_count": len(projected),
         "expected_selection_count": len(wanted_selections),
@@ -128,7 +166,7 @@ def build_health_shadow_evidence(
     }
     if counts["fact_coverage_numerator"] != counts["fact_coverage_denominator"] or counts["selection_coverage_numerator"] != counts["selection_coverage_denominator"]:
         categories.append("HEALTH_COVERAGE_MISMATCH")
-    common = dict(generation_id=generation_id, high_watermark_digest=high_watermark_digest, projection_version=projection_version, rule_version=RULE_VERSION)
+    common = dict(generation_id=generation_id, high_watermark_digest=high_watermark_digest, projection_version=projection_version, rule_version=rule_version)
     values = {
         "source_digest": shadow_component_digest(domain="health", component="source", payload=_component_payload(items=[expected[k].row_digest for k in sorted(expected)], **common), key=digest_key),
         "mapping_digest": shadow_component_digest(domain="health", component="mapping", payload=_component_payload(items=sorted(mapping_items), **common), key=digest_key),
@@ -140,7 +178,7 @@ def build_health_shadow_evidence(
     category_counts = _count_categories(categories, _HEALTH_BLOCKERS | _HEALTH_REVIEW | _HEALTH_INFO)
     evidence_values = {
         "domain": "health", "generation_id": generation_id,
-        "projection_version": projection_version, "rule_version": RULE_VERSION,
+        "projection_version": projection_version, "rule_version": rule_version,
         "high_watermark": high_watermark, "high_watermark_digest": high_watermark_digest,
         "digest_key_id": digest_key_id, "generation_input_digest": generation_input_digest,
         **values,
@@ -154,9 +192,12 @@ def build_health_shadow_evidence(
 
 
 class HealthProjectionBuilder:
-    def __init__(self, uow_factory, confirmation_uow_factory, keyring: ProjectionDigestKeyring, lock_connection_factory=None):
+    def __init__(self, uow_factory, confirmation_uow_factory, keyring: ProjectionDigestKeyring, lock_connection_factory=None, *, projection_version: int = 1):
+        if projection_version not in {1, 2}:
+            raise ValueError("Projection version is invalid")
         self.uow_factory, self.confirmation_uow_factory, self.keyring = uow_factory, confirmation_uow_factory, keyring
         self.lock_connection_factory = lock_connection_factory
+        self.projection_version = projection_version
         self.heartbeat = ProjectionHeartbeat(uow_factory)
 
     def _session_lock(self):
@@ -166,13 +207,25 @@ class HealthProjectionBuilder:
 
     async def start(self, *, generation_no, builder_id, operation_id):
         async with self._session_lock(), self.uow_factory() as uow:
-            preimage = {"operation": "start", "generation_no": generation_no, "builder_id": builder_id, "projection_version": 1}
+            preimage = {"operation": "start", "generation_no": generation_no, "builder_id": builder_id, "projection_version": self.projection_version}
             replay = await _replay_operation(uow.repository, operation_id, preimage)
             if replay is not None: return int(replay["generation_id"])
             source_snapshot = await uow.repository.export_source_snapshot()
-            max_id = await uow.repository.max_source_id(source_snapshot=source_snapshot); remaining = await uow.repository.count_sources(max_id, source_snapshot=source_snapshot)
-            hwm = {"max_fact_id": max_id, "source_snapshot": source_snapshot}
-            generation = HealthProjectionGeneration(projection_version=1, generation_no=generation_no, status="BUILDING", high_watermark=hwm, digest_key_id=self.keyring.current_key_id, input_digest=_digest(hwm), start_operation_id=operation_id, builder_id=builder_id, lease_epoch=0, lease_expires_at=datetime.now(UTC) + timedelta(seconds=60))
+            if self.projection_version == 2:
+                capture = await uow.repository.capture_v2_sources(
+                    source_snapshot=source_snapshot
+                )
+                hwm = {
+                    "max_fact_id": int(capture["max_fact_id"]),
+                    "max_status_event_seq": int(capture["max_status_event_seq"]),
+                    "source_snapshot": source_snapshot,
+                }
+                remaining = int(capture["fact_count"])
+            else:
+                max_id = await uow.repository.max_source_id(source_snapshot=source_snapshot)
+                remaining = await uow.repository.count_sources(max_id, source_snapshot=source_snapshot)
+                hwm = {"max_fact_id": max_id, "source_snapshot": source_snapshot}
+            generation = HealthProjectionGeneration(projection_version=self.projection_version, generation_no=generation_no, status="BUILDING", high_watermark=hwm, digest_key_id=self.keyring.current_key_id, input_digest=_digest(hwm), start_operation_id=operation_id, builder_id=builder_id, lease_epoch=0, lease_expires_at=datetime.now(UTC) + timedelta(seconds=60))
             checkpoint = HealthProjectionCheckpoint(last_source_id=None, processed_count=0, projected_count=0, skipped_count=0, remaining_count=remaining, checkpoint_digest=_digest({"last_source_id": None, "processed_count": 0, "remaining_count": remaining}), version=1)
             await uow.repository.add_generation(generation, checkpoint)
             postimage = {"generation_id": generation.id, "generation_version": generation.version, "checkpoint_version": checkpoint.version, "high_watermark": hwm, "digest_key_id": generation.digest_key_id}
@@ -191,11 +244,29 @@ class HealthProjectionBuilder:
             _require_live_lease(generation, builder_id=builder_id, lease_epoch=lease_epoch)
             if checkpoint is None or checkpoint.checkpoint_digest != expected_checkpoint_digest: raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
             key = self.keyring.stored(generation.digest_key_id)
-            ids = await uow.repository.list_source_ids(after_id=checkpoint.last_source_id, max_id=generation.high_watermark["max_fact_id"], limit=page_size, source_snapshot=generation.high_watermark["source_snapshot"])
             state = BuildCheckpoint(checkpoint.last_source_id, checkpoint.processed_count, checkpoint.projected_count, checkpoint.skipped_count, checkpoint.remaining_count)
-            if not ids: return state.complete()
-            facts = await uow.repository.load_facts(ids); rows, _ = build_health_projection_rows(facts=facts, digest_key=key)
-            await uow.repository.add_facts(generation_id, generation.digest_key_id, tuple(rows))
+            if generation.projection_version == 2:
+                facts = await uow.repository.load_v2_facts(
+                    after_id=checkpoint.last_source_id,
+                    max_fact_id=generation.high_watermark["max_fact_id"],
+                    max_status_event_seq=generation.high_watermark["max_status_event_seq"],
+                    source_snapshot=generation.high_watermark["source_snapshot"],
+                    limit=page_size,
+                )
+                if not facts:
+                    return state.complete()
+                ids = tuple(fact.id for fact in facts)
+                rows, _ = build_health_projection_rows_v2(facts=facts, digest_key=key)
+                await uow.repository.add_facts_v2(
+                    generation_id, generation.digest_key_id, tuple(rows)
+                )
+            else:
+                ids = await uow.repository.list_source_ids(after_id=checkpoint.last_source_id, max_id=generation.high_watermark["max_fact_id"], limit=page_size, source_snapshot=generation.high_watermark["source_snapshot"])
+                if not ids:
+                    return state.complete()
+                facts = await uow.repository.load_facts(ids)
+                rows, _ = build_health_projection_rows(facts=facts, digest_key=key)
+                await uow.repository.add_facts(generation_id, generation.digest_key_id, tuple(rows))
             state = state.advance(source_ids=ids, projected=len(rows))
             for name in ("last_source_id", "processed_count", "projected_count", "skipped_count", "remaining_count"): setattr(checkpoint, name, getattr(state, name))
             checkpoint.last_operation_id = operation_id; checkpoint.version += 1; checkpoint.checkpoint_digest = _digest({"last_source_id": state.last_source_id, "processed_count": state.processed_count, "remaining_count": state.remaining_count})
@@ -211,19 +282,55 @@ class HealthProjectionBuilder:
             _require_live_lease(generation, builder_id=builder_id, lease_epoch=lease_epoch)
             if checkpoint is None or checkpoint.checkpoint_digest != expected_checkpoint_digest or generation.version != expected_generation_version: raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
             _validate_checkpoint(generation, checkpoint)
-            if await uow.repository.has_remaining_sources(checkpoint.last_source_id, generation.high_watermark["max_fact_id"], generation.high_watermark["source_snapshot"]): raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
             key = self.keyring.stored(generation.digest_key_id)
-            selections = []
-            for subject_id, indicator, business_day in await uow.repository.list_projected_windows(generation_id):
-                await uow.repository.acquire_window_lock(_window_lock_key(generation_id, subject_id, indicator, business_day))
-                window = await uow.repository.load_projected_window(generation_id, subject_id, indicator, business_day)
-                _, selected = build_health_projection_rows(facts=window, digest_key=key); selections.extend(selected)
-            await uow.repository.add_selections(generation_id, generation.digest_key_id, tuple(selections))
-            completion_evidence = await uow.repository.validate_completion(generation_id, checkpoint, generation.digest_key_id, key, generation.high_watermark)
+            if generation.projection_version == 2:
+                remaining = await uow.repository.load_v2_facts(
+                    after_id=checkpoint.last_source_id,
+                    max_fact_id=generation.high_watermark["max_fact_id"],
+                    max_status_event_seq=generation.high_watermark["max_status_event_seq"],
+                    source_snapshot=generation.high_watermark["source_snapshot"],
+                    limit=1,
+                )
+                if remaining:
+                    raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
+                source_facts = await uow.repository.load_all_v2_facts(generation.high_watermark)
+                _, selections = build_health_projection_rows_v2(
+                    facts=source_facts, digest_key=key
+                )
+                for selection in selections:
+                    await uow.repository.acquire_window_lock(
+                        _window_lock_key(
+                            generation_id, selection.subject_member_id,
+                            selection.indicator_code, selection.business_day,
+                        )
+                    )
+                await uow.repository.add_selections_v2(
+                    generation_id, generation.digest_key_id, tuple(selections)
+                )
+                completion_evidence, evidence_facts = await uow.repository.validate_completion_v2(
+                    generation_id, checkpoint, generation.digest_key_id, key,
+                    generation.high_watermark,
+                )
+                await uow.repository.add_subject_evidence_v2(
+                    generation_id=generation_id,
+                    key_id=generation.digest_key_id,
+                    source_snapshot=generation.high_watermark["source_snapshot"],
+                    facts=evidence_facts,
+                )
+            else:
+                if await uow.repository.has_remaining_sources(checkpoint.last_source_id, generation.high_watermark["max_fact_id"], generation.high_watermark["source_snapshot"]): raise ProjectionCheckpointConflict("Projection checkpoint conflicts")
+                selections = []
+                for subject_id, indicator, business_day in await uow.repository.list_projected_windows(generation_id):
+                    await uow.repository.acquire_window_lock(_window_lock_key(generation_id, subject_id, indicator, business_day))
+                    window = await uow.repository.load_projected_window(generation_id, subject_id, indicator, business_day)
+                    _, selected = build_health_projection_rows(facts=window, digest_key=key); selections.extend(selected)
+                await uow.repository.add_selections(generation_id, generation.digest_key_id, tuple(selections))
+                completion_evidence = await uow.repository.validate_completion(generation_id, checkpoint, generation.digest_key_id, key, generation.high_watermark)
             generation.status = "BUILD_COMPLETE"; generation.builder_id = None; generation.lease_expires_at = None; generation.completed_at = datetime.now(UTC); generation.version += 1
             postimage = {"status": generation.status, "generation_version": generation.version, "checkpoint_digest": checkpoint.checkpoint_digest, "checkpoint_version": checkpoint.version, "completion_evidence": completion_evidence}
             await uow.repository.add_audit(generation_id=generation_id, action="projection_generation_build_complete", operation_id=operation_id, payload={"preimage": preimage, "postimage": postimage, "completion_evidence": completion_evidence})
             await uow.commit()
+
 
     async def takeover(self, *, generation_id, builder_id, expected_lease_epoch, expected_checkpoint_digest, operation_id):
         async with self._session_lock(), self.uow_factory() as uow:
@@ -276,4 +383,15 @@ class HealthProjectionBuilder:
             return ConfirmationResult.UNKNOWN
 
 
-__all__ = ["BuildCheckpoint", "BuildState", "ConfirmationResult", "HealthProjectionBuilder", "ProjectionCheckpointConflict", "ProjectionCommitOutcomeUnknown", "ProjectionDigestKeyring", "ProjectionDigestKeyUnavailable", "ProjectionHeartbeat", "ProjectionLeaseConflict", "ProjectionUnitOfWork", "ProjectionUnavailable"]
+class HealthProjectionBuilderV2(HealthProjectionBuilder):
+    def __init__(self, uow_factory, confirmation_uow_factory, keyring, lock_connection_factory=None):
+        super().__init__(
+            uow_factory,
+            confirmation_uow_factory,
+            keyring,
+            lock_connection_factory,
+            projection_version=2,
+        )
+
+
+__all__ = ["BuildCheckpoint", "BuildState", "ConfirmationResult", "HealthProjectionBuilder", "HealthProjectionBuilderV2", "ProjectionCheckpointConflict", "ProjectionCommitOutcomeUnknown", "ProjectionDigestKeyring", "ProjectionDigestKeyUnavailable", "ProjectionHeartbeat", "ProjectionLeaseConflict", "ProjectionUnitOfWork", "ProjectionUnavailable"]

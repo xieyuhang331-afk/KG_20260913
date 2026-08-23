@@ -24,6 +24,7 @@ from app.modules.auth.repository import get_user_by_id
 from app.modules.health_fact.domain import (
     CanonicalHealthFactDraft,
     HealthFactDigestKeyring,
+    compute_bmi,
     initial_verification_state,
     prepare_fact,
     semantic_lock_key,
@@ -410,6 +411,21 @@ async def read_formal_health_profile(
         )
         if key in snapshot
     }
+    metric_rows = await repository.latest_profile_metrics(
+        actor_user_id=actor_user_id,
+        actor_context=actor_context,
+        subject_member_id=subject_member_id,
+        service_case_id=service_case_id,
+        enrollment_id=enrollment_id,
+    )
+    metrics = {}
+    for metric in metric_rows:
+        code = metric.get("indicator_code")
+        if code in {"height", "weight", "waist"} and code not in metrics:
+            metrics[code] = Decimal(str(metric["numeric_value"]))
+    bmi = None
+    if "height" in metrics and "weight" in metrics:
+        bmi = compute_bmi(height_cm=metrics["height"], weight_kg=metrics["weight"])
     return HealthProfileDTO(
         subject_ref=subject_member_id,
         profile_id=_uuid7(row["profile_public_id"]),
@@ -425,10 +441,10 @@ async def read_formal_health_profile(
             evidence_status=summary.evidence_status,
         ),
         reconfirmed_at=row["reconfirmed_at"],
-        height_cm=None,
-        weight_kg=None,
-        waist_cm=None,
-        bmi=None,
+        height_cm=metrics.get("height"),
+        weight_kg=metrics.get("weight"),
+        waist_cm=metrics.get("waist"),
+        bmi=bmi,
         updated_at=row["updated_at"],
         **public_snapshot,
     )
@@ -446,8 +462,6 @@ async def create_formal_profile_root(
     payload,
     idempotency_key: str,
 ) -> dict[str, object]:
-    if payload.expected_version != 0:
-        raise ValueError("VERSION_CONFLICT")
     if payload.source_type != "APP" or actor_context not in {"SELF", "PROXY_DAILY_INPUT"}:
         raise ValueError("PROFILE_SNAPSHOT_INVALID")
     subject = await writer_repository.subject_authority(
@@ -487,7 +501,13 @@ async def create_formal_profile_root(
         "COORDINATION",
         {"request_digest": request_digest.hex(), "idempotency_key": idempotency_key},
     )
-    profile_id = _stable_uuid7(payload.reconfirmed_at, coordination, discriminator=1)
+    preimage = await writer_repository.profile_preimage(subject_member_id)
+    if preimage is None:
+        if payload.expected_version:
+            raise ValueError("VERSION_CONFLICT")
+        profile_id = _stable_uuid7(payload.reconfirmed_at, coordination, discriminator=1)
+    else:
+        profile_id = _uuid7(preimage["profile_public_id"])
     revision_id = _stable_uuid7(payload.reconfirmed_at, coordination, discriminator=2)
     ciphertext, encryption_key_id = secrets_boundary.encrypt_profile(
         snapshot,
@@ -503,11 +523,11 @@ async def create_formal_profile_root(
     expected_digest, _ = secrets_boundary.digest(
         "REPLAY_DIGEST",
         {
-            "operation": "CREATE_PROFILE_ROOT",
+            "operation": "PUT_HEALTH_PROFILE",
             "profile_id": str(profile_id),
             "revision_id": str(revision_id),
             "subject_ref": str(subject_member_id),
-            "version": 1,
+            "version": payload.expected_version + 1,
         },
     )
     result = await writer_repository.create_profile_root(
@@ -528,6 +548,7 @@ async def create_formal_profile_root(
         reconfirmed_at=payload.reconfirmed_at,
         source_type=payload.source_type,
         changed_fields=sorted(snapshot),
+        expected_version=payload.expected_version,
         idempotency_key=uuid5(
             NAMESPACE_URL,
             f"slice4/profile/{subject_member_id}/{idempotency_key}",
@@ -535,7 +556,10 @@ async def create_formal_profile_root(
         request_digest=request_digest,
         expected_postimage_digest=expected_digest,
     )
-    if UUID(str(result["subject_member_id"])) != subject_member_id or result["version"] != 1:
+    if (
+        UUID(str(result["subject_member_id"])) != subject_member_id
+        or result["version"] != payload.expected_version + 1
+    ):
         raise RuntimeError("COMMIT_OUTCOME_UNKNOWN")
     return result
 
@@ -657,6 +681,13 @@ async def create_formal_health_facts(
     keyring = _health_fact_keyring()
     results: list[HealthFactDTO] = []
     for index, item in enumerate(sorted(payload.items, key=lambda value: value.indicator_code), 1):
+        if item.source_type == "REPORT":
+            if not await repository.require_report_scope(
+                report_id=item.report_id,
+                subject_member_id=subject_member_id,
+                service_case_id=service_case_id,
+            ):
+                raise ValueError("INVALID_REQUEST")
         producer_digest, _ = secrets_boundary.digest(
             "COORDINATION",
             {
@@ -671,6 +702,7 @@ async def create_formal_health_facts(
             subject_user_id=subject_user_id,
             subject_member_id=subject_member_id,
             fact_ref=fact_ref,
+            report_id=item.report_id,
             indicator_code=item.indicator_code,
             numeric_value=item.value,
             unit=item.unit,
@@ -840,6 +872,7 @@ async def correct_formal_health_fact(
         subject_user_id=subject_user_id,
         subject_member_id=subject_member_id,
         fact_ref=fact_ref,
+        report_id=predecessor.report_id,
         indicator_code=payload.indicator_code,
         numeric_value=payload.value,
         unit=payload.unit,

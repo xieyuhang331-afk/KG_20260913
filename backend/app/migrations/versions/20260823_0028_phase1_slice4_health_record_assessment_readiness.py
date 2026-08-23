@@ -97,6 +97,7 @@ _EXTENDED_FUNCTIONS = (
     ("slice4_subject_authority_v1", "UUID,UUID,BIGINT,VARCHAR"),
     ("slice4_readiness_currentness_v1", "UUID,BIGINT"),
     ("slice4_projection_coverage_v2", "UUID,JSONB"),
+    ("slice4_report_fact_authority_v1", "UUID,UUID,UUID"),
     ("slice4_report_file_authority_v1", "UUID,UUID,BIGINT,VARCHAR"),
     ("slice4_clinical_profile_read_v1", "BIGINT,VARCHAR,UUID,UUID,UUID"),
     ("slice4_clinical_report_read_v1", "BIGINT,VARCHAR,UUID,UUID,UUID,JSONB"),
@@ -283,6 +284,7 @@ def _alter_health_data_tables() -> None:
 
     op.add_column("canonical_health_fact", _uuid("fact_ref", nullable=True), schema="public")
     op.add_column("canonical_health_fact", _uuid("subject_member_id", nullable=True), schema="public")
+    op.add_column("canonical_health_fact", _uuid("report_id", nullable=True), schema="public")
     op.alter_column("canonical_health_fact", "subject_user_id", nullable=True, schema="public")
     for constraint in (
         "ck_canonical_health_fact_catalog_v1",
@@ -317,12 +319,24 @@ def _alter_health_data_tables() -> None:
         "(catalog_version=1 AND source_type IN ('APP','STORE','DEVICE','REPORT')) OR (catalog_version=2 AND source_type IN ('APP','STORE','REPORT'))",
         schema="public",
     )
+    op.create_check_constraint(
+        "ck_canonical_health_fact_report_binding_v2", "canonical_health_fact",
+        "(catalog_version=1 AND report_id IS NULL) OR "
+        "(catalog_version=2 AND ((source_type='REPORT' AND report_id IS NOT NULL) "
+        "OR (source_type<>'REPORT' AND report_id IS NULL)))",
+        schema="public",
+    )
     op.create_unique_constraint(
         "uq_canonical_health_fact_fact_ref", "canonical_health_fact", ["fact_ref"], schema="public"
     )
     op.create_foreign_key(
         "fk_canonical_health_fact_subject_member", "canonical_health_fact", "member",
         ["subject_member_id"], ["member_id"], source_schema="public", referent_schema="identity",
+        ondelete="RESTRICT",
+    )
+    op.create_foreign_key(
+        "fk_canonical_health_fact_report", "canonical_health_fact", "detection_report",
+        ["report_id"], ["report_id"], source_schema="public", referent_schema="public",
         ondelete="RESTRICT",
     )
 
@@ -372,6 +386,17 @@ def _alter_health_data_tables() -> None:
         postgresql_where=sa.text("subject_member_id IS NOT NULL"),
     )
     op.add_column("health_projection_shadow_run", sa.Column("status_event_count", sa.BigInteger(), nullable=True), schema="public")
+    health_shadow = os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]
+    ready_gate = os.environ["KG_PROJECTION_READY_GATE_ROLE"]
+    shadow_confirmation = os.environ["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"]
+    op.execute(
+        f'''GRANT SELECT(status_event_count), UPDATE(status_event_count)
+        ON TABLE public.health_projection_shadow_run TO "{health_shadow}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(status_event_count) ON TABLE public.health_projection_shadow_run
+        TO "{ready_gate}", "{shadow_confirmation}"'''
+    )
 
     op.drop_constraint("ck_health_projection_generation_version", "health_projection_generation", schema="public", type_="check")
     op.drop_constraint("ck_health_projection_generation_high_watermark", "health_projection_generation", schema="public", type_="check")
@@ -865,11 +890,16 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
           ELSIF identity_source_kind='SLICE3' THEN
             PERFORM 1 FROM public.member_identity_verification v
               JOIN public.member_identity_revision r ON r.verification_id=v.verification_id
-              JOIN public.member_identity_review_decision d ON d.revision_id=r.revision_id
-              JOIN identity.identity_subject_claim_registry g ON g.member_id=v.member_id
+              JOIN public.member_identity_review_decision d
+                ON d.decision_id=v.platform_decision_id AND d.revision_id=r.revision_id
+              JOIN identity.identity_subject_claim_registry g
+                ON g.member_id=v.member_id
+               AND g.slice3_revision_id=r.revision_id
+               AND g.slice3_decision_id=d.decision_id
               WHERE r.revision_id=value_identity_revision_ref
                 AND g.source_facts_version=value_identity_source_version
-                AND v.current_revision_id=r.revision_id AND d.decision='APPROVED'
+                AND v.current_revision_id=r.revision_id AND v.status='APPROVED'
+                AND d.decision='APPROVED'
                 AND d.phase='PLATFORM'
               FOR SHARE OF v,r,d,g;
           ELSE RETURN FALSE;
@@ -890,6 +920,7 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
           value_identity_source_version BIGINT, value_snapshot_ciphertext BYTEA,
           value_snapshot_key_id VARCHAR, value_snapshot_digest BYTEA, value_digest_key_id VARCHAR,
           value_reconfirmed_at TIMESTAMPTZ, value_source_type VARCHAR, value_changed_fields JSONB,
+          value_expected_version BIGINT,
           value_idempotency_key UUID, value_request_digest BYTEA, value_expected_postimage_digest BYTEA
         ) RETURNS TABLE(profile_public_id UUID, subject_member_id UUID,
           subject_user_id BIGINT, current_revision_id UUID, version BIGINT)
@@ -901,6 +932,7 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
           existing_user BIGINT; existing_version BIGINT;
         BEGIN
           IF session_user <> '{writer}' OR value_actor_context NOT IN ('SELF','PROXY')
+             OR value_expected_version<0
              OR value_identity_source_version<1 OR value_expected_postimage_digest IS NULL THEN
             RAISE EXCEPTION 'SLICE4_HEALTH_PROFILE_ROOT_FORBIDDEN';
           END IF;
@@ -936,7 +968,7 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
           SELECT i.request_digest,i.postimage_digest
             INTO stored_request_digest,stored_postimage_digest
             FROM public.slice4_idempotency i
-            WHERE i.operation='CREATE_PROFILE_ROOT'
+            WHERE i.operation='PUT_HEALTH_PROFILE'
               AND i.scope_ref=value_subject_member_id
               AND i.idempotency_key=value_idempotency_key;
           IF FOUND THEN
@@ -946,26 +978,37 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
             IF stored_postimage_digest IS DISTINCT FROM value_expected_postimage_digest THEN
               RAISE EXCEPTION 'SLICE4_COMMIT_OUTCOME_UNKNOWN';
             END IF;
-            SELECT h.profile_public_id,r.profile_revision_id,h.user_id,1::bigint
+            SELECT h.profile_public_id,r.profile_revision_id,h.user_id,h.version
               INTO existing_profile,existing_revision,existing_user,existing_version
               FROM public.health_profile h
               JOIN public.health_profile_revision r
-                ON r.subject_member_id=h.subject_member_id AND r.revision_no=1
-              WHERE h.subject_member_id=value_subject_member_id FOR SHARE;
+                ON r.profile_revision_id=h.current_revision_id
+              WHERE h.subject_member_id=value_subject_member_id
+                AND h.version=value_expected_version+1 FOR SHARE;
             IF NOT FOUND THEN RAISE EXCEPTION 'SLICE4_COMMIT_OUTCOME_UNKNOWN'; END IF;
             IF (SELECT count(*) FROM public.slice4_audit a
                   WHERE a.aggregate_ref=existing_profile
-                    AND a.event_type='HEALTH_PROFILE_ROOT_CREATED')<>1
+                    AND a.event_type=CASE WHEN value_expected_version=0
+                      THEN 'HEALTH_PROFILE_ROOT_CREATED' ELSE 'HEALTH_PROFILE_REVISION_APPENDED' END
+                    AND a.event_digest=value_snapshot_digest)<>1
                OR (SELECT count(*) FROM public.slice4_outbox o
                   WHERE o.aggregate_ref=existing_profile
-                    AND o.event_type='HEALTH_PROFILE_ROOT_CREATED')<>1 THEN
+                    AND o.event_type=CASE WHEN value_expected_version=0
+                      THEN 'HEALTH_PROFILE_ROOT_CREATED' ELSE 'HEALTH_PROFILE_REVISION_APPENDED' END
+                    AND o.payload_digest=value_snapshot_digest)<>1 THEN
               RAISE EXCEPTION 'SLICE4_COMMIT_OUTCOME_UNKNOWN';
             END IF;
             RETURN QUERY SELECT existing_profile,value_subject_member_id,existing_user,
               existing_revision,existing_version;
             RETURN;
           END IF;
-          IF EXISTS(SELECT 1 FROM public.health_profile h WHERE h.subject_member_id=value_subject_member_id) THEN
+          SELECT h.profile_public_id,h.current_revision_id,h.user_id,h.version
+            INTO existing_profile,existing_revision,existing_user,existing_version
+            FROM public.health_profile h WHERE h.subject_member_id=value_subject_member_id
+            FOR UPDATE;
+          IF FOUND AND existing_version<>value_expected_version THEN
+            RAISE EXCEPTION 'SLICE4_VERSION_CONFLICT';
+          ELSIF NOT FOUND AND value_expected_version<>0 THEN
             RAISE EXCEPTION 'SLICE4_VERSION_CONFLICT';
           END IF;
           IF NOT public.slice4_identity_summary_current_v1(value_subject_member_id,value_service_case_id,
@@ -986,32 +1029,45 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
             identity_revision_ref,identity_source_version,snapshot_ciphertext,snapshot_key_id,
             reconfirmed_at,source_type,changed_fields,supersedes_revision_id,actor_user_id,
             actor_type,snapshot_digest,digest_key_id,created_at)
-          VALUES(requested_profile_revision_id,value_subject_member_id,resolved_user_id,1,
+          VALUES(requested_profile_revision_id,value_subject_member_id,resolved_user_id,
+            value_expected_version+1,
             value_tenant_public_id,resolved_source_kind,
             value_identity_revision_ref,value_identity_source_version,value_snapshot_ciphertext,value_snapshot_key_id,
-            value_reconfirmed_at,value_source_type,value_changed_fields,NULL,value_actor_user_id,value_actor_context,
+            value_reconfirmed_at,value_source_type,value_changed_fields,existing_revision,
+            value_actor_user_id,value_actor_context,
             value_snapshot_digest,value_digest_key_id,clock_timestamp());
-          INSERT INTO public.health_profile(profile_public_id,subject_member_id,current_revision_id,
-            version,user_id,gender,birth_date,height,weight,created_at,updated_at)
-          VALUES(requested_profile_public_id,value_subject_member_id,requested_profile_revision_id,
-            1,resolved_user_id,NULL,NULL,NULL,NULL,clock_timestamp(),clock_timestamp());
+          IF existing_profile IS NULL THEN
+            INSERT INTO public.health_profile(profile_public_id,subject_member_id,current_revision_id,
+              version,user_id,gender,birth_date,height,weight,created_at,updated_at)
+            VALUES(requested_profile_public_id,value_subject_member_id,requested_profile_revision_id,
+              1,resolved_user_id,NULL,NULL,NULL,NULL,clock_timestamp(),clock_timestamp());
+            existing_profile:=requested_profile_public_id;
+          ELSE
+            UPDATE public.health_profile SET current_revision_id=requested_profile_revision_id,
+              version=value_expected_version+1,updated_at=clock_timestamp()
+              WHERE profile_public_id=existing_profile;
+          END IF;
           INSERT INTO public.slice4_audit(audit_id,event_type,aggregate_ref,actor_user_id,event_digest,digest_key_id,created_at)
-          VALUES(audit_id,'HEALTH_PROFILE_ROOT_CREATED',requested_profile_public_id,value_actor_user_id,value_snapshot_digest,value_digest_key_id,clock_timestamp());
+          VALUES(audit_id,CASE WHEN value_expected_version=0 THEN 'HEALTH_PROFILE_ROOT_CREATED'
+            ELSE 'HEALTH_PROFILE_REVISION_APPENDED' END,existing_profile,value_actor_user_id,
+            value_snapshot_digest,value_digest_key_id,clock_timestamp());
           INSERT INTO public.slice4_outbox(event_id,aggregate_type,aggregate_ref,event_type,payload_digest,payload_json,status,attempts,created_at)
-          VALUES(event_id,'HEALTH_PROFILE',requested_profile_public_id,'HEALTH_PROFILE_ROOT_CREATED',value_snapshot_digest,
-            jsonb_build_object('profile_public_id',requested_profile_public_id,
+          VALUES(event_id,'HEALTH_PROFILE',existing_profile,
+            CASE WHEN value_expected_version=0 THEN 'HEALTH_PROFILE_ROOT_CREATED'
+            ELSE 'HEALTH_PROFILE_REVISION_APPENDED' END,value_snapshot_digest,
+            jsonb_build_object('profile_public_id',existing_profile,
               'service_case_id',value_service_case_id),'PENDING',0,clock_timestamp());
           INSERT INTO public.slice4_idempotency(receipt_id,operation,scope_ref,idempotency_key,
             request_digest,postimage_digest,created_at)
           -- postimage_digest=expected_postimage_digest is the prewrite plan mapping.
-          VALUES(receipt_id,'CREATE_PROFILE_ROOT',value_subject_member_id,value_idempotency_key,
+          VALUES(receipt_id,'PUT_HEALTH_PROFILE',value_subject_member_id,value_idempotency_key,
             value_request_digest,value_expected_postimage_digest,clock_timestamp());
-          RETURN QUERY SELECT requested_profile_public_id,value_subject_member_id,resolved_user_id,
-            requested_profile_revision_id,1::BIGINT;
+          RETURN QUERY SELECT existing_profile,value_subject_member_id,resolved_user_id,
+            requested_profile_revision_id,value_expected_version+1;
         END; $$;'''
     )
-    op.execute("REVOKE ALL ON FUNCTION public.slice4_health_profile_root_create_v1(BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,UUID,BYTEA,BYTEA) FROM PUBLIC")
-    op.execute(f'''GRANT EXECUTE ON FUNCTION public.slice4_health_profile_root_create_v1(BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,UUID,BYTEA,BYTEA) TO "{writer}"''')
+    op.execute("REVOKE ALL ON FUNCTION public.slice4_health_profile_root_create_v1(BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,BIGINT,UUID,BYTEA,BYTEA) FROM PUBLIC")
+    op.execute(f'''GRANT EXECUTE ON FUNCTION public.slice4_health_profile_root_create_v1(BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,BIGINT,UUID,BYTEA,BYTEA) TO "{writer}"''')
 
     op.execute(
         f'''CREATE FUNCTION public.slice4_detection_report_create_v1(
@@ -1313,7 +1369,7 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
         DECLARE resolved_tenant_id BIGINT; next_pointer_version BIGINT;
           created TIMESTAMPTZ; stored_request BYTEA; stored_postimage BYTEA;
           resolved_identity_ref UUID; resolved_identity_version BIGINT;
-          resolved_digest_key VARCHAR;
+          resolved_digest_key VARCHAR; authoritative_currentness JSONB;
         BEGIN
           IF session_user <> '{readiness}'
              OR value_projection_version<2
@@ -1336,12 +1392,37 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
           IF EXISTS(
             SELECT 1 FROM jsonb_array_elements(value_encrypted_fact_rows) item
             WHERE jsonb_typeof(item)<>'object'
-               OR (SELECT count(*) FROM jsonb_object_keys(item))<>10
+               OR (SELECT count(*) FROM jsonb_object_keys(item))<>11
                OR EXISTS(SELECT 1 FROM jsonb_object_keys(item) k WHERE k NOT IN
-                 ('indicator_code','fact_ref','measured_at','received_at','source_type',
-                  'verification_state','value_ciphertext','value_key_id','unit','row_digest'))
+                  ('indicator_code','fact_ref','measured_at','received_at','source_type',
+                  'verification_state','status_event_seq','value_ciphertext','value_key_id',
+                  'unit','row_digest'))
           ) THEN RAISE EXCEPTION 'SLICE4_ASSEMBLY_INVALID'; END IF;
           PERFORM pg_advisory_xact_lock(hashtextextended(value_service_case_id::text,0));
+          authoritative_currentness := public.slice4_readiness_currentness_v1(
+            value_service_case_id,0);
+          IF authoritative_currentness IS NULL
+             OR (authoritative_currentness->>'subject_member_id')::uuid<>value_subject_member_id
+             OR (authoritative_currentness->>'tenant_public_id')::uuid<>value_tenant_public_id
+             OR (authoritative_currentness->>'primary_therapist_id')::uuid<>value_primary_therapist_id
+             OR (authoritative_currentness->>'profile_revision_id')::uuid
+                  IS DISTINCT FROM value_profile_revision_id
+             OR authoritative_currentness->'consent_version_ids'
+                  IS DISTINCT FROM value_source_vector->'consent_version_ids'
+             OR (authoritative_currentness->'policy'->>'policy_version_id')::uuid
+                  IS DISTINCT FROM value_policy_version_id
+             OR (value_readiness_status='ASSESSMENT_READY' AND (
+                  COALESCE((authoritative_currentness->>'authorization_complete')::boolean,FALSE)=FALSE
+                  OR value_profile_revision_id IS NULL OR value_policy_version_id IS NULL
+                  OR NOT ((authoritative_currentness->'policy'->'required_profile_sections')
+                          <@ (authoritative_currentness->'profile_section_codes'))
+                  OR jsonb_array_length(value_encrypted_fact_rows)=0
+                  OR jsonb_array_length(value_reason_codes)>0
+                  OR jsonb_array_length(value_source_vector->'missing_codes')>0
+                  OR jsonb_array_length(value_source_vector->'expired_codes')>0
+                  OR jsonb_array_length(value_source_vector->'disputed_codes')>0)) THEN
+            RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID';
+          END IF;
           SELECT c.tenant_id INTO resolved_tenant_id
             FROM public.service_case c
             JOIN public.service_enrollment e ON e.enrollment_id=c.enrollment_id
@@ -1372,6 +1453,111 @@ def _create_owner_functions(writer: str, readiness: str, identity: str) -> None:
               RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID';
             END IF;
           END IF;
+          IF value_readiness_status='ASSESSMENT_READY' AND NOT EXISTS(
+            SELECT 1 FROM public.health_projection_generation g
+            JOIN public.health_projection_shadow_run sr
+              ON sr.run_id=g.current_shadow_run_id
+            JOIN public.assessment_readiness_policy_version p
+              ON p.policy_version_id=value_policy_version_id
+            WHERE g.id=(value_source_vector->>'resolved_generation_id')::bigint
+              AND g.status='READY' AND g.projection_version=value_projection_version
+              AND g.shadow_success_count=2
+              AND NOT EXISTS(
+                SELECT 1 FROM public.health_projection_generation newer
+                WHERE newer.projection_version=g.projection_version
+                  AND newer.status='READY'
+                  AND (newer.generation_no,newer.id)>(g.generation_no,g.id))
+              AND g.high_watermark->>'source_snapshot'=value_source_snapshot
+              AND (SELECT COALESCE(max(e.max_fact_id),0)
+                     FROM public.health_projection_subject_indicator_evidence_v2 e
+                     WHERE e.generation_id=g.id AND e.subject_member_id=value_subject_member_id
+                       AND e.indicator_code IN (
+                         SELECT CASE WHEN jsonb_typeof(x)='string'
+                           THEN trim(both '"' from x::text) ELSE x->>'indicator_code' END
+                         FROM jsonb_array_elements(p.required_indicators) x
+                       ))=(value_source_vector->>'required_max_fact_id')::bigint
+              AND (SELECT COALESCE(max(e.max_status_event_seq),0)
+                     FROM public.health_projection_subject_indicator_evidence_v2 e
+                     WHERE e.generation_id=g.id AND e.subject_member_id=value_subject_member_id
+                       AND e.indicator_code IN (
+                         SELECT CASE WHEN jsonb_typeof(x)='string'
+                           THEN trim(both '"' from x::text) ELSE x->>'indicator_code' END
+                         FROM jsonb_array_elements(p.required_indicators) x
+                       ))=(value_source_vector->>'required_max_status_event_seq')::bigint
+              AND NOT EXISTS(
+                SELECT 1 FROM public.health_projection_subject_indicator_evidence_v2 e
+                JOIN public.slice4_projection_coverage_source_v2 c
+                  ON c.subject_member_id=e.subject_member_id
+                 AND c.indicator_code=e.indicator_code
+                WHERE e.generation_id=g.id AND e.subject_member_id=value_subject_member_id
+                  AND (e.fact_count<>c.fact_count
+                    OR e.status_event_count<>c.status_event_count
+                    OR e.max_fact_id<>c.max_fact_id
+                    OR e.max_status_event_seq<>c.max_status_event_seq
+                    OR e.fact_set_digest<>c.fact_set_digest
+                    OR e.status_set_digest<>c.status_set_digest))
+              AND (SELECT count(*)
+                     FROM public.health_projection_subject_indicator_evidence_v2 e
+                     WHERE e.generation_id=g.id AND e.subject_member_id=value_subject_member_id
+                       AND e.indicator_code IN (
+                         SELECT CASE WHEN jsonb_typeof(x)='string'
+                           THEN trim(both '"' from x::text) ELSE x->>'indicator_code' END
+                         FROM jsonb_array_elements(p.required_indicators) x
+                       ))=jsonb_array_length(p.required_indicators)
+            FOR SHARE OF g,sr,p
+          ) THEN RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID'; END IF;
+          IF value_readiness_status='ASSESSMENT_READY' THEN
+            PERFORM 1
+              FROM public.health_projection_subject_indicator_evidence_v2 e
+              WHERE e.generation_id=(value_source_vector->>'resolved_generation_id')::bigint
+                AND e.subject_member_id=value_subject_member_id
+              FOR SHARE OF e;
+            IF NOT FOUND THEN RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID'; END IF;
+            PERFORM 1
+              FROM jsonb_array_elements(value_encrypted_fact_rows) item
+              JOIN public.health_projection_fact f
+                ON f.generation_id=(value_source_vector->>'resolved_generation_id')::bigint
+               AND f.fact_ref=(item->>'fact_ref')::uuid
+               AND f.subject_member_id=value_subject_member_id
+               AND f.status_event_seq=(item->>'status_event_seq')::bigint
+              JOIN public.health_fact_status_event se
+                ON se.fact_id=f.fact_id AND se.status_event_seq=f.status_event_seq
+              FOR SHARE OF f,se;
+            IF NOT FOUND THEN RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID'; END IF;
+          END IF;
+          IF value_readiness_status='ASSESSMENT_READY' AND (
+            jsonb_array_length(value_encrypted_fact_rows)<>
+              jsonb_array_length(authoritative_currentness->'policy'->'required_indicators')
+            OR EXISTS(
+              SELECT 1 FROM jsonb_array_elements(value_encrypted_fact_rows) item
+              WHERE NOT EXISTS(
+                SELECT 1 FROM public.health_ready_projection_fact_v2 f
+                WHERE f.generation_id=(value_source_vector->>'resolved_generation_id')::bigint
+                  AND f.subject_member_id=value_subject_member_id
+                  AND f.indicator_code=item->>'indicator_code'
+                  AND f.fact_ref=(item->>'fact_ref')::uuid
+                  AND f.status_event_seq=(item->>'status_event_seq')::bigint
+                  AND f.measured_at=(item->>'measured_at')::timestamptz
+                  AND f.received_at=(item->>'received_at')::timestamptz
+                  AND f.source_type=item->>'source_type'
+                  AND f.verification_state=item->>'verification_state'
+                  AND f.unit=item->>'unit'
+                  AND NOT EXISTS(
+                    SELECT 1 FROM public.health_ready_projection_fact_v2 newer
+                    WHERE newer.generation_id=f.generation_id
+                      AND newer.subject_member_id=f.subject_member_id
+                      AND newer.indicator_code=f.indicator_code
+                      AND (newer.measured_at,newer.fact_ref)>(f.measured_at,f.fact_ref)))
+            ) OR EXISTS(
+              SELECT 1 FROM jsonb_array_elements(
+                authoritative_currentness->'policy'->'required_indicators') requirement
+              WHERE NOT EXISTS(
+                SELECT 1 FROM jsonb_array_elements(value_encrypted_fact_rows) item
+                WHERE item->>'indicator_code'=CASE
+                  WHEN jsonb_typeof(requirement)='string'
+                    THEN trim(both '"' from requirement::text)
+                  ELSE requirement->>'indicator_code' END)
+            )) THEN RAISE EXCEPTION 'SLICE4_ASSEMBLY_CURRENTNESS_INVALID'; END IF;
           IF value_policy_version_id IS NULL THEN
             IF value_readiness_status<>'DATA_INSUFFICIENT'
                OR NOT (value_reason_codes ? 'POLICY_UNAVAILABLE') THEN
@@ -1647,32 +1833,36 @@ def _create_extended_boundaries(
     )
     _create_boundary_view(
         "health_projection_source_visibility_v2",
-        "SELECT f.id AS fact_id,f.fact_ref,f.subject_member_id,f.indicator_code,"
+        "SELECT f.id AS fact_id,f.fact_ref,f.subject_member_id,f.subject_user_id,f.indicator_code,"
         "f.numeric_value,f.unit,f.measured_at,f.received_at,f.source_type,"
         "(f.measured_at AT TIME ZONE 'Asia/Shanghai')::date AS business_day,"
-        "f.supersedes_fact_id,f.xmin::text AS source_xmin "
+        "f.supersedes_fact_id,lower(f.payload_digest) AS fact_payload_digest,"
+        "f.xmin::text AS source_xmin "
         "FROM public.canonical_health_fact f WHERE f.catalog_version=2",
     )
     _create_boundary_view(
         "health_projection_status_visibility_v2",
         "SELECT e.status_event_seq,e.fact_id,f.fact_ref,f.subject_member_id,"
-        "f.indicator_code,e.event_no,e.state,e.created_at,e.xmin::text AS source_xmin "
+        "f.indicator_code,e.event_no,e.state,e.created_at,"
+        "encode(e.event_digest,'hex') AS status_event_digest,e.xmin::text AS source_xmin "
         "FROM public.health_fact_status_event e JOIN public.canonical_health_fact f "
         "ON f.id=e.fact_id WHERE f.catalog_version=2",
     )
     _create_boundary_view(
         "slice4_projection_coverage_source_v2",
-        "SELECT f.subject_member_id,f.indicator_code,count(DISTINCT f.id)::bigint AS fact_count,"
-        "count(e.status_event_seq)::bigint AS status_event_count,max(f.id)::bigint AS max_fact_id,"
+        "SELECT f.subject_member_id,f.indicator_code,count(*)::bigint AS fact_count,"
+        "count(e.status_event_seq)::bigint AS status_event_count,max(f.fact_id)::bigint AS max_fact_id,"
         "COALESCE(max(e.status_event_seq),0)::bigint AS max_status_event_seq,"
-        "encode(sha256(convert_to(COALESCE(string_agg(DISTINCT f.payload_digest::text,',' "
-        "ORDER BY f.payload_digest::text),''),'UTF8')),'hex') AS fact_set_digest,"
-        "encode(sha256(convert_to(COALESCE(string_agg(encode(e.event_digest,'hex'),',' "
-        "ORDER BY encode(e.event_digest,'hex')) FILTER (WHERE e.status_event_seq IS NOT NULL),''),"
-        "'UTF8')),'hex') AS status_set_digest "
-        "FROM public.canonical_health_fact f LEFT JOIN public.health_fact_status_event e "
-        "ON e.fact_id=f.id WHERE f.catalog_version=2 "
-        "GROUP BY f.subject_member_id,f.indicator_code",
+        "encode(sha256(convert_to(COALESCE(string_agg(f.fact_payload_digest,',' "
+        "ORDER BY f.fact_payload_digest),''),'UTF8')),'hex') AS fact_set_digest,"
+        "encode(sha256(convert_to(COALESCE(string_agg(e.status_event_digest,',' "
+        "ORDER BY e.status_event_digest),''),'UTF8')),'hex') AS status_set_digest "
+        "FROM public.health_projection_source_visibility_v2 f "
+        "JOIN LATERAL (SELECT s.status_event_seq,s.status_event_digest FROM "
+        "public.health_projection_status_visibility_v2 s WHERE s.fact_id=f.fact_id "
+        "ORDER BY s.status_event_seq DESC LIMIT 1) e ON true "
+        "WHERE NOT EXISTS(SELECT 1 FROM public.health_projection_source_visibility_v2 n "
+        "WHERE n.supersedes_fact_id=f.fact_id) GROUP BY f.subject_member_id,f.indicator_code",
     )
     _create_boundary_view(
         "health_ready_subject_indicator_evidence_v2",
@@ -1742,10 +1932,30 @@ def _create_extended_boundaries(
         "ON a.assignment_id=c.assignment_id JOIN public.therapist_profile t "
         "ON t.therapist_id=c.primary_therapist_id JOIN public.service_enrollment e "
         "ON e.enrollment_id=c.enrollment_id JOIN public.institution_application ia "
-        "ON ia.tenant_internal_id=c.tenant_id WHERE c.case_id=value_service_case_id "
-        "AND c.status='PREPARING' AND a.status='ACCEPTED' AND t.status='APPROVED_ACTIVE' "
+        "ON ia.tenant_internal_id=c.tenant_id JOIN public.institution_service_readiness sr "
+        "ON sr.tenant_id=c.tenant_id WHERE c.case_id=value_service_case_id "
+        "AND c.status='PREPARING' AND a.status='ACCEPTED' "
+        "AND a.assignment_id=c.assignment_id AND a.service_case_id=c.case_id "
+        "AND a.therapist_id=c.primary_therapist_id AND a.enrollment_id=c.enrollment_id "
+        "AND t.status='APPROVED_ACTIVE' AND t.tenant_id=c.tenant_id "
+        "AND t.current_qualification_version_id IS NOT NULL "
+        "AND t.qualification_valid_until >= (clock_timestamp() AT TIME ZONE 'Asia/Shanghai')::date "
+        "AND t.service_tags @> c.service_scope_tags "
         "AND e.status='CASE_CREATED' AND ia.status='APPROVED' "
-        "FOR SHARE OF c,a,t,e,ia; IF NOT FOUND THEN RETURN NULL; END IF; "
+        "AND sr.readiness_status='SERVICE_READY' "
+        "AND sr.evidence_version=c.readiness_evidence_version "
+        "AND sr.result_digest=c.readiness_result_digest "
+        "AND sr.next_expiry_at >= (clock_timestamp() AT TIME ZONE 'Asia/Shanghai')::date "
+        "FOR SHARE OF c,a,t,e,ia,sr; IF NOT FOUND THEN RETURN NULL; END IF; "
+        "PERFORM 1 FROM public.service_case c JOIN public.consent_record cr "
+        "ON cr.enrollment_id=c.enrollment_id JOIN public.consent_document_version d "
+        "ON d.document_version_id=cr.document_version_id "
+        "WHERE c.case_id=value_service_case_id AND cr.status='ACCEPTED' "
+        "FOR SHARE OF cr,d; "
+        "PERFORM 1 FROM public.service_case c JOIN public.service_enrollment e "
+        "ON e.enrollment_id=c.enrollment_id JOIN public.consent_document_version d "
+        "ON d.status='PUBLISHED' AND (d.document_type<>'PROXY_AUTHORIZATION' "
+        "OR e.mode='PROXY_ELDER') WHERE c.case_id=value_service_case_id FOR SHARE OF d; "
         "PERFORM 1 FROM public.health_profile h JOIN public.health_profile_revision r "
         "ON r.profile_revision_id=h.current_revision_id AND r.subject_member_id=h.subject_member_id "
         "JOIN public.service_case c ON c.subject_member_id=h.subject_member_id "
@@ -1764,10 +1974,19 @@ def _create_extended_boundaries(
         "'consent_version_ids',COALESCE((SELECT jsonb_agg(cr.document_version_id ORDER BY cr.document_version_id) "
         "FROM public.consent_record cr WHERE cr.enrollment_id=c.enrollment_id "
         "AND cr.status='ACCEPTED'),'[]'::jsonb),"
-        "'authorization_complete',EXISTS(SELECT 1 FROM public.consent_record cr "
-        "WHERE cr.enrollment_id=c.enrollment_id AND cr.status='ACCEPTED'),"
+        "'authorization_complete',(EXISTS(SELECT 1 FROM public.consent_record cr "
+        "WHERE cr.enrollment_id=c.enrollment_id AND cr.status='ACCEPTED') "
+        "AND NOT EXISTS(SELECT 1 FROM public.consent_document_version d "
+        "WHERE d.status='PUBLISHED' AND (d.document_type<>'PROXY_AUTHORIZATION' "
+        "OR e.mode='PROXY_ELDER') AND NOT EXISTS(SELECT 1 FROM public.consent_record cr "
+        "WHERE cr.enrollment_id=c.enrollment_id AND cr.status='ACCEPTED' "
+        "AND cr.document_type=d.document_type AND cr.document_version_id=d.document_version_id)) "
+        "AND NOT EXISTS(SELECT 1 FROM public.consent_record cr "
+        "JOIN public.consent_document_version d ON d.document_version_id=cr.document_version_id "
+        "WHERE cr.enrollment_id=c.enrollment_id AND cr.status='ACCEPTED' AND d.status<>'PUBLISHED')),"
         "'readiness_evidence_version',c.readiness_evidence_version,"
         "'profile_revision_id',h.current_revision_id,"
+        "'profile_section_codes',COALESCE(r.changed_fields,'[]'::jsonb),"
         "'profile_reconfirmed_at',r.reconfirmed_at,"
         "'policy',CASE WHEN p.policy_version_id IS NULL THEN NULL ELSE jsonb_build_object("
         "'policy_version_id',p.policy_version_id,'version_no',p.version_no,"
@@ -1775,7 +1994,8 @@ def _create_extended_boundaries(
         "'required_indicators',p.required_indicators,'allowed_states',p.allowed_states,"
         "'projection_version',p.projection_version,'rule_version',p.rule_version,"
         "'policy_digest',encode(p.policy_digest,'hex'),'digest_key_id',p.digest_key_id) END) "
-        "FROM public.service_case c JOIN public.institution_application ia "
+        "FROM public.service_case c JOIN public.service_enrollment e "
+        "ON e.enrollment_id=c.enrollment_id JOIN public.institution_application ia "
         "ON ia.tenant_internal_id=c.tenant_id JOIN public.therapist_profile t "
         "ON t.therapist_id=c.primary_therapist_id LEFT JOIN public.health_profile h "
         "ON h.subject_member_id=c.subject_member_id LEFT JOIN public.health_profile_revision r "
@@ -1783,7 +2003,8 @@ def _create_extended_boundaries(
         "SELECT x.* FROM public.assessment_readiness_policy_version x "
         "WHERE x.status='PUBLISHED' AND x.professionally_approved "
         "AND x.effective_from<=clock_timestamp() "
-        "AND (x.retired_at IS NULL OR x.retired_at>clock_timestamp()) LIMIT 1) p ON true "
+        "AND (x.retired_at IS NULL OR x.retired_at>clock_timestamp()) "
+        "ORDER BY x.effective_from DESC,x.version_no DESC,x.policy_version_id DESC LIMIT 1) p ON true "
         "WHERE c.case_id=value_service_case_id);",
     )
     _create_boundary_function(
@@ -1807,14 +2028,58 @@ def _create_extended_boundaries(
         "AND s.indicator_code=requested.indicator_code) x);",
     )
     _create_boundary_function(
+        "slice4_report_fact_authority_v1",
+        "value_report_id UUID,value_subject_member_id UUID,value_service_case_id UUID",
+        "BOOLEAN",
+        f"IF session_user<>'{health_fact_writer}' THEN "
+        "RAISE EXCEPTION 'SLICE4_REPORT_FACT_AUTHORITY_FORBIDDEN'; END IF; "
+        "PERFORM 1 FROM public.detection_report d JOIN public.service_case c "
+        "ON c.case_id=d.service_case_id WHERE d.report_id=value_report_id "
+        "AND d.report_status='CLEAN' AND d.subject_member_id=value_subject_member_id "
+        "AND d.service_case_id=value_service_case_id "
+        "AND c.subject_member_id=value_subject_member_id "
+        "AND d.tenant_id=c.tenant_id AND c.status='PREPARING' FOR SHARE OF d,c; "
+        "RETURN FOUND;",
+    )
+    _create_boundary_function(
         "slice4_report_file_authority_v1",
         "value_file_id UUID,value_report_id UUID,value_actor_user_id BIGINT,value_context VARCHAR",
         "BOOLEAN",
-        f"IF session_user NOT IN ('{writer}','{clinical}') THEN "
+        f"IF session_user NOT IN ('{writer}','{clinical}','{institution}') THEN "
         "RAISE EXCEPTION 'SLICE4_REPORT_AUTHORITY_FORBIDDEN'; END IF; "
-        "RETURN EXISTS(SELECT 1 FROM public.detection_report_attachment a "
+        "IF value_context NOT IN ('FAMILY_AUTHORIZE','FAMILY_CONTENT',"
+        "'THERAPIST_AUTHORIZE','THERAPIST_CONTENT','PLATFORM_AUTHORIZE',"
+        "'PLATFORM_CONTENT','INSTITUTION_AUTHORIZE','INSTITUTION_CONTENT') THEN "
+        "RAISE EXCEPTION 'SLICE4_REPORT_AUTHORITY_INVALID'; END IF; "
+        "PERFORM 1 FROM public.detection_report_attachment a "
         "JOIN public.detection_report d ON d.report_id=a.report_id "
-        "WHERE a.private_file_id=value_file_id AND a.report_id=value_report_id);",
+        "JOIN public.service_case c ON c.case_id=d.service_case_id "
+        "WHERE a.private_file_id=value_file_id "
+        "AND (value_report_id IS NULL OR a.report_id=value_report_id) "
+        "AND ((value_context LIKE 'FAMILY_%' AND ("
+        "EXISTS(SELECT 1 FROM public.slice4_subject_authority_v1("
+        "c.enrollment_id,c.case_id,value_actor_user_id,'SELF')) OR "
+        "EXISTS(SELECT 1 FROM public.slice4_subject_authority_v1("
+        "c.enrollment_id,c.case_id,value_actor_user_id,'PROXY_DAILY_VIEW')))) OR "
+        "(value_context LIKE 'THERAPIST_%' AND EXISTS(SELECT 1 FROM "
+        "public.slice4_subject_authority_v1(c.enrollment_id,c.case_id,"
+        "value_actor_user_id,'THERAPIST'))) OR "
+        "(value_context LIKE 'PLATFORM_%' AND EXISTS(SELECT 1 FROM public.\"user\" u "
+        "WHERE u.id=value_actor_user_id AND u.role='super_admin' AND u.status='active')) OR "
+        "(value_context LIKE 'INSTITUTION_%' AND EXISTS(SELECT 1 FROM public.\"user\" u "
+        "WHERE u.id=value_actor_user_id AND u.role IN ('org_admin','org_operator') "
+        "AND u.status='active' AND u.tenant_id=c.tenant_id))) "
+        "FOR SHARE OF a,d,c; IF NOT FOUND THEN RETURN FALSE; END IF; "
+        "IF value_context LIKE '%_CONTENT' THEN "
+        "INSERT INTO public.slice4_audit(audit_id,event_type,aggregate_ref,actor_user_id,"
+        "event_digest,digest_key_id,created_at) SELECT gen_random_uuid(),"
+        "'REPORT_ORIGINAL_ACCESSED',a.report_id,value_actor_user_id,"
+        "sha256(convert_to(a.report_id::text||':'||value_file_id::text||':'||"
+        "value_actor_user_id::text||':'||value_context,'UTF8')),'DB-ACCESS-V1',"
+        "clock_timestamp() FROM public.detection_report_attachment a "
+        "WHERE a.private_file_id=value_file_id "
+        "AND (value_report_id IS NULL OR a.report_id=value_report_id); END IF; "
+        "RETURN TRUE;",
     )
     _create_boundary_function(
         "slice4_clinical_profile_read_v1",
@@ -1890,13 +2155,36 @@ def _create_extended_boundaries(
         "health_projection_builder_source_v2",
         "value_max_fact_id BIGINT,value_page JSONB,value_source_snapshot VARCHAR",
         "JSONB",
-        f"IF session_user<>'{health_builder}' THEN RAISE EXCEPTION 'SLICE4_BUILDER_SOURCE_FORBIDDEN'; END IF; "
+        f"IF session_user NOT IN ('{health_builder}','{os.environ['KG_HEALTH_PROJECTION_SHADOW_ROLE']}') "
+        "THEN RAISE EXCEPTION 'SLICE4_BUILDER_SOURCE_FORBIDDEN'; END IF; "
         "IF value_max_fact_id<0 OR value_source_snapshot IS NULL OR jsonb_typeof(value_page)<>'object' "
         "THEN RAISE EXCEPTION 'SLICE4_BUILDER_SOURCE_INVALID'; END IF; "
+        "IF COALESCE((value_page->>'capture')::boolean,FALSE) THEN "
+        "RETURN (SELECT jsonb_build_object('max_fact_id',COALESCE(max(f.fact_id),0),"
+        "'max_status_event_seq',COALESCE(max(e.status_event_seq),0),'fact_count',count(DISTINCT f.fact_id),"
+        "'source_snapshot',value_source_snapshot) FROM public.health_projection_source_visibility_v2 f "
+        "LEFT JOIN public.health_projection_status_visibility_v2 e ON e.fact_id=f.fact_id "
+        "AND txid_visible_in_snapshot(e.source_xmin::bigint,CAST(value_source_snapshot AS txid_snapshot)) "
+        "WHERE txid_visible_in_snapshot(f.source_xmin::bigint,CAST(value_source_snapshot AS txid_snapshot)) "
+        "AND NOT EXISTS(SELECT 1 FROM public.health_projection_source_visibility_v2 n "
+        "WHERE n.supersedes_fact_id=f.fact_id AND txid_visible_in_snapshot(n.source_xmin::bigint,"
+        "CAST(value_source_snapshot AS txid_snapshot)))); END IF; "
         "RETURN (SELECT jsonb_build_object('facts',COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.fact_id),'[]'::jsonb),"
-        "'source_snapshot',value_source_snapshot) FROM (SELECT * FROM public.health_projection_source_visibility_v2 "
-        "WHERE fact_id<=value_max_fact_id ORDER BY fact_id "
-        "LIMIT LEAST(COALESCE((value_page->>'limit')::int,100),500)) v);",
+        "'source_snapshot',value_source_snapshot) FROM (SELECT f.fact_id,f.fact_ref,"
+        "f.subject_member_id,f.subject_user_id,f.indicator_code,f.numeric_value,f.unit,"
+        "f.measured_at,f.received_at,f.source_type,f.fact_payload_digest,"
+        "e.state AS verification_state,e.status_event_seq,e.status_event_digest "
+        "FROM public.health_projection_source_visibility_v2 f JOIN LATERAL (SELECT s.state,"
+        "s.status_event_seq,s.status_event_digest FROM public.health_projection_status_visibility_v2 s "
+        "WHERE s.fact_id=f.fact_id AND s.status_event_seq<=COALESCE((value_page->>'max_status_event_seq')::bigint,0) "
+        "AND txid_visible_in_snapshot(s.source_xmin::bigint,CAST(value_source_snapshot AS txid_snapshot)) "
+        "ORDER BY s.status_event_seq DESC LIMIT 1) e ON true WHERE f.fact_id<=value_max_fact_id "
+        "AND f.fact_id>COALESCE((value_page->>'after_fact_id')::bigint,0) "
+        "AND txid_visible_in_snapshot(f.source_xmin::bigint,CAST(value_source_snapshot AS txid_snapshot)) "
+        "AND NOT EXISTS(SELECT 1 FROM public.health_projection_source_visibility_v2 n "
+        "WHERE n.supersedes_fact_id=f.fact_id AND n.fact_id<=value_max_fact_id "
+        "AND txid_visible_in_snapshot(n.source_xmin::bigint,CAST(value_source_snapshot AS txid_snapshot))) "
+        "ORDER BY f.fact_id LIMIT LEAST(COALESCE((value_page->>'limit')::int,100),500)) v);",
     )
     evidence_role_sql = ",".join(f"'{role}'" for role in evidence_roles)
     _create_boundary_function(
@@ -1988,10 +2276,17 @@ def _create_extended_boundaries(
                    "slice4_clinical_profile_read_v1(BIGINT,VARCHAR,UUID,UUID,UUID)",
                    "slice4_clinical_report_read_v1(BIGINT,VARCHAR,UUID,UUID,UUID,JSONB)",
                    "slice4_clinical_fact_read_v1(BIGINT,VARCHAR,UUID,UUID,UUID,JSONB)"),
-        institution: ("slice4_institution_health_read_v1(BIGINT,UUID,VARCHAR,JSONB)",),
-        health_fact_writer: ("slice4_health_fact_confirm_v1(UUID,UUID,UUID)",),
+        institution: ("slice4_report_file_authority_v1(UUID,UUID,BIGINT,VARCHAR)",
+                      "slice4_institution_health_read_v1(BIGINT,UUID,VARCHAR,JSONB)"),
+        health_fact_writer: (
+            "slice4_report_fact_authority_v1(UUID,UUID,UUID)",
+            "slice4_health_fact_confirm_v1(UUID,UUID,UUID)",
+        ),
         health_reader: ("slice4_projection_coverage_v2(UUID,JSONB)",),
         health_builder: ("health_projection_builder_source_v2(BIGINT,JSONB,VARCHAR)",),
+        os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]: (
+            "health_projection_builder_source_v2(BIGINT,JSONB,VARCHAR)",
+        ),
     }
     for role, signatures in grants.items():
         for signature in signatures:
@@ -2004,6 +2299,33 @@ def _create_extended_boundaries(
         f'''GRANT SELECT ON TABLE public.health_ready_projection_resolution_v2,
         public.health_ready_subject_indicator_evidence_v2,
         public.health_ready_projection_fact_v2 TO "{health_reader}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(subject_member_id,fact_ref,status_event_seq),
+        INSERT(subject_member_id,fact_ref,status_event_seq)
+        ON TABLE public.health_projection_fact TO "{health_builder}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(subject_member_id,winner_fact_ref),
+        INSERT(subject_member_id,winner_fact_ref)
+        ON TABLE public.health_projection_window_selection TO "{health_builder}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(subject_member_id,fact_ref,status_event_seq)
+        ON TABLE public.health_projection_fact TO "{os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(subject_member_id,winner_fact_ref)
+        ON TABLE public.health_projection_window_selection TO "{os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]}"'''
+    )
+    op.execute(
+        f'''GRANT SELECT(generation_id,subject_member_id,indicator_code,fact_count,
+        status_event_count,max_fact_id,max_status_event_seq,source_snapshot,fact_set_digest,
+        status_set_digest,evidence_digest,digest_key_id,created_at),
+        INSERT(generation_id,subject_member_id,indicator_code,fact_count,status_event_count,
+        max_fact_id,max_status_event_seq,source_snapshot,fact_set_digest,status_set_digest,
+        evidence_digest,digest_key_id,created_at)
+        ON TABLE public.health_projection_subject_indicator_evidence_v2 TO "{health_builder}"'''
     )
     op.execute(f'''GRANT SELECT ON TABLE public.slice4_recompute_candidate_v1 TO "{worker}"''')
     op.execute(
@@ -2026,12 +2348,17 @@ def _grant_acl(roles: tuple[str, str, str, str, str, str]) -> None:
         op.execute(f'''REVOKE CREATE ON SCHEMA public FROM "{role}"''')
     op.execute(f'''GRANT SELECT(profile_public_id,subject_member_id,current_revision_id,version), UPDATE(current_revision_id,version) ON TABLE public.health_profile TO "{writer}"''')
     op.execute(f'''GRANT SELECT(profile_revision_id,subject_member_id,revision_no,tenant_public_id,identity_revision_ref,identity_source_version,snapshot_digest,created_at), INSERT(profile_revision_id,subject_member_id,subject_user_id,revision_no,tenant_public_id,identity_source_kind,identity_revision_ref,identity_source_version,snapshot_ciphertext,snapshot_key_id,reconfirmed_at,source_type,changed_fields,supersedes_revision_id,actor_user_id,actor_type,snapshot_digest,digest_key_id,created_at) ON TABLE public.health_profile_revision TO "{writer}"''')
+    health_fact_writer = os.environ["KG_HEALTH_FACT_WRITER_ROLE"]
+    op.execute(
+        f'''GRANT SELECT(report_id), INSERT(report_id) ON TABLE public.canonical_health_fact TO "{health_fact_writer}"'''
+    )
     # Preserve and explicitly verify the PR #53 invitation hotfix ACL while 0024 is active.
     for column in ("code_digest", "code_key_id", "expires_at", "issued_at"):
-        op.get_bind().execute(
+        if not op.get_bind().execute(
             sa.text("SELECT has_column_privilege(:role,'public.member_service_invitation',:column,'UPDATE')"),
             {"role": os.environ["KG_MEMBER_ENROLLMENT_WRITER_ROLE"], "column": column},
-        ).scalar_one()
+        ).scalar_one():
+            _configuration_error()
 
 
 def upgrade() -> None:
@@ -2060,7 +2387,12 @@ def downgrade() -> None:
             "SELECT EXISTS(SELECT 1 FROM public.health_profile WHERE subject_member_id IS NOT NULL) "
             "OR EXISTS(SELECT 1 FROM public.detection_report WHERE report_id IS NOT NULL) "
             "OR EXISTS(SELECT 1 FROM public.canonical_health_fact WHERE catalog_version=2) "
-            "OR EXISTS(SELECT 1 FROM public.health_projection_fact WHERE subject_member_id IS NOT NULL)"
+            "OR EXISTS(SELECT 1 FROM public.health_projection_generation WHERE projection_version=2) "
+            "OR EXISTS(SELECT 1 FROM public.health_projection_shadow_run WHERE projection_version=2) "
+            "OR EXISTS(SELECT 1 FROM public.health_projection_fact WHERE subject_member_id IS NOT NULL) "
+            "OR EXISTS(SELECT 1 FROM public.health_projection_window_selection WHERE subject_member_id IS NOT NULL) "
+            "OR EXISTS(SELECT 1 FROM public.assessment_readiness_case_pointer) "
+            "OR EXISTS(SELECT 1 FROM public.detection_report_attachment)"
         )).scalar_one()
     )
     if populated:
@@ -2108,7 +2440,7 @@ def downgrade() -> None:
         op.execute(f"DROP VIEW public.{view}")
 
     for name, signature, grantees in (
-        ("slice4_health_profile_root_create_v1", "BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,UUID,BYTEA,BYTEA", (writer,)),
+        ("slice4_health_profile_root_create_v1", "BIGINT,VARCHAR,UUID,UUID,UUID,UUID,UUID,UUID,UUID,BIGINT,BYTEA,VARCHAR,BYTEA,VARCHAR,TIMESTAMPTZ,VARCHAR,JSONB,BIGINT,UUID,BYTEA,BYTEA", (writer,)),
         ("slice4_identity_summary_current_v1", "UUID,UUID,UUID,BIGINT,UUID", (writer, readiness)),
         ("slice4_identity_summary_source_v1", "UUID,UUID", (_identity,)),
         ("slice4_detection_report_create_v1", "BIGINT,VARCHAR,UUID,UUID,UUID,UUID,VARCHAR,TIMESTAMPTZ,VARCHAR,UUID[],UUID,BYTEA,BYTEA", (writer,)),
@@ -2121,9 +2453,23 @@ def downgrade() -> None:
 
     op.execute(f'''REVOKE SELECT(profile_public_id,subject_member_id,current_revision_id,version), UPDATE(current_revision_id,version) ON TABLE public.health_profile FROM "{writer}"''')
     op.execute(f'''REVOKE SELECT(profile_revision_id,subject_member_id,revision_no,tenant_public_id,identity_revision_ref,identity_source_version,snapshot_digest,created_at), INSERT(profile_revision_id,subject_member_id,subject_user_id,revision_no,tenant_public_id,identity_source_kind,identity_revision_ref,identity_source_version,snapshot_ciphertext,snapshot_key_id,reconfirmed_at,source_type,changed_fields,supersedes_revision_id,actor_user_id,actor_type,snapshot_digest,digest_key_id,created_at) ON TABLE public.health_profile_revision FROM "{writer}"''')
+    op.execute(
+        f'''REVOKE SELECT(report_id), INSERT(report_id) ON TABLE public.canonical_health_fact FROM "{os.environ["KG_HEALTH_FACT_WRITER_ROLE"]}"'''
+    )
     op.drop_constraint("fk_health_profile_current_revision", "health_profile", schema="public", type_="foreignkey")
     for table in reversed(_MODULE_TABLES):
         op.drop_table(table, schema="public")
+    health_shadow = os.environ["KG_HEALTH_PROJECTION_SHADOW_ROLE"]
+    ready_gate = os.environ["KG_PROJECTION_READY_GATE_ROLE"]
+    shadow_confirmation = os.environ["KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"]
+    op.execute(
+        f'''REVOKE SELECT(status_event_count), UPDATE(status_event_count)
+        ON TABLE public.health_projection_shadow_run FROM "{health_shadow}"'''
+    )
+    op.execute(
+        f'''REVOKE SELECT(status_event_count) ON TABLE public.health_projection_shadow_run
+        FROM "{ready_gate}", "{shadow_confirmation}"'''
+    )
     op.drop_column("health_projection_shadow_run", "status_event_count", schema="public")
     op.drop_constraint("ck_health_projection_selection_v1_v2", "health_projection_window_selection", schema="public", type_="check")
     op.create_check_constraint("ck_health_projection_selection_rule_v1", "health_projection_window_selection", "rule_version='health-daily-selection-v1'", schema="public")
@@ -2148,6 +2494,10 @@ def downgrade() -> None:
     op.drop_index("uq_health_projection_selection_v1", table_name="health_projection_window_selection", schema="public")
     op.drop_constraint("fk_health_projection_selection_winner", "health_projection_window_selection", schema="public", type_="foreignkey")
     op.alter_column("health_projection_window_selection", "subject_user_id", nullable=False, schema="public")
+    op.execute(
+        f'''REVOKE SELECT(subject_member_id,winner_fact_ref)
+        ON TABLE public.health_projection_window_selection FROM "{health_shadow}"'''
+    )
     op.drop_column("health_projection_window_selection", "winner_fact_ref", schema="public")
     op.drop_column("health_projection_window_selection", "subject_member_id", schema="public")
     op.create_primary_key(
@@ -2163,6 +2513,10 @@ def downgrade() -> None:
         source_schema="public", referent_schema="public", ondelete="RESTRICT",
     )
     op.alter_column("health_projection_fact", "subject_user_id", nullable=False, schema="public")
+    op.execute(
+        f'''REVOKE SELECT(subject_member_id,fact_ref,status_event_seq)
+        ON TABLE public.health_projection_fact FROM "{health_shadow}"'''
+    )
     op.drop_column("health_projection_fact", "status_event_seq", schema="public")
     op.drop_column("health_projection_fact", "fact_ref", schema="public")
     op.drop_column("health_projection_fact", "subject_member_id", schema="public")
@@ -2171,15 +2525,18 @@ def downgrade() -> None:
         "ck_canonical_health_fact_indicator_v1_v2",
         "ck_canonical_health_fact_unit_v1_v2",
         "ck_canonical_health_fact_source_type_v1_v2",
+        "ck_canonical_health_fact_report_binding_v2",
     ):
         op.drop_constraint(constraint, "canonical_health_fact", schema="public", type_="check")
     op.create_check_constraint("ck_canonical_health_fact_catalog_v1", "canonical_health_fact", "catalog_version=1", schema="public")
     op.create_check_constraint("ck_canonical_health_fact_indicator_v1", "canonical_health_fact", "indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','postprandial_glucose_2h','hba1c','total_cholesterol','triglyceride','hdl_c','ldl_c','weight','bmi','uric_acid','spo2','bone_density_t_score')", schema="public")
     op.create_check_constraint("ck_canonical_health_fact_unit_v1", "canonical_health_fact", "((indicator_code IN ('systolic_bp','diastolic_bp') AND unit='mmHg') OR (indicator_code='heart_rate' AND unit='bpm') OR (indicator_code IN ('fasting_glucose','postprandial_glucose_2h','total_cholesterol','triglyceride','hdl_c','ldl_c') AND unit='mmol/L') OR (indicator_code IN ('hba1c','spo2') AND unit='%') OR (indicator_code='weight' AND unit='kg') OR (indicator_code='bmi' AND unit='kg/m2') OR (indicator_code='uric_acid' AND unit='umol/L') OR (indicator_code='bone_density_t_score' AND unit='T-score'))", schema="public")
     op.create_check_constraint("ck_canonical_health_fact_source_type", "canonical_health_fact", "source_type IN ('APP','STORE','DEVICE','REPORT')", schema="public")
+    op.drop_constraint("fk_canonical_health_fact_report", "canonical_health_fact", schema="public", type_="foreignkey")
     op.drop_constraint("fk_canonical_health_fact_subject_member", "canonical_health_fact", schema="public", type_="foreignkey")
     op.drop_constraint("uq_canonical_health_fact_fact_ref", "canonical_health_fact", schema="public", type_="unique")
     op.alter_column("canonical_health_fact", "subject_user_id", nullable=False, schema="public")
+    op.drop_column("canonical_health_fact", "report_id", schema="public")
     op.drop_column("canonical_health_fact", "subject_member_id", schema="public")
     op.drop_column("canonical_health_fact", "fact_ref", schema="public")
     op.drop_constraint("ck_detection_report_v1_v2_truth", "detection_report", schema="public", type_="check")

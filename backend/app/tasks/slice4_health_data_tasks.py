@@ -2,18 +2,36 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import text
 
 from app.core.database import (
     dispose_projection_runtime,
     dispose_slice4_runtime,
+    get_projection_session_factory,
     get_slice4_session_factory,
 )
 from app.core.uuid_generator import Uuid7Generator
 from app.modules.assessment_readiness.repository import AssessmentReadinessRepository
 from app.modules.assessment_readiness.service import recompute_assessment_readiness
+from app.modules.health_projection.repository import HealthProjectionRepository
+from app.modules.health_projection.service import (
+    HealthProjectionBuilderV2,
+    ProjectionCheckpointConflict,
+    ProjectionCommitOutcomeUnknown,
+    ProjectionDigestKeyring,
+    ProjectionDigestKeyUnavailable,
+    ProjectionLeaseConflict,
+    ProjectionUnitOfWork,
+    ProjectionUnavailable,
+)
+from app.modules.organization_projection.domain import ProjectionSourceInvalid
+from app.modules.organization_projection.service import (
+    ProjectionReadyGate,
+    ProjectionShadowService,
+)
+from app.core.config import get_settings
 from app.modules.user_health.service import Slice4Secrets
 from app.tasks.celery_app import SLICE4_HEALTH_QUEUE, celery_app
 
@@ -23,6 +41,27 @@ CONSUME_TASK = "phase1.slice4.consume_outbox"
 RECOVER_TASK = "phase1.slice4.recover_outbox"
 RECOMPUTE_TASK = "phase1.slice4.recompute_readiness"
 SWEEP_TASK = "phase1.slice4.sweep_readiness"
+BUILD_PROJECTION_TASK = "phase1.slice4.build_projection_v2"
+
+
+def _projection_operation_id(root: UUID, stage: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"slice4/projection/{root}/{stage}"))
+
+
+def _projection_failure_code(error: Exception) -> str | None:
+    if isinstance(error, ProjectionCommitOutcomeUnknown):
+        return None
+    if isinstance(error, ProjectionSourceInvalid):
+        return "PROJECTION_SOURCE_INVALID"
+    if isinstance(error, ProjectionDigestKeyUnavailable):
+        return "PROJECTION_DIGEST_KEY_UNAVAILABLE"
+    if isinstance(error, ProjectionCheckpointConflict):
+        return "PROJECTION_CHECKPOINT_CONFLICT"
+    if isinstance(error, ProjectionLeaseConflict):
+        return "PROJECTION_LEASE_CONFLICT"
+    if isinstance(error, ProjectionUnavailable):
+        return "PROJECTION_UNAVAILABLE"
+    return "PROJECTION_UNAVAILABLE"
 
 
 def _run(operation):
@@ -30,10 +69,14 @@ def _run(operation):
         try:
             return await operation()
         finally:
-            try:
-                await dispose_projection_runtime("health_reader")
-            except Exception:
-                pass
+            for kind in (
+                "health_reader", "health", "confirmation", "health_shadow",
+                "ready_gate", "shadow_confirmation",
+            ):
+                try:
+                    await dispose_projection_runtime(kind)
+                except Exception:
+                    pass
             for kind in ("workflow_worker", "assessment_readiness_writer"):
                 try:
                     await dispose_slice4_runtime(kind)
@@ -187,6 +230,191 @@ async def _candidates(limit: int = 100) -> tuple[str, ...]:
         return tuple(str(row.case_id) for row in rows)
 
 
+async def _build_projection_v2(
+    *, generation_no: int, builder_id: UUID, operation_id: UUID
+) -> int:
+    health_factory = await get_projection_session_factory("health")
+    confirmation_factory = await get_projection_session_factory("confirmation")
+    shadow_factory = await get_projection_session_factory("health_shadow")
+    ready_factory = await get_projection_session_factory("ready_gate")
+    shadow_confirmation_factory = await get_projection_session_factory(
+        "shadow_confirmation"
+    )
+    settings = get_settings()
+    keyring = ProjectionDigestKeyring.from_json(
+        settings.health_projection_digest_current_key_id,
+        settings.health_projection_digest_keyring_json,
+    )
+
+    async def lock_connection():
+        return await health_factory.kw["bind"].connect()
+
+    async def shadow_lock_connection():
+        return await shadow_factory.kw["bind"].connect()
+
+    async def ready_lock_connection():
+        return await ready_factory.kw["bind"].connect()
+
+    builder = HealthProjectionBuilderV2(
+        lambda: ProjectionUnitOfWork(health_factory, HealthProjectionRepository),
+        lambda: ProjectionUnitOfWork(
+            confirmation_factory,
+            HealthProjectionRepository,
+            isolation_level="READ COMMITTED",
+        ),
+        keyring,
+        lock_connection,
+    )
+    generation_id = await builder.start(
+        generation_no=generation_no,
+        builder_id=str(builder_id),
+        operation_id=str(operation_id),
+    )
+    try:
+        page_no = 0
+        while True:
+            async with ProjectionUnitOfWork(
+                health_factory, HealthProjectionRepository
+            ) as uow:
+                generation = await uow.repository.get_generation(generation_id)
+                checkpoint = await uow.repository.get_checkpoint(generation_id)
+                if generation is None or checkpoint is None:
+                    raise ProjectionUnavailable("Projection state is unavailable")
+                if generation.status == "READY":
+                    return generation_id
+                if generation.status != "BUILDING":
+                    break
+                remaining_count = checkpoint.remaining_count
+                lease_epoch = generation.lease_epoch
+                generation_version = generation.version
+                checkpoint_digest = checkpoint.checkpoint_digest
+            if remaining_count == 0:
+                await builder.complete(
+                    generation_id=generation_id,
+                    builder_id=str(builder_id),
+                    lease_epoch=lease_epoch,
+                    expected_generation_version=generation_version,
+                    expected_checkpoint_digest=checkpoint_digest,
+                    operation_id=_projection_operation_id(operation_id, "complete"),
+                )
+                break
+            page_no += 1
+            if page_no > 10000:
+                raise ProjectionUnavailable("Projection page limit is exceeded")
+            await builder.build_page(
+                generation_id=generation_id,
+                builder_id=str(builder_id),
+                lease_epoch=lease_epoch,
+                expected_checkpoint_digest=checkpoint_digest,
+                operation_id=_projection_operation_id(operation_id, f"page/{page_no}"),
+                heartbeat_operation_id=_projection_operation_id(
+                    operation_id, f"heartbeat/{page_no}"
+                ),
+                page_size=100,
+            )
+
+        shadow = ProjectionShadowService(
+            domain="health",
+            uow_factory=lambda: ProjectionUnitOfWork(
+                shadow_factory, HealthProjectionRepository
+            ),
+            confirmation_uow_factory=lambda: ProjectionUnitOfWork(
+                shadow_confirmation_factory,
+                HealthProjectionRepository,
+                isolation_level="READ COMMITTED",
+            ),
+            keyring=keyring,
+            lock_connection_factory=shadow_lock_connection,
+        )
+        ready_gate = ProjectionReadyGate(
+            domain="health",
+            uow_factory=lambda: ProjectionUnitOfWork(
+                ready_factory, HealthProjectionRepository
+            ),
+            confirmation_uow_factory=lambda: ProjectionUnitOfWork(
+                shadow_confirmation_factory,
+                HealthProjectionRepository,
+                isolation_level="READ COMMITTED",
+            ),
+            keyring=keyring,
+            lock_connection_factory=ready_lock_connection,
+        )
+        while True:
+            async with ProjectionUnitOfWork(
+                shadow_factory, HealthProjectionRepository
+            ) as uow:
+                generation = await uow.repository.get_shadow_generation(generation_id)
+                if generation is None:
+                    raise ProjectionUnavailable("Projection state is unavailable")
+                if generation.status == "READY":
+                    return generation_id
+                if generation.shadow_success_count == 2:
+                    expected_version = generation.version
+                    action = "ready"
+                    sequence = None
+                elif generation.status in {
+                    "BUILD_COMPLETE", "SHADOW_FAILED", "SHADOW_PASSED"
+                }:
+                    sequence = await uow.repository.next_shadow_sequence(generation_id)
+                    action = "shadow"
+                    expected_version = None
+                else:
+                    raise ProjectionUnavailable("Projection state is unavailable")
+            if action == "ready":
+                await ready_gate.mark_ready(
+                    generation_id=generation_id,
+                    expected_version=expected_version,
+                    operation_id=_projection_operation_id(operation_id, "ready"),
+                )
+                continue
+            run_id = _projection_operation_id(
+                operation_id, f"shadow/{sequence}/run"
+            )
+            await shadow.shadow_start(
+                generation_id=generation_id,
+                run_id=run_id,
+                validator_id=str(builder_id),
+                operation_id=_projection_operation_id(
+                    operation_id, f"shadow/{sequence}/start"
+                ),
+            )
+            outcome = await shadow.shadow_complete(
+                generation_id=generation_id,
+                run_id=run_id,
+                operation_id=_projection_operation_id(
+                    operation_id, f"shadow/{sequence}/complete"
+                ),
+            )
+            if outcome != "PASSED":
+                raise ProjectionUnavailable("Projection shadow evidence is unavailable")
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        failure_code = _projection_failure_code(error)
+        if failure_code is not None:
+            async with ProjectionUnitOfWork(
+                health_factory, HealthProjectionRepository
+            ) as uow:
+                generation = await uow.repository.get_generation(generation_id)
+                can_fail = (
+                    generation is not None
+                    and generation.status == "BUILDING"
+                    and generation.builder_id == str(builder_id)
+                )
+                lease_epoch = generation.lease_epoch if can_fail else None
+                generation_version = generation.version if can_fail else None
+            if can_fail:
+                await builder.fail(
+                    generation_id=generation_id,
+                    builder_id=str(builder_id),
+                    lease_epoch=lease_epoch,
+                    expected_generation_version=generation_version,
+                    failure_code=failure_code,
+                    operation_id=_projection_operation_id(operation_id, "fail"),
+                )
+        raise
+
+
 @celery_app.task(name=DISPATCH_TASK)
 def dispatch_outbox():
     event_id = _run(_claim_one)
@@ -216,3 +444,14 @@ def sweep_readiness():
     for case_id in values:
         celery_app.send_task(RECOMPUTE_TASK, args=[case_id], queue=SLICE4_HEALTH_QUEUE)
     return len(values)
+
+
+@celery_app.task(name=BUILD_PROJECTION_TASK)
+def build_projection_v2(generation_no: int, builder_id: str, operation_id: str):
+    return _run(
+        lambda: _build_projection_v2(
+            generation_no=generation_no,
+            builder_id=UUID(builder_id),
+            operation_id=UUID(operation_id),
+        )
+    )

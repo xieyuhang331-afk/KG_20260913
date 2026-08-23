@@ -71,6 +71,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             "phase1.slice4.recover_outbox": {"queue": SLICE4_HEALTH_QUEUE},
             "phase1.slice4.recompute_readiness": {"queue": SLICE4_HEALTH_QUEUE},
             "phase1.slice4.sweep_readiness": {"queue": SLICE4_HEALTH_QUEUE},
+            "phase1.slice4.build_projection_v2": {"queue": SLICE4_HEALTH_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {

@@ -13,9 +13,7 @@ from .ports import AssessmentReadinessRepositoryPort
 from .domain import AssessmentReadinessInputs, evaluate_readiness
 from app.modules.projection_read.domain import ProjectionReadUnavailable
 from app.modules.projection_read.service import (
-    HealthProjectionCoverageAuthorityService,
-    LatestReadyHealthProjectionResolverService,
-    MemberHealthProjectionReadService,
+    AssessmentProjectionSnapshotService,
 )
 from app.modules.user_health.service import Slice4Secrets
 
@@ -171,27 +169,28 @@ async def recompute_assessment_readiness(
     expired: set[str] = set()
     disputed: set[str] = set()
     if policy is not None:
+        required_profile_sections = policy.get("required_profile_sections")
+        profile_section_codes = current.get("profile_section_codes")
+        if (
+            type(required_profile_sections) is not list
+            or any(type(value) is not str or not value for value in required_profile_sections)
+            or len(set(required_profile_sections)) != len(required_profile_sections)
+            or type(profile_section_codes) is not list
+            or any(type(value) is not str or not value for value in profile_section_codes)
+        ):
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
         requirements = _policy_requirements(policy)
         codes = tuple(code for code, _ in requirements)
-        coverage = await HealthProjectionCoverageAuthorityService().capture(
+        coverage, resolved, page = await AssessmentProjectionSnapshotService().resolve_and_read(
             subject_member_id=UUID(str(current["subject_member_id"])),
-            required_indicator_codes=codes,
+            indicator_codes=codes,
+            measured_from=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            measured_to=generated_at + timedelta(microseconds=1),
+            limit=200,
+            required_projection_version=int(policy["projection_version"]),
         )
         missing.update(item.indicator_code for item in coverage.items if item.fact_count == 0)
-        if not missing:
-            resolved = await LatestReadyHealthProjectionResolverService().resolve(
-                coverage_token=coverage,
-                required_projection_version=int(policy["projection_version"]),
-            )
-        if resolved is not None:
-            page = await MemberHealthProjectionReadService().list_current_facts(
-                resolved_generation=resolved,
-                subject_member_id=UUID(str(current["subject_member_id"])),
-                indicator_codes=codes,
-                measured_from=datetime(1970, 1, 1, tzinfo=timezone.utc),
-                measured_to=generated_at + timedelta(microseconds=1),
-                limit=200,
-            )
+        if resolved is not None and page is not None:
             for fact in page.items:
                 selected.setdefault(fact.indicator_code, fact)
             missing.update(code for code in codes if code not in selected)
@@ -211,7 +210,13 @@ async def recompute_assessment_readiness(
     result = evaluate_readiness(
         AssessmentReadinessInputs(
             authorization_complete=bool(current["authorization_complete"]),
-            profile_current=current.get("profile_revision_id") is not None,
+            profile_current=(
+                current.get("profile_revision_id") is not None
+                and policy is not None
+                and set(policy["required_profile_sections"]).issubset(
+                    set(current["profile_section_codes"])
+                )
+            ),
             policy_available=policy is not None,
             missing_indicator_codes=tuple(missing),
             expired_indicator_codes=tuple(expired),
@@ -259,6 +264,7 @@ async def recompute_assessment_readiness(
                 "received_at": fact.received_at.isoformat(),
                 "source_type": fact.source_type,
                 "verification_state": fact.verification_state,
+                "status_event_seq": fact.status_event_seq,
                 "value_ciphertext": ciphertext.hex(),
                 "value_key_id": value_key_id,
                 "unit": fact.unit,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import NoReturn, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
@@ -71,6 +71,24 @@ class SqlAlchemyHealthFactRepository:
         model = _scalar_one_or_none_safely(result)
         return None if model is None else _restore(model)
 
+    async def require_report_scope(
+        self, *, report_id, subject_member_id, service_case_id
+    ) -> bool:
+        permitted = await _await_safely(
+            self._session.scalar(
+                text(
+                    "SELECT public.slice4_report_fact_authority_v1("
+                    ":report_id,:subject_member_id,:service_case_id)"
+                ),
+                {
+                    "report_id": report_id,
+                    "subject_member_id": subject_member_id,
+                    "service_case_id": service_case_id,
+                },
+            )
+        )
+        return permitted is True
+
     async def get_successor(self, fact_id: int) -> CanonicalHealthFact | None:
         result = await _await_safely(
             self._session.execute(
@@ -87,6 +105,7 @@ class SqlAlchemyHealthFactRepository:
             subject_user_id=fact.subject_user_id,
             subject_member_id=fact.subject_member_id,
             fact_ref=fact.fact_ref,
+            report_id=fact.report_id,
             indicator_code=fact.indicator_code,
             catalog_version=fact.catalog_version,
             value_kind=fact.value_kind,
@@ -195,6 +214,7 @@ def _restore(model) -> CanonicalHealthFact:
         subject_user_id=model.subject_user_id,
         subject_member_id=model.subject_member_id,
         fact_ref=model.fact_ref,
+        report_id=model.report_id,
         indicator_code=model.indicator_code,
         catalog_version=model.catalog_version,
         value_kind=model.value_kind,

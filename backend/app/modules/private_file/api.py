@@ -5,7 +5,13 @@ import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 
-from app.core.database import get_db_session, get_institution_onboarding_reader_session, get_private_file_writer_session
+from app.core.database import (
+    get_db_session,
+    get_institution_onboarding_reader_session,
+    get_private_file_writer_session,
+    get_slice4_clinical_reader_session,
+    get_slice4_institution_reader_session,
+)
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.modules.auth.service import verify_password
@@ -22,6 +28,14 @@ from app.modules.private_file.service import (
 
 
 router = APIRouter(prefix="/api/v1/private-files", tags=["private_file"])
+
+
+def _report_access_context(current_user: CurrentUser) -> str:
+    return {
+        "member": "FAMILY",
+        "therapist": "THERAPIST",
+        "super_admin": "PLATFORM",
+    }.get(current_user.role, "INSTITUTION")
 
 
 async def _safe_call(awaitable):
@@ -69,6 +83,8 @@ async def post_file_access(
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_institution_onboarding_reader_session),
     identity_session=Depends(get_db_session),
+    report_authority_session=Depends(get_slice4_clinical_reader_session),
+    report_institution_session=Depends(get_slice4_institution_reader_session),
 ):
     reviewer = current_user.role == "super_admin"
     if reviewer:
@@ -82,6 +98,12 @@ async def post_file_access(
     token = await _safe_call(authorize_file_access(
         session, current_user.id, file_id, payload.reason_code, expires,
         reviewer=reviewer,
+        report_authority_session=(
+            report_institution_session
+            if current_user.role in {"org_admin", "org_operator"}
+            else report_authority_session
+        ),
+        report_access_context=_report_access_context(current_user),
     ))
     return ok_response({"file_id": file_id, "access_path": f"/api/v1/private-files/{file_id}/content?token={token}", "expires_at_epoch": expires})
 
@@ -93,13 +115,21 @@ async def get_file_content(
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_institution_onboarding_reader_session),
     identity_session=Depends(get_db_session),
+    report_authority_session=Depends(get_slice4_clinical_reader_session),
+    report_institution_session=Depends(get_slice4_institution_reader_session),
 ):
     reviewer = current_user.role == "super_admin"
     if reviewer:
         from app.modules.institution_onboarding.service import require_current_reviewer
         await _safe_call(require_current_reviewer(identity_session, current_user))
     data, mime_type = await _safe_call(read_authorized_content(
-        session, current_user.id, file_id, token, reviewer=reviewer
+        session, current_user.id, file_id, token, reviewer=reviewer,
+        report_authority_session=(
+            report_institution_session
+            if current_user.role in {"org_admin", "org_operator"}
+            else report_authority_session
+        ),
+        report_access_context=_report_access_context(current_user),
     ))
     return Response(content=data, media_type=mime_type)
 

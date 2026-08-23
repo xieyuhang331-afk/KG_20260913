@@ -275,13 +275,26 @@ def _content_evidence(*, file_id: str, user_id: int, data: bytes) -> str:
 
 async def authorize_file_access(
     session, user_id: int, file_id: str, reason_code: str, expires_at: int,
-    *, reviewer: bool = False,
+    *, reviewer: bool = False, report_authority_session=None,
+    report_access_context: str | None = None,
 ) -> str:
     row = await PrivateFileRepository(session).access_snapshot(file_id)
-    permitted = row is not None and (
-        row["owner_user_id"] == user_id
-        or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
-    )
+    report_access = row is not None and row["purpose"] == "DETECTION_REPORT"
+    if report_access:
+        if report_authority_session is None or report_access_context is None:
+            raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+        permitted = await PrivateFileRepository(
+            report_authority_session
+        ).report_file_authority(
+            file_id=file_id,
+            actor_user_id=user_id,
+            context=f"{report_access_context}_AUTHORIZE",
+        )
+    else:
+        permitted = row is not None and (
+            row["owner_user_id"] == user_id
+            or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
+        )
     if not permitted or row["status"] != "CLEAN":
         raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
     object_key = f"slice1/{row['created_at']:%Y/%m}/{file_id}"
@@ -297,22 +310,35 @@ async def authorize_file_access(
         file_id=file_id, user_id=user_id, reason_code=reason_code,
         expires_at=expires_at,
         evidence_digest=_content_evidence(file_id=file_id, user_id=user_id, data=data),
-        access_scope="REVIEWER" if reviewer else "OWNER",
+        access_scope="REPORT" if report_access else ("REVIEWER" if reviewer else "OWNER"),
     )
 
 
 async def read_authorized_content(
-    session, user_id: int, file_id: str, token: str, *, reviewer: bool = False
+    session, user_id: int, file_id: str, token: str, *, reviewer: bool = False,
+    report_authority_session=None, report_access_context: str | None = None,
 ) -> tuple[bytes, str]:
+    row = await PrivateFileRepository(session).metadata(file_id)
+    report_access = row is not None and row["purpose"] == "DETECTION_REPORT"
     token_values = verify_access_token(
         token=token, file_id=file_id, user_id=user_id,
-        access_scope="REVIEWER" if reviewer else "OWNER",
+        access_scope="REPORT" if report_access else ("REVIEWER" if reviewer else "OWNER"),
     )
-    row = await PrivateFileRepository(session).metadata(file_id)
-    permitted = row is not None and (
-        row["owner_user_id"] == user_id
-        or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
-    )
+    if report_access:
+        if report_authority_session is None or report_access_context is None:
+            raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+        permitted = await PrivateFileRepository(
+            report_authority_session
+        ).report_file_authority(
+            file_id=file_id,
+            actor_user_id=user_id,
+            context=f"{report_access_context}_CONTENT",
+        )
+    else:
+        permitted = row is not None and (
+            row["owner_user_id"] == user_id
+            or (reviewer and (row["bound_application_id"] is not None or row["reviewer_access"]))
+        )
     if not permitted or row["status"] != "CLEAN":
         raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
     object_key = f"slice1/{row['created_at']:%Y/%m}/{file_id}"
@@ -325,6 +351,9 @@ async def read_authorized_content(
         _content_evidence(file_id=file_id, user_id=user_id, data=data),
     ):
         raise HTTPException(409, "PRIVATE_FILE_EVIDENCE_MISMATCH")
+    if report_access:
+        # REPORT_ORIGINAL_ACCESSED is appended by the bounded database authority.
+        await report_authority_session.commit()
     return data, row["declared_mime_type"]
 
 

@@ -187,6 +187,61 @@ class MemberHealthProjectionReadService:
         return ProjectionPageDTO(generation, rows, None)
 
 
+class AssessmentProjectionSnapshotService:
+    """Resolve coverage, READY generation, and facts from one repeatable-read snapshot."""
+
+    async def resolve_and_read(
+        self, *, subject_member_id: UUID, indicator_codes: tuple[str, ...],
+        measured_from: datetime, measured_to: datetime, limit: int,
+        required_projection_version: int = 2,
+    ):
+        indicators = _member_request(subject_member_id, indicator_codes)
+        if (
+            type(measured_from) is not datetime or type(measured_to) is not datetime
+            or measured_from.utcoffset() is None or measured_to.utcoffset() is None
+            or measured_from >= measured_to
+        ):
+            raise ProjectionInvalidRequest() from None
+        _limit(limit)
+        async with _reader("health_reader", MemberHealthProjectionReadRepository) as repo:
+            snapshot, items = await repo.coverage(subject_member_id, indicators)
+            coverage = _coverage_token(subject_member_id, indicators, snapshot, items)
+            candidates = tuple(
+                ReadyHealthProjectionEvidence(
+                    generation_id=item.generation_id,
+                    generation_no=item.generation_no,
+                    projection_version=item.projection_version,
+                    rule_version=item.rule_version,
+                    subject_member_id=item.subject_member_id,
+                    source_snapshot=item.source_snapshot,
+                    policy_indicator_digest=coverage.policy_indicator_digest,
+                    items=item.items,
+                    ready_at=item.ready_at,
+                )
+                for item in await repo.ready_candidates(subject_member_id, indicators)
+            )
+            resolved = resolve_latest_ready_generation(
+                coverage_token=coverage, candidates=candidates,
+                required_projection_version=required_projection_version,
+            )
+            if resolved is None:
+                return coverage, None, None
+            rows = await repo.facts(
+                generation_id=resolved.generation_id,
+                subject_member_id=subject_member_id,
+                indicators=indicators,
+                measured_from=measured_from,
+                measured_to=measured_to,
+                limit=limit,
+            )
+            page = ProjectionPageDTO(
+                ProjectionGenerationDTO(resolved.generation_id, 2, resolved.ready_at),
+                rows,
+                None,
+            )
+            return coverage, resolved, page
+
+
 def _identity(value: int) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ProjectionInvalidRequest()

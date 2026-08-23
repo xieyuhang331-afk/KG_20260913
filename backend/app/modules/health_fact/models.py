@@ -71,6 +71,12 @@ class CanonicalHealthFactOrmModel(Base):
             name="source_type_v1_v2",
         ),
         CheckConstraint(
+            "(catalog_version=1 AND report_id IS NULL) OR "
+            "(catalog_version=2 AND ((source_type='REPORT' AND report_id IS NOT NULL) "
+            "OR (source_type<>'REPORT' AND report_id IS NULL)))",
+            name="report_binding_v2",
+        ),
+        CheckConstraint(
             "source_identity_digest ~ '^[0-9a-f]{64}$'",
             name="source_digest",
         ),
@@ -103,6 +109,10 @@ class CanonicalHealthFactOrmModel(Base):
         BigInteger, ForeignKey("user.id"), nullable=True
     )
     fact_ref: Mapped[UUID | None] = mapped_column(UUIDType, unique=True)
+    # The physical FK is owned by Migration 0028.  The legacy TableSpec mapper
+    # intentionally does not model Slice 4 report columns, so repeating that FK
+    # here would make SQLAlchemy try to resolve a second, incomplete table model.
+    report_id: Mapped[UUID | None] = mapped_column(UUIDType)
     subject_member_id: Mapped[UUID | None] = mapped_column(
         UUIDType, ForeignKey("identity.member.member_id")
     )
