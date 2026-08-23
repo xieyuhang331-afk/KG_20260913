@@ -60,12 +60,12 @@ export function MemberEnrollmentPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">会员服务 / 服务准备</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">会员入组</h1>
-          <p className="mt-2 text-sm text-slate-500">沿邀请、实名、同意、分配和 PREPARING 服务案例推进。</p>
+          <p className="mt-2 text-sm text-slate-500">沿邀请、实名、同意、分配和服务准备中案例推进。</p>
         </div>
         <button className={secondaryButtonClassName} disabled={loading} onClick={() => void load(cursor)} type="button">
           <RefreshCw aria-hidden="true" className="mr-2" size={16} />

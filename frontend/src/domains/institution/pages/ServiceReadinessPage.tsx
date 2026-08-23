@@ -50,7 +50,7 @@ export function ServiceReadinessPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">机构资格 / 服务门禁</p>
@@ -68,7 +68,7 @@ export function ServiceReadinessPage() {
       {loading ? (
         <LoadingPanel label="正在核对服务就绪证据…" />
       ) : current ? (
-        <>
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(340px,0.85fr)_minmax(0,1.15fr)]">
           <section
             className={`rounded-2xl border p-6 shadow-panel ${current.readiness_status === "SERVICE_READY" ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}
           >
@@ -87,7 +87,7 @@ export function ServiceReadinessPage() {
                 </div>
               </div>
               <span className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold ring-1 ring-slate-200">
-                Evidence v{current.evidence_version}
+                就绪证据 v{current.evidence_version}
               </span>
             </div>
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -119,7 +119,7 @@ export function ServiceReadinessPage() {
           </section>
           <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
             <div className="border-b border-slate-100 px-5 py-4">
-              <h2 className="font-semibold text-slate-950">Evidence 历史</h2>
+              <h2 className="font-semibold text-slate-950">就绪证据历史</h2>
               <p className="mt-1 text-xs text-slate-500">每条记录是服务端生成的不可变计算证据。</p>
             </div>
             {history.length ? (
@@ -130,7 +130,7 @@ export function ServiceReadinessPage() {
                     key={item.evidence_version}
                   >
                     <div>
-                      <p className="font-semibold text-slate-950">Evidence v{item.evidence_version}</p>
+                      <p className="font-semibold text-slate-950">就绪证据 v{item.evidence_version}</p>
                       <p className="mt-1 text-xs text-slate-500">原因代码 {item.reason_codes.join("、") || "无"}</p>
                     </div>
                     <div className="text-sm text-slate-600">
@@ -142,7 +142,7 @@ export function ServiceReadinessPage() {
               </ul>
             ) : (
               <div className="p-5">
-                <EmptyPanel title="暂无历史证据" description="服务端完成首次计算后会在这里显示Evidence版本。" />
+                <EmptyPanel title="暂无历史证据" description="服务端完成首次计算后会在这里显示就绪证据版本。" />
               </div>
             )}
             <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
@@ -152,7 +152,7 @@ export function ServiceReadinessPage() {
                 onClick={() => void previousPage()}
                 type="button"
               >
-                Evidence上一批
+                就绪证据上一批
               </button>
               <button
                 className={secondaryButtonClassName}
@@ -160,11 +160,11 @@ export function ServiceReadinessPage() {
                 onClick={() => void nextPage()}
                 type="button"
               >
-                Evidence下一批
+                就绪证据下一批
               </button>
             </div>
           </section>
-        </>
+        </div>
       ) : (
         <EmptyPanel
           title="尚无服务就绪证据"

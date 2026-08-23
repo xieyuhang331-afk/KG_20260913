@@ -97,55 +97,72 @@ export function TherapistStatusPage() {
         <p className="mt-2 text-sm text-slate-600">按服务端版本执行暂停、恢复或退出。</p>
       </header>
       <Feedback message={error || notice} tone={error ? "error" : "success"} />
-      {loading ? (
-        <LoadingPanel label="正在加载健管师状态…" />
-      ) : !items.length ? (
-        <EmptyPanel title="暂无可治理的健管师" description="资质审核通过后可在这里治理服务状态。" />
-      ) : (
-        <section className="rounded-xl border bg-white">
-          {items.map((item) => (
-            <article className="flex items-center justify-between border-b p-4 last:border-0" key={item.review_item_id}>
-              <div>
-                <strong>健管师服务记录</strong>
-                <p className="text-sm text-slate-500">
-                  {item.review_kind} · 版本 {item.version}
-                </p>
-              </div>
-              <button className={secondaryButtonClassName} onClick={() => void open(item)} type="button">
-                查看状态详情
-              </button>
-            </article>
-          ))}
-        </section>
-      )}
-      {detail ? (
-        <section className="rounded-xl border bg-white p-5">
-          <p className="text-sm text-slate-500">健管师状态详情</p>
-          <h2 className="text-xl font-semibold">{detail.profile.display_name || "未设置展示名称"}</h2>
-          <p className="mt-2 text-sm">
-            在服 {detail.profile.active_case_count} / 容量上限 {detail.profile.capacity_limit}
-          </p>
-          <span className="mt-3 inline-block rounded-full bg-blue-50 px-3 py-1 text-sm text-blue-700">
-            {detail.profile.status}
-          </span>
-          <div className="mt-6 flex justify-end gap-2">
-            {detail.profile.status === "SUSPENDED" ? (
-              <button className={primaryButtonClassName} onClick={() => setPending("resume")} type="button">
-                恢复服务
-              </button>
-            ) : detail.profile.status === "APPROVED_ACTIVE" ? (
-              <button className={secondaryButtonClassName} onClick={() => setPending("suspend")} type="button">
-                暂停服务
-              </button>
-            ) : null}
-            {detail.profile.status !== "EXITED" ? (
-              <button className={secondaryButtonClassName} onClick={() => setPending("exit")} type="button">
-                退出
-              </button>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
+      <div className="grid items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="min-w-0">
+          {loading ? (
+            <LoadingPanel label="正在加载健管师状态…" />
+          ) : !items.length ? (
+            <EmptyPanel title="暂无可治理的健管师" description="资质审核通过后可在这里治理服务状态。" />
+          ) : (
+            <section className="overflow-hidden rounded-xl border bg-white shadow-panel">
+              {items.map((item) => (
+                <article
+                  className="flex items-center justify-between gap-3 border-b p-4 last:border-0"
+                  key={item.review_item_id}
+                >
+                  <div className="min-w-0">
+                    <strong>健管师服务记录</strong>
+                    <p className="text-sm text-slate-500">
+                      {item.review_kind} · 版本 {item.version}
+                    </p>
+                  </div>
+                  <button
+                    aria-label="查看状态详情"
+                    className={secondaryButtonClassName}
+                    onClick={() => void open(item)}
+                    type="button"
+                  >
+                    查看
+                  </button>
+                </article>
+              ))}
+            </section>
+          )}
+        </div>
+        {detail ? (
+          <section className="min-w-0 rounded-xl border bg-white p-5 shadow-panel">
+            <p className="text-sm text-slate-500">健管师状态详情</p>
+            <h2 className="text-xl font-semibold">{detail.profile.display_name || "未设置展示名称"}</h2>
+            <p className="mt-2 text-sm">
+              在服 {detail.profile.active_case_count} / 容量上限 {detail.profile.capacity_limit}
+            </p>
+            <span className="mt-3 inline-block rounded-full bg-blue-50 px-3 py-1 text-sm text-blue-700">
+              {detail.profile.status}
+            </span>
+            <div className="mt-6 flex justify-end gap-2">
+              {detail.profile.status === "SUSPENDED" ? (
+                <button className={primaryButtonClassName} onClick={() => setPending("resume")} type="button">
+                  恢复服务
+                </button>
+              ) : detail.profile.status === "APPROVED_ACTIVE" ? (
+                <button className={secondaryButtonClassName} onClick={() => setPending("suspend")} type="button">
+                  暂停服务
+                </button>
+              ) : null}
+              {detail.profile.status !== "EXITED" ? (
+                <button className={secondaryButtonClassName} onClick={() => setPending("exit")} type="button">
+                  退出
+                </button>
+              ) : null}
+            </div>
+          </section>
+        ) : (
+          <section className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-panel">
+            <p className="font-semibold text-slate-800">选择左侧健管师</p>
+            <p className="mt-2 text-sm text-slate-500">服务状态、当前负载和治理操作将在这里展开。</p>
+          </section>
+        )}
+      </div>
       {pending ? (
         <ConfirmDialog
           busy={busy}

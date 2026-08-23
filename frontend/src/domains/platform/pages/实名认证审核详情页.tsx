@@ -152,7 +152,7 @@ export function IdentityReviewDetailPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <Link
         className="inline-flex items-center text-sm font-semibold text-teal-700"
         onClick={clearSensitive}

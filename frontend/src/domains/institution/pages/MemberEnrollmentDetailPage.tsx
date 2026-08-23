@@ -151,7 +151,7 @@ export function MemberEnrollmentDetailPage() {
   if (loading) return <LoadingPanel label="正在加载会员服务准备详情…" />;
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <div>
         <Link
           className="inline-flex items-center text-sm font-medium text-teal-700"
@@ -354,7 +354,7 @@ export function MemberEnrollmentDetailPage() {
                     <Field label="创建时间" value={formatTime(caseDetail.created_at)} />
                   </dl>
                 ) : (
-                  <p className="mt-3 text-sm text-slate-500">主健管师接受分配后，后端才会原子创建 PREPARING 案例。</p>
+                  <p className="mt-3 text-sm text-slate-500">主健管师接受分配后，系统才会创建服务准备中案例。</p>
                 )}
               </article>
             </aside>

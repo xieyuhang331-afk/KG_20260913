@@ -101,7 +101,7 @@ export function ConsentDocumentPage() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl space-y-5">
+    <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header>
         <p className="text-xs font-semibold tracking-wide text-teal-700">平台治理 / 版本化同意</p>
         <h1 className="mt-1 text-2xl font-semibold">同意文档</h1>

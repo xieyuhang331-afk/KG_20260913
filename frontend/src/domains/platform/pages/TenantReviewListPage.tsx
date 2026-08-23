@@ -21,8 +21,8 @@ export function TenantReviewListPage() {
         page_size: PAGE_SIZE,
         keyword,
         province,
-        city
-      })
+        city,
+      }),
   });
 
   const total = queueQuery.data?.total ?? 0;
@@ -55,8 +55,11 @@ export function TenantReviewListPage() {
       </div>
 
       <form
-        action={(formData) => updateFilters(formData)}
         className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[1fr_160px_160px_auto]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          updateFilters(new FormData(event.currentTarget));
+        }}
       >
         <label className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -162,7 +165,10 @@ function ReviewRow({ item }: { item: TenantReviewQueueItem }) {
       <td className="px-4 py-3 text-slate-600">{item.attachment_count}</td>
       <td className="px-4 py-3 text-slate-600">{formatDateTime(item.submitted_at)}</td>
       <td className="px-4 py-3">
-        <Link className="rounded-md bg-pine px-3 py-2 text-xs font-medium text-white hover:bg-pine/90" to={`${item.tenant_id}`}>
+        <Link
+          className="rounded-md bg-pine px-3 py-2 text-xs font-medium text-white hover:bg-pine/90"
+          to={`${item.tenant_id}`}
+        >
           查看审核
         </Link>
       </td>
@@ -175,6 +181,6 @@ function formatDateTime(value: string) {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
   }).format(new Date(value));
 }
