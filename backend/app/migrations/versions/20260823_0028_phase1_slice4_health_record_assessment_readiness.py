@@ -395,7 +395,7 @@ def _alter_health_data_tables() -> None:
     op.create_check_constraint(
         "ck_health_projection_shadow_run_identity_v1_v2", "health_projection_shadow_run",
         "projection_version IN (1,2) AND run_sequence>=1 AND lease_epoch>=0 AND version>=1 "
-        "AND ((projection_version=1 AND rule_version='health-daily-selection-v1') "
+        "AND (projection_version=1 "
         "OR (projection_version=2 AND rule_version='health-daily-selection-v2'))",
         schema="public",
     )

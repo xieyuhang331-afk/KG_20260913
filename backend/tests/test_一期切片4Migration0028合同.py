@@ -66,6 +66,13 @@ def test_0028四个owner边界及零RuntimeSequence授权() -> None:
             assert f"GRANT {privilege} ON SEQUENCE public.{sequence}" not in source
 
 
+def test_0028保持P3_v1_shadow规则版本兼容且只冻结v2规则() -> None:
+    source = _source()
+    assert "AND (projection_version=1 " in source
+    assert "OR (projection_version=2 AND rule_version='health-daily-selection-v2'))" in source
+    assert "projection_version=1 AND rule_version='health-daily-selection-v1'" not in source
+
+
 def test_0028非空downgrade在REVOKE_DROP_ALTER前fail_closed() -> None:
     source = _source()
     downgrade = source[source.index("def downgrade()") :]

@@ -32,7 +32,7 @@ VIEWS = (
 )
 CONFIGURATION_ERROR = "projection reader runtime role configuration is invalid"
 SLICE2_CONFIGURATION_ERROR = "Slice 2 database role configuration is invalid"
-SLICE3_CONFIGURATION_ERROR = "Slice 3 database role configuration is invalid"
+SLICE4_CONFIGURATION_ERROR = "Slice 4 database role configuration is invalid"
 
 
 class _Policy:
@@ -655,7 +655,7 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
         try:
             with pytest.raises(RuntimeError) as error:
                 command.downgrade(config, "20260814_0018")
-            assert str(error.value) == SLICE3_CONFIGURATION_ERROR
+            assert str(error.value) == SLICE4_CONFIGURATION_ERROR
             assert pg_database.fetch_value(
                 "SELECT version_num='20260823_0028' FROM alembic_version"
             )

@@ -469,7 +469,7 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0027"
+    ) == "20260823_0028"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -501,7 +501,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260822_0027"
+    ) == "20260823_0028"
 
 
 @pytest.mark.asyncio
