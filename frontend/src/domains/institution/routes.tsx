@@ -9,6 +9,7 @@ import { ServiceReadinessPage } from "./pages/ServiceReadinessPage";
 import { MemberInvitationPage } from "./pages/MemberInvitationPage";
 import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
 import { MemberEnrollmentDetailPage } from "./pages/MemberEnrollmentDetailPage";
+import { HealthRecordPage } from "./pages/HealthRecordPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -32,5 +33,6 @@ export const institutionRoutes: { protectedChildren: RouteObject[] } = {
     { path: "member-invitations", element: <MemberInvitationPage /> },
     { path: "member-enrollments", element: <MemberEnrollmentPage /> },
     { path: "member-enrollments/:enrollmentId", element: <MemberEnrollmentDetailPage /> },
+    { path: "service-cases/:caseId/health-record", element: <HealthRecordPage /> },
   ],
 };

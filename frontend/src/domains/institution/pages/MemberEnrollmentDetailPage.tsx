@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, RefreshCw, ShieldCheck, UserRoundCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileHeart, RefreshCw, ShieldCheck, UserRoundCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -348,11 +348,20 @@ export function MemberEnrollmentDetailPage() {
               <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
                 <h2 className="font-semibold">服务案例</h2>
                 {caseDetail ? (
-                  <dl className="mt-4 space-y-3 text-sm">
-                    <Field label="状态" value="服务准备中" />
-                    <Field label="案例标识" value={compactId(caseDetail.case_id)} />
-                    <Field label="创建时间" value={formatTime(caseDetail.created_at)} />
-                  </dl>
+                  <>
+                    <dl className="mt-4 space-y-3 text-sm">
+                      <Field label="状态" value="服务准备中" />
+                      <Field label="案例标识" value={compactId(caseDetail.case_id)} />
+                      <Field label="创建时间" value={formatTime(caseDetail.created_at)} />
+                    </dl>
+                    <Link
+                      className={`${primaryButtonClassName} mt-5 w-full justify-center`}
+                      to={`/institution/service-cases/${caseDetail.case_id}/health-record`}
+                    >
+                      <FileHeart aria-hidden="true" className="mr-2" size={17} />
+                      查看健康档案与评估准备
+                    </Link>
+                  </>
                 ) : (
                   <p className="mt-3 text-sm text-slate-500">主健管师接受分配后，系统才会创建服务准备中案例。</p>
                 )}

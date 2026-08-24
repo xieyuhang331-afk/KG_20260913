@@ -22,6 +22,10 @@ import type {
   PreparingServiceCase,
   PrimaryAssignment,
   ServiceScopeTag,
+  AssessmentReadiness,
+  DetectionReportMetadata,
+  HealthIndicatorFact,
+  InstitutionHealthRecord,
 } from "./types";
 
 export interface InstitutionActivationPayload {
@@ -254,6 +258,23 @@ export const cancelPrimaryAssignment = (
 
 export const getPreparingServiceCase = (caseId: UUIDv7) =>
   apiRequest<PreparingServiceCase>(`/api/v1/institution/service-cases/${caseId}`);
+
+export const getInstitutionHealthRecord = (caseId: UUIDv7, signal?: AbortSignal) =>
+  apiRequest<InstitutionHealthRecord>(`/api/v1/institution/service-cases/${caseId}/health-record`, { signal });
+
+export const listInstitutionDetectionReports = (caseId: UUIDv7, params: CursorParams = {}, signal?: AbortSignal) =>
+  apiRequest<CursorPage<DetectionReportMetadata>>(
+    `/api/v1/institution/service-cases/${caseId}/detection-reports${therapistQuery(params)}`,
+    { signal },
+  );
+
+export const getInstitutionLatestHealthIndicators = (caseId: UUIDv7, signal?: AbortSignal) =>
+  apiRequest<{ items: HealthIndicatorFact[] }>(`/api/v1/institution/service-cases/${caseId}/health-indicators/latest`, {
+    signal,
+  });
+
+export const getAssessmentReadiness = (caseId: UUIDv7, signal?: AbortSignal) =>
+  apiRequest<AssessmentReadiness>(`/api/v1/service-cases/${caseId}/assessment-readiness`, { signal });
 
 function therapistQuery(params: object) {
   const query = new URLSearchParams();
