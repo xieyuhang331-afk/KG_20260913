@@ -99,6 +99,22 @@ class Settings(BaseModel):
     slice4_profile_phi_keyring_json: str | None = None
     slice4_assembly_phi_current_key_id: str | None = None
     slice4_assembly_phi_keyring_json: str | None = None
+    slice5_assessment_writer_database_url: str | None = None
+    slice5_risk_workflow_writer_database_url: str | None = None
+    slice5_rule_governance_writer_database_url: str | None = None
+    slice5_workflow_worker_database_url: str | None = None
+    slice5_clinical_reader_database_url: str | None = None
+    slice5_oversight_reader_database_url: str | None = None
+    slice5_assessment_writer_role: str | None = None
+    slice5_risk_workflow_writer_role: str | None = None
+    slice5_rule_governance_writer_role: str | None = None
+    slice5_workflow_worker_role: str | None = None
+    slice5_clinical_reader_role: str | None = None
+    slice5_oversight_reader_role: str | None = None
+    slice5_digest_current_key_id: str | None = None
+    slice5_digest_keyring_json: str | None = None
+    slice5_phi_current_key_id: str | None = None
+    slice5_phi_keyring_json: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -212,4 +228,20 @@ def get_settings() -> Settings:
         slice4_profile_phi_keyring_json=os.getenv("KG_SLICE4_PROFILE_PHI_KEYRING_JSON"),
         slice4_assembly_phi_current_key_id=os.getenv("KG_SLICE4_ASSEMBLY_PHI_CURRENT_KEY_ID"),
         slice4_assembly_phi_keyring_json=os.getenv("KG_SLICE4_ASSEMBLY_PHI_KEYRING_JSON"),
+        slice5_assessment_writer_database_url=os.getenv("KG_SLICE5_ASSESSMENT_WRITER_DATABASE_URL"),
+        slice5_risk_workflow_writer_database_url=os.getenv("KG_SLICE5_RISK_WORKFLOW_WRITER_DATABASE_URL"),
+        slice5_rule_governance_writer_database_url=os.getenv("KG_SLICE5_RULE_GOVERNANCE_WRITER_DATABASE_URL"),
+        slice5_workflow_worker_database_url=os.getenv("KG_SLICE5_WORKFLOW_WORKER_DATABASE_URL"),
+        slice5_clinical_reader_database_url=os.getenv("KG_SLICE5_CLINICAL_READER_DATABASE_URL"),
+        slice5_oversight_reader_database_url=os.getenv("KG_SLICE5_OVERSIGHT_READER_DATABASE_URL"),
+        slice5_assessment_writer_role=os.getenv("KG_SLICE5_ASSESSMENT_WRITER_ROLE"),
+        slice5_risk_workflow_writer_role=os.getenv("KG_SLICE5_RISK_WORKFLOW_WRITER_ROLE"),
+        slice5_rule_governance_writer_role=os.getenv("KG_SLICE5_RULE_GOVERNANCE_WRITER_ROLE"),
+        slice5_workflow_worker_role=os.getenv("KG_SLICE5_WORKFLOW_WORKER_ROLE"),
+        slice5_clinical_reader_role=os.getenv("KG_SLICE5_CLINICAL_READER_ROLE"),
+        slice5_oversight_reader_role=os.getenv("KG_SLICE5_OVERSIGHT_READER_ROLE"),
+        slice5_digest_current_key_id=os.getenv("KG_SLICE5_DIGEST_CURRENT_KEY_ID"),
+        slice5_digest_keyring_json=os.getenv("KG_SLICE5_DIGEST_KEYRING_JSON"),
+        slice5_phi_current_key_id=os.getenv("KG_SLICE5_PHI_CURRENT_KEY_ID"),
+        slice5_phi_keyring_json=os.getenv("KG_SLICE5_PHI_KEYRING_JSON"),
     )

@@ -8,9 +8,12 @@ import pytest
 MEMBER = UUID("00000000-0000-7000-8000-000000000401")
 
 
-def _fact(n, source, state="VERIFIED", superseded=False):
+def _fact(
+    n, source, state="VERIFIED", superseded=False, context=None,
+    indicator="weight", value=Decimal("70"), unit="kg",
+):
     from app.modules.health_projection.domain import HealthCurrentFactV2
-    return HealthCurrentFactV2(n, UUID(f"00000000-0000-7000-8000-{n:012d}"), MEMBER, None, "weight", Decimal("70"), "kg", datetime(2026, 8, 20, 1, tzinfo=timezone.utc), datetime(2026, 8, 20, 2, tzinfo=timezone.utc), source, state, 7, superseded)
+    return HealthCurrentFactV2(n, UUID(f"00000000-0000-7000-8000-{n:012d}"), MEMBER, None, indicator, value, unit, datetime(2026, 8, 20, 1, tzinfo=timezone.utc), datetime(2026, 8, 20, 2, tzinfo=timezone.utc), source, state, 7, superseded, measurement_context=context)
 
 
 def _item(status=7):
@@ -33,6 +36,15 @@ def test_D16_D17_ModuleE只见projection_read端口且resolver无generation输�
     from app.modules.projection_read.ports import HealthProjectionCoverageAuthorityPort, LatestReadyHealthProjectionResolverPort, MemberHealthProjectionReadPort
     assert hasattr(HealthProjectionCoverageAuthorityPort, "capture") and hasattr(MemberHealthProjectionReadPort, "list_current_facts")
     assert "generation_id" not in inspect.signature(LatestReadyHealthProjectionResolverPort.resolve).parameters
+
+
+def test_v2正式目录包含获批测量场景所需的血糖和血脂指标():
+    from app.modules.projection_read.service import INDICATOR_CATALOG_V2
+
+    assert {
+        "fasting_glucose", "postprandial_glucose_2h", "hba1c",
+        "total_cholesterol", "triglyceride", "hdl_c", "ldl_c",
+    } <= INDICATOR_CATALOG_V2
 
 
 def test_D18_DEVICE争议与被修正事实不进入v2且STORE优先():
@@ -80,6 +92,45 @@ def test_v2_builder生成Member事实和窗口选择且不接受DEVICE():
     source = inspect.getsource(HealthProjectionBuilderV2.start)
     assert "capture_v2_sources" in source
     assert HealthProjectionBuilderV2.__mro__[1].__name__ == "HealthProjectionBuilder"
+
+
+def test_v2_builder接受获批测量场景所需的血糖和血脂指标():
+    from app.modules.health_projection.domain import build_health_projection_rows_v2
+
+    approved = (
+        ("postprandial_glucose_2h", "OGTT_2H_VENOUS"),
+        ("total_cholesterol", "FASTING_LAB"),
+        ("triglyceride", "FASTING_LAB"),
+        ("hdl_c", "FASTING_LAB"),
+        ("ldl_c", "FASTING_LAB"),
+    )
+    rows, _ = build_health_projection_rows_v2(
+        facts=tuple(
+            _fact(
+                index, "APP", context=context, indicator=indicator,
+                value=Decimal("1.00"), unit="mmol/L",
+            )
+            for index, (indicator, context) in enumerate(approved, 10)
+        ),
+        digest_key=b"k" * 32,
+    )
+    assert {row.indicator_code for row in rows} == {
+        indicator for indicator, _ in approved
+    }
+
+
+def test_v2投影事实保留显式测量场景并纳入行摘要():
+    from app.modules.health_projection.domain import build_health_projection_rows_v2
+
+    without_context, _ = build_health_projection_rows_v2(
+        facts=(_fact(1, "APP"),), digest_key=b"k" * 32
+    )
+    with_context, _ = build_health_projection_rows_v2(
+        facts=(_fact(1, "APP", context="OFFICE"),), digest_key=b"k" * 32
+    )
+    assert without_context[0].measurement_context is None
+    assert with_context[0].measurement_context == "OFFICE"
+    assert without_context[0].row_digest != with_context[0].row_digest
 
 
 def test_最终整改_B_v2三水位ShadowEvidence可通过正式门禁():

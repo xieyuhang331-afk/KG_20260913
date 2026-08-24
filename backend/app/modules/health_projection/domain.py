@@ -54,6 +54,7 @@ class HealthCurrentFactV2:
     superseded: bool
     fact_payload_digest: str | None = None
     status_event_digest: str | None = None
+    measurement_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,7 @@ class HealthProjectionFactRowV2:
     verification_state: str
     status_event_seq: int
     row_digest: str
+    measurement_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +106,10 @@ def build_health_projection_rows_v2(
     windows: dict[tuple[UUID, str, date], list[HealthCurrentFactV2]] = {}
     units = {
         "systolic_bp": "mmHg", "diastolic_bp": "mmHg", "heart_rate": "bpm",
-        "fasting_glucose": "mmol/L", "hba1c": "%", "weight": "kg",
+        "fasting_glucose": "mmol/L", "postprandial_glucose_2h": "mmol/L",
+        "hba1c": "%", "total_cholesterol": "mmol/L",
+        "triglyceride": "mmol/L", "hdl_c": "mmol/L", "ldl_c": "mmol/L",
+        "weight": "kg",
         "height": "cm", "waist": "cm",
     }
     for fact in facts:
@@ -130,6 +135,7 @@ def build_health_projection_rows_v2(
             "source_type": fact.source_type, "business_day": day.isoformat(),
             "verification_state": fact.verification_state,
             "status_event_seq": fact.status_event_seq,
+            "measurement_context": fact.measurement_context,
         }
         rows.append(HealthProjectionFactRowV2(
             fact.id, fact.fact_ref, fact.subject_member_id, fact.subject_user_id,
@@ -137,6 +143,7 @@ def build_health_projection_rows_v2(
             _aware(fact.received_at), fact.source_type, day, start, end,
             fact.verification_state, fact.status_event_seq,
             _digest(key, _FACT_DOMAIN_V2, payload),
+            fact.measurement_context,
         ))
         windows.setdefault((fact.subject_member_id, fact.indicator_code, day), []).append(fact)
     selections: list[HealthWindowSelectionV2] = []

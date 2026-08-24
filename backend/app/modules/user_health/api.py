@@ -605,7 +605,10 @@ def _trend_dto(rows, indicator_code: str, limit: int) -> HealthIndicatorTrendDTO
     unit = items[0].unit if items else {
         "height": "cm", "weight": "kg", "waist": "cm",
         "systolic_bp": "mmHg", "diastolic_bp": "mmHg",
-        "heart_rate": "bpm", "fasting_glucose": "mmol/L", "hba1c": "%",
+        "heart_rate": "bpm", "fasting_glucose": "mmol/L",
+        "postprandial_glucose_2h": "mmol/L", "hba1c": "%",
+        "total_cholesterol": "mmol/L", "triglyceride": "mmol/L",
+        "hdl_c": "mmol/L", "ldl_c": "mmol/L",
     }[indicator_code]
     return HealthIndicatorTrendDTO(
         indicator_code=indicator_code,

@@ -179,3 +179,4 @@ class MemberHealthProjectionFactDTO:
     business_day: date
     verification_state: str
     status_event_seq: int
+    measurement_context: str | None = None

@@ -29,7 +29,8 @@ INDICATOR_CATALOG_V1 = frozenset(("systolic_bp", "diastolic_bp", "heart_rate", "
 AUTHORIZATION_BASES = frozenset(("SELF", "FAMILY_GRANT", "MANAGED_CUSTOMER", "PLATFORM_DUTY"))
 INDICATOR_CATALOG_V2 = frozenset((
     "systolic_bp", "diastolic_bp", "heart_rate", "fasting_glucose",
-    "hba1c", "weight", "height", "waist",
+    "postprandial_glucose_2h", "hba1c", "total_cholesterol", "triglyceride",
+    "hdl_c", "ldl_c", "weight", "height", "waist",
 ))
 
 
