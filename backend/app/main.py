@@ -14,6 +14,10 @@ from app.modules.health_assessment.api import (
     routers as slice5_routers,
     strip_slice5_validation_responses,
 )
+from app.modules.health_plan.api import (
+    routers as slice6_routers,
+    strip_slice6_validation_responses,
+)
 from app.modules.organization.api import router as organization_router
 from app.modules.institution_onboarding.api import onboarding_router, platform_router
 from app.modules.member_enrollment.api import (
@@ -78,13 +82,17 @@ def create_app() -> FastAPI:
         app.include_router(slice4_router)
     for slice5_router in slice5_routers:
         app.include_router(slice5_router)
+    for slice6_router in slice6_routers:
+        app.include_router(slice6_router)
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        return strip_slice5_validation_responses(
-            strip_slice4_validation_responses(
-                strip_member_enrollment_validation_responses(
-                    strip_therapist_validation_responses(default_openapi())
+        return strip_slice6_validation_responses(
+            strip_slice5_validation_responses(
+                strip_slice4_validation_responses(
+                    strip_member_enrollment_validation_responses(
+                        strip_therapist_validation_responses(default_openapi())
+                    )
                 )
             )
         )

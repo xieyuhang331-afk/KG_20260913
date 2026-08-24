@@ -220,6 +220,12 @@ jobs:
               "KG_TEST_SLICE5_WORKFLOW_WORKER_ROLE": f"kg_ci_slice5_worker_{suffix}",
               "KG_TEST_SLICE5_CLINICAL_READER_ROLE": f"kg_ci_slice5_clinical_{suffix}",
               "KG_TEST_SLICE5_OVERSIGHT_READER_ROLE": f"kg_ci_slice5_oversight_{suffix}",
+              "KG_TEST_SLICE6_INSTITUTION_WRITER_ROLE": f"kg_ci_slice6_institution_{suffix}",
+              "KG_TEST_SLICE6_TEMPLATE_WRITER_ROLE": f"kg_ci_slice6_template_{suffix}",
+              "KG_TEST_SLICE6_REVIEW_WRITER_ROLE": f"kg_ci_slice6_review_{suffix}",
+              "KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE": f"kg_ci_slice6_worker_{suffix}",
+              "KG_TEST_SLICE6_CLINICAL_READER_ROLE": f"kg_ci_slice6_clinical_{suffix}",
+              "KG_TEST_SLICE6_FAMILY_READER_ROLE": f"kg_ci_slice6_family_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -422,6 +428,12 @@ jobs:
               "KG_TEST_SLICE5_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_SLICE5_WORKFLOW_WORKER_ROLE",
               "KG_TEST_SLICE5_CLINICAL_READER_DATABASE_URL": "KG_TEST_SLICE5_CLINICAL_READER_ROLE",
               "KG_TEST_SLICE5_OVERSIGHT_READER_DATABASE_URL": "KG_TEST_SLICE5_OVERSIGHT_READER_ROLE",
+              "KG_TEST_SLICE6_INSTITUTION_WRITER_DATABASE_URL": "KG_TEST_SLICE6_INSTITUTION_WRITER_ROLE",
+              "KG_TEST_SLICE6_TEMPLATE_WRITER_DATABASE_URL": "KG_TEST_SLICE6_TEMPLATE_WRITER_ROLE",
+              "KG_TEST_SLICE6_REVIEW_WRITER_DATABASE_URL": "KG_TEST_SLICE6_REVIEW_WRITER_ROLE",
+              "KG_TEST_SLICE6_WORKFLOW_WORKER_DATABASE_URL": "KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE",
+              "KG_TEST_SLICE6_CLINICAL_READER_DATABASE_URL": "KG_TEST_SLICE6_CLINICAL_READER_ROLE",
+              "KG_TEST_SLICE6_FAMILY_READER_DATABASE_URL": "KG_TEST_SLICE6_FAMILY_READER_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -509,6 +521,12 @@ jobs:
               "KG_SLICE5_WORKFLOW_WORKER",
               "KG_SLICE5_CLINICAL_READER",
               "KG_SLICE5_OVERSIGHT_READER",
+              "KG_SLICE6_INSTITUTION_WRITER",
+              "KG_SLICE6_TEMPLATE_WRITER",
+              "KG_SLICE6_REVIEW_WRITER",
+              "KG_SLICE6_WORKFLOW_WORKER",
+              "KG_SLICE6_CLINICAL_READER",
+              "KG_SLICE6_FAMILY_READER",
           ):
               test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
               values[f"{prefix}_ROLE"] = values[f"{test_prefix}_ROLE"]
@@ -750,6 +768,18 @@ jobs:
             --set=slice5_clinical_password="$KG_TEST_SLICE5_CLINICAL_READER_ROLE_PASSWORD" \
             --set=slice5_oversight_role="$KG_TEST_SLICE5_OVERSIGHT_READER_ROLE" \
             --set=slice5_oversight_password="$KG_TEST_SLICE5_OVERSIGHT_READER_ROLE_PASSWORD" \
+            --set=slice6_institution_role="$KG_TEST_SLICE6_INSTITUTION_WRITER_ROLE" \
+            --set=slice6_institution_password="$KG_TEST_SLICE6_INSTITUTION_WRITER_ROLE_PASSWORD" \
+            --set=slice6_template_role="$KG_TEST_SLICE6_TEMPLATE_WRITER_ROLE" \
+            --set=slice6_template_password="$KG_TEST_SLICE6_TEMPLATE_WRITER_ROLE_PASSWORD" \
+            --set=slice6_review_role="$KG_TEST_SLICE6_REVIEW_WRITER_ROLE" \
+            --set=slice6_review_password="$KG_TEST_SLICE6_REVIEW_WRITER_ROLE_PASSWORD" \
+            --set=slice6_worker_role="$KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE" \
+            --set=slice6_worker_password="$KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE_PASSWORD" \
+            --set=slice6_clinical_role="$KG_TEST_SLICE6_CLINICAL_READER_ROLE" \
+            --set=slice6_clinical_password="$KG_TEST_SLICE6_CLINICAL_READER_ROLE_PASSWORD" \
+            --set=slice6_family_role="$KG_TEST_SLICE6_FAMILY_READER_ROLE" \
+            --set=slice6_family_password="$KG_TEST_SLICE6_FAMILY_READER_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -797,6 +827,12 @@ jobs:
           CREATE ROLE :"slice5_worker_role" LOGIN PASSWORD :'slice5_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"slice5_clinical_role" LOGIN PASSWORD :'slice5_clinical_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"slice5_oversight_role" LOGIN PASSWORD :'slice5_oversight_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_institution_role" LOGIN PASSWORD :'slice6_institution_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_template_role" LOGIN PASSWORD :'slice6_template_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_review_role" LOGIN PASSWORD :'slice6_review_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_worker_role" LOGIN PASSWORD :'slice6_worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_clinical_role" LOGIN PASSWORD :'slice6_clinical_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"slice6_family_role" LOGIN PASSWORD :'slice6_family_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

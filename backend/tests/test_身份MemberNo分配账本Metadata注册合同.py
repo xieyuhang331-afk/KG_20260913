@@ -4,6 +4,7 @@ from pathlib import Path
 from app.core.database import Base
 from app.modules.assessment_readiness import models as slice4_models  # noqa: F401
 from app.modules.health_assessment import models as slice5_models  # noqa: F401
+from app.modules.health_plan import models as slice6_models  # noqa: F401
 from app.modules.member_enrollment import models as slice3_models  # noqa: F401
 
 
@@ -99,6 +100,15 @@ PHASE1_SLICE5_TABLES = {
         "slice5_delivery",
     )
 }
+PHASE1_SLICE6_TABLES = {
+    f"public.{name}"
+    for name in (
+        "health_plan_template_version", "health_plan_generation_request",
+        "health_plan_version", "health_plan_review", "health_plan_explanation",
+        "health_plan_user_decision", "health_plan_receipt", "health_plan_audit",
+        "health_plan_outbox", "health_plan_delivery",
+    )
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -148,4 +158,5 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
                 | PHASE1_SLICE3_TABLES
                 | PHASE1_SLICE4_TABLES
                 | PHASE1_SLICE5_TABLES
+                | PHASE1_SLICE6_TABLES
         )

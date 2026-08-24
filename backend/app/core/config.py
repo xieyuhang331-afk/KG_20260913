@@ -115,6 +115,18 @@ class Settings(BaseModel):
     slice5_digest_keyring_json: str | None = None
     slice5_phi_current_key_id: str | None = None
     slice5_phi_keyring_json: str | None = None
+    slice6_institution_writer_database_url: str | None = None
+    slice6_template_writer_database_url: str | None = None
+    slice6_review_writer_database_url: str | None = None
+    slice6_workflow_worker_database_url: str | None = None
+    slice6_clinical_reader_database_url: str | None = None
+    slice6_family_reader_database_url: str | None = None
+    slice6_institution_writer_role: str | None = None
+    slice6_template_writer_role: str | None = None
+    slice6_review_writer_role: str | None = None
+    slice6_workflow_worker_role: str | None = None
+    slice6_clinical_reader_role: str | None = None
+    slice6_family_reader_role: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -244,4 +256,16 @@ def get_settings() -> Settings:
         slice5_digest_keyring_json=os.getenv("KG_SLICE5_DIGEST_KEYRING_JSON"),
         slice5_phi_current_key_id=os.getenv("KG_SLICE5_PHI_CURRENT_KEY_ID"),
         slice5_phi_keyring_json=os.getenv("KG_SLICE5_PHI_KEYRING_JSON"),
+        slice6_institution_writer_database_url=os.getenv("KG_SLICE6_INSTITUTION_WRITER_DATABASE_URL"),
+        slice6_template_writer_database_url=os.getenv("KG_SLICE6_TEMPLATE_WRITER_DATABASE_URL"),
+        slice6_review_writer_database_url=os.getenv("KG_SLICE6_REVIEW_WRITER_DATABASE_URL"),
+        slice6_workflow_worker_database_url=os.getenv("KG_SLICE6_WORKFLOW_WORKER_DATABASE_URL"),
+        slice6_clinical_reader_database_url=os.getenv("KG_SLICE6_CLINICAL_READER_DATABASE_URL"),
+        slice6_family_reader_database_url=os.getenv("KG_SLICE6_FAMILY_READER_DATABASE_URL"),
+        slice6_institution_writer_role=os.getenv("KG_SLICE6_INSTITUTION_WRITER_ROLE"),
+        slice6_template_writer_role=os.getenv("KG_SLICE6_TEMPLATE_WRITER_ROLE"),
+        slice6_review_writer_role=os.getenv("KG_SLICE6_REVIEW_WRITER_ROLE"),
+        slice6_workflow_worker_role=os.getenv("KG_SLICE6_WORKFLOW_WORKER_ROLE"),
+        slice6_clinical_reader_role=os.getenv("KG_SLICE6_CLINICAL_READER_ROLE"),
+        slice6_family_reader_role=os.getenv("KG_SLICE6_FAMILY_READER_ROLE"),
     )

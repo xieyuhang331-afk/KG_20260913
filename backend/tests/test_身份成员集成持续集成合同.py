@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260825_0030"
+EXPECTED_HEAD = "20260826_0031"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260825_0030; found stale revision 20260816_0020"
+    "20260826_0031; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -838,6 +838,12 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_SLICE5_WORKFLOW_WORKER_ROLE", "kg_ci_slice5_worker_test_run")
         monkeypatch.setenv("KG_TEST_SLICE5_CLINICAL_READER_ROLE", "kg_ci_slice5_clinical_test_run")
         monkeypatch.setenv("KG_TEST_SLICE5_OVERSIGHT_READER_ROLE", "kg_ci_slice5_oversight_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_INSTITUTION_WRITER_ROLE", "kg_ci_slice6_institution_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_TEMPLATE_WRITER_ROLE", "kg_ci_slice6_template_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_REVIEW_WRITER_ROLE", "kg_ci_slice6_review_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE", "kg_ci_slice6_worker_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_CLINICAL_READER_ROLE", "kg_ci_slice6_clinical_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE6_FAMILY_READER_ROLE", "kg_ci_slice6_family_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )

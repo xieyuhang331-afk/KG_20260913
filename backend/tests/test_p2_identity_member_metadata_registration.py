@@ -4,6 +4,7 @@ from pathlib import Path
 from app.core.database import Base
 from app.modules.assessment_readiness import models as slice4_models  # noqa: F401
 from app.modules.health_assessment import models as slice5_models  # noqa: F401
+from app.modules.health_plan import models as slice6_models  # noqa: F401
 from app.modules.member_enrollment import models as slice3_models  # noqa: F401
 
 
@@ -101,6 +102,15 @@ PHASE1_SLICE5_TABLES = {
         "slice5_delivery",
     )
 }
+PHASE1_SLICE6_TABLES = {
+    f"public.{name}"
+    for name in (
+        "health_plan_template_version", "health_plan_generation_request",
+        "health_plan_version", "health_plan_review", "health_plan_explanation",
+        "health_plan_user_decision", "health_plan_receipt", "health_plan_audit",
+        "health_plan_outbox", "health_plan_delivery",
+    )
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -146,4 +156,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
         } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
             CANONICAL_HEALTH_FACT_TABLE
-        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES | PHASE1_SLICE3_TABLES | PHASE1_SLICE4_TABLES | PHASE1_SLICE5_TABLES
+        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES | PHASE1_SLICE3_TABLES | PHASE1_SLICE4_TABLES | PHASE1_SLICE5_TABLES | PHASE1_SLICE6_TABLES
