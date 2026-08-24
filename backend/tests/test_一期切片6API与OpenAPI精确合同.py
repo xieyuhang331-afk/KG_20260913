@@ -37,12 +37,12 @@ def _app() -> FastAPI:
 
 
 def test_Slice6公开路由集合和错误目录精确冻结() -> None:
-    app = _app()
+    paths = _app().openapi()["paths"]
     actual = {
-        (method, route.path)
-        for route in app.routes
-        for method in getattr(route, "methods", set())
-        if route.path.startswith("/api/v1/") and method not in {"HEAD", "OPTIONS"}
+        (method.upper(), path)
+        for path, path_item in paths.items()
+        for method in path_item
+        if method in {"get", "post", "put", "patch", "delete"}
     }
     assert actual == EXPECTED_ROUTES
     assert set(SLICE6_ROUTE_ERROR_CODES) == EXPECTED_ROUTES
