@@ -40,7 +40,12 @@ CATALOG_V2 = MappingProxyType(
         "diastolic_bp": "mmHg",
         "heart_rate": "bpm",
         "fasting_glucose": "mmol/L",
+        "postprandial_glucose_2h": "mmol/L",
         "hba1c": "%",
+        "total_cholesterol": "mmol/L",
+        "triglyceride": "mmol/L",
+        "hdl_c": "mmol/L",
+        "ldl_c": "mmol/L",
         "weight": "kg",
         "height": "cm",
         "waist": "cm",
@@ -222,6 +227,7 @@ class CanonicalHealthFactDraft:
     fact_ref: UUID | None = None
     report_id: UUID | None = None
     catalog_version: int = CATALOG_VERSION
+    measurement_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +253,7 @@ class CanonicalHealthFact:
     subject_member_id: UUID | None = None
     fact_ref: UUID | None = None
     report_id: UUID | None = None
+    measurement_context: str | None = None
 
 
 def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
@@ -295,6 +302,17 @@ def _validate_draft(draft: CanonicalHealthFactDraft) -> None:
         raise HealthFactRequestInvalid("Health fact report binding is invalid")
     if draft.catalog_version == 1 and draft.report_id is not None:
         raise HealthFactRequestInvalid("Health fact report binding is invalid")
+    contexts = {
+        "systolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+        "diastolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+        "fasting_glucose": {"FASTING_VENOUS"},
+        "postprandial_glucose_2h": {"OGTT_2H_VENOUS"},
+        "hba1c": {"LAB"},
+        "total_cholesterol": {"FASTING_LAB"}, "triglyceride": {"FASTING_LAB"},
+        "hdl_c": {"FASTING_LAB"}, "ldl_c": {"FASTING_LAB"},
+    }
+    if draft.measurement_context is not None and draft.measurement_context not in contexts.get(draft.indicator_code, set()):
+        raise HealthFactRequestInvalid("Health fact measurement context is invalid")
     if not draft.source_identity or len(draft.source_identity) > 512:
         raise HealthFactSourceForbidden("Health fact source is forbidden")
     if not draft.producer_event_key or len(draft.producer_event_key) > 128:
@@ -340,6 +358,7 @@ def _payload_bytes(draft: CanonicalHealthFactDraft) -> bytes:
         "created_by": draft.created_by,
         "indicator_code": draft.indicator_code,
         "measured_at": measured_at,
+        "measurement_context": draft.measurement_context,
         "numeric_value": format(draft.numeric_value.quantize(Decimal("0.01")), "f"),
         "producer_event_key": draft.producer_event_key,
         "source_type": draft.source_type,
@@ -398,6 +417,7 @@ def prepare_fact(
         subject_member_id=draft.subject_member_id,
         fact_ref=draft.fact_ref,
         report_id=draft.report_id,
+        measurement_context=draft.measurement_context,
     )
 
 

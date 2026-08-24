@@ -698,10 +698,11 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         "INSERT INTO public.canonical_health_fact(subject_user_id,indicator_code,catalog_version,"
         "value_kind,numeric_value,unit,measured_at,received_at,created_at,source_type,"
         "source_identity_digest,producer_event_key,payload_digest,digest_key_id,supersedes_fact_id,"
-        "correction_reason_code,created_by,fact_ref,subject_member_id) VALUES (NULL,'fasting_glucose',"
+        "correction_reason_code,created_by,fact_ref,subject_member_id,measurement_context) "
+        "VALUES (NULL,'fasting_glucose',"
         "2,'NUMERIC',6.10,'mmol/L',now()-interval '1 hour',now(),now(),'APP',repeat('4',64),"
         f"'slice4-state-{fact_ref}',repeat('5',64),'health-k1',NULL,NULL,{actor_user_id},"
-        f"'{fact_ref}','{subject_member_id}') RETURNING id"
+        f"'{fact_ref}','{subject_member_id}','FASTING_VENOUS') RETURNING id"
     )
     await pg_database._execute(
         "INSERT INTO public.health_fact_status_event(status_event_id,fact_id,event_no,"
@@ -816,6 +817,7 @@ async def test_PG18_PG29_AssessmentOwner函数原子追加并更新当前指针(
         "WHERE f.assembly_id=$1 ORDER BY f.indicator_code",
         ready["assembly_id"], generation_id,
     )
+    assert stored_facts[0]["measurement_context"] == "FASTING_VENOUS"
 
     def _json(value):
         return json.loads(value) if isinstance(value, str) else value
@@ -1343,7 +1345,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     slice4_institution_reader_database,
     slice4_identity_authority_database,
 ) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
     databases = (
         health_record_writer_database,
         assessment_readiness_writer_database,
@@ -2000,15 +2002,48 @@ async def test_PG07_D16_D19_真实HealthReader按Member双水位解析READY并�
         "/api/v1/family/health-indicators",
         headers={**authorization, "Idempotency-Key": "slice4-ready-reader-0001"},
         json={
-            "items": [{
-                "indicator_code": "weight", "value": "71.20", "unit": "kg",
-                "measured_at": "2026-08-20T10:00:00+08:00",
-                "source_type": "APP", "report_id": None,
-            }]
+            "items": [
+                {
+                    "indicator_code": code, "value": value, "unit": unit,
+                    "measured_at": "2026-08-20T10:00:00+08:00",
+                    "source_type": "APP", "report_id": None,
+                    "measurement_context": context,
+                }
+                for code, value, unit, context in (
+                    ("hba1c", "5.60", "%", "LAB"),
+                    ("fasting_glucose", "5.60", "mmol/L", "FASTING_VENOUS"),
+                    ("postprandial_glucose_2h", "7.50", "mmol/L", "OGTT_2H_VENOUS"),
+                    ("total_cholesterol", "5.10", "mmol/L", "FASTING_LAB"),
+                    ("triglyceride", "1.20", "mmol/L", "FASTING_LAB"),
+                    ("hdl_c", "1.30", "mmol/L", "FASTING_LAB"),
+                    ("ldl_c", "2.80", "mmol/L", "FASTING_LAB"),
+                    ("systolic_bp", "119", "mmHg", "OFFICE"),
+                    ("diastolic_bp", "79", "mmHg", "OFFICE"),
+                )
+            ]
         },
     )
     assert created.status_code == 201, created.json()
-    fact_ref = UUID(created.json()["items"][0]["fact_ref"])
+    fact_ref = UUID(next(
+        item["fact_ref"]
+        for item in created.json()["items"]
+        if item["indicator_code"] == "hba1c"
+    ))
+    expected_contexts = {
+        "hba1c": "LAB", "fasting_glucose": "FASTING_VENOUS",
+        "postprandial_glucose_2h": "OGTT_2H_VENOUS",
+        "total_cholesterol": "FASTING_LAB", "triglyceride": "FASTING_LAB",
+        "hdl_c": "FASTING_LAB", "ldl_c": "FASTING_LAB",
+        "systolic_bp": "OFFICE", "diastolic_bp": "OFFICE",
+    }
+    assert {
+        row["indicator_code"]: row["measurement_context"]
+        for row in await pg_database._fetch_rows(
+            "SELECT indicator_code,measurement_context FROM public.canonical_health_fact "
+            "WHERE fact_ref=ANY($1::uuid[])",
+            [UUID(item["fact_ref"]) for item in created.json()["items"]],
+        )
+    } == expected_contexts
     fact_id = await pg_database._fetch_value(
         "SELECT id FROM public.canonical_health_fact WHERE fact_ref=$1", fact_ref
     )
@@ -2041,12 +2076,20 @@ async def test_PG07_D16_D19_真实HealthReader按Member双水位解析READY并�
     assert high_watermark["max_fact_id"] >= fact_id
     assert high_watermark["max_status_event_seq"] >= status_seq
     response = real_db_client.get(
-        "/api/v1/family/health-indicators/history?indicator_code=weight",
+        "/api/v1/family/health-indicators/history?indicator_code=hba1c",
         headers=authorization,
     )
     assert response.status_code == 200, response.json()
     assert response.json()["items"][0]["fact_ref"] == str(fact_ref)
     assert response.json()["items"][0]["verification_state"] == "SELF_REPORTED"
+    assert {
+        row["indicator_code"]: row["measurement_context"]
+        for row in await pg_database._fetch_rows(
+            "SELECT indicator_code,measurement_context FROM public.health_projection_fact "
+            "WHERE generation_id=$1 AND fact_ref=ANY($2::uuid[])",
+            generation_id, [UUID(item["fact_ref"]) for item in created.json()["items"]],
+        )
+    } == expected_contexts
 
 
 @pytest.mark.asyncio

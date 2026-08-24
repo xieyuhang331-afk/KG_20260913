@@ -2,6 +2,9 @@ import importlib.util
 from pathlib import Path
 
 from app.core.database import Base
+from app.modules.assessment_readiness import models as slice4_models  # noqa: F401
+from app.modules.health_assessment import models as slice5_models  # noqa: F401
+from app.modules.member_enrollment import models as slice3_models  # noqa: F401
 
 
 CORE_TABLES = {
@@ -83,6 +86,21 @@ PHASE1_SLICE3_TABLES = {
     "public.member_enrollment_outbox",
     "public.member_enrollment_delivery",
 }
+PHASE1_SLICE4_TABLES = {
+    "public.assessment_readiness_policy_version",
+    "public.assessment_input_assembly",
+    "public.assessment_input_assembly_fact",
+    "public.assessment_readiness_case_pointer",
+}
+PHASE1_SLICE5_TABLES = {
+    f"public.{name}"
+    for name in (
+        "assessment_rule_set_version", "health_assessment", "assessment_input_snapshot",
+        "assessment_module_result", "high_risk_task", "high_risk_task_action",
+        "assessment_dispute", "slice5_idempotency", "slice5_audit", "slice5_outbox",
+        "slice5_delivery",
+    )
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -128,4 +146,4 @@ def test_alembic_target_metadata_registers_identity_member():
         IDENTITY_SUBMISSION_TABLE,
         } | ELIGIBILITY_EVIDENCE_TABLES | IDENTITY_BOOTSTRAP_TABLES | {
             CANONICAL_HEALTH_FACT_TABLE
-        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES | PHASE1_SLICE3_TABLES
+        } | LEGACY_MAPPING_TABLES | PROJECTION_BUILDER_TABLES | PROJECTION_SHADOW_TABLES | PHASE1_SLICE1_TABLES | PHASE1_SLICE2_TABLES | PHASE1_SLICE3_TABLES | PHASE1_SLICE4_TABLES | PHASE1_SLICE5_TABLES

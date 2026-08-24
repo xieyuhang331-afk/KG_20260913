@@ -53,6 +53,18 @@ class AssessmentReadinessRepository:
         ).mappings().one()
         return dict(row)
 
+    async def bind_measurement_contexts(self, assembly_id: UUID, fact_rows: list[dict]) -> None:
+        await self._session.execute(
+            text(
+                "SELECT public.slice5_assembly_measurement_context_bind_v1("
+                ":assembly_id,CAST(:facts AS jsonb))"
+            ),
+            {
+                "assembly_id": assembly_id,
+                "facts": json.dumps(fact_rows, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
+            },
+        )
+
     async def confirm_assembly(
         self, *, assembly_id: UUID, audit_id: UUID, event_id: UUID
     ) -> dict | None:

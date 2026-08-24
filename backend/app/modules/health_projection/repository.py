@@ -146,6 +146,16 @@ class HealthProjectionRepository:
             )
         )
         payload = dict(result.scalar_one())
+        fact_refs = [UUID(str(row["fact_ref"])) for row in payload["facts"]]
+        context_rows = ()
+        if fact_refs:
+            context_rows = (
+                await self.session.execute(
+                    text("SELECT * FROM public.slice5_measurement_context_projection_v1(:fact_refs)"),
+                    {"fact_refs": fact_refs},
+                )
+            ).mappings().all()
+        contexts = {UUID(str(row["fact_ref"])): row["measurement_context"] for row in context_rows}
         return tuple(
             HealthCurrentFactV2(
                 id=int(row["fact_id"]),
@@ -163,6 +173,7 @@ class HealthProjectionRepository:
                 superseded=False,
                 fact_payload_digest=str(row["fact_payload_digest"]),
                 status_event_digest=str(row["status_event_digest"]),
+                measurement_context=contexts.get(UUID(str(row["fact_ref"]))),
             )
             for row in payload["facts"]
         )
@@ -281,6 +292,7 @@ class HealthProjectionRepository:
                 measured_at=row.measured_at,
                 received_at=row.received_at,
                 source_type=row.source_type,
+                measurement_context=row.measurement_context,
                 business_day=row.business_day,
                 window_start_utc=row.window_start_utc,
                 window_end_utc=row.window_end_utc,

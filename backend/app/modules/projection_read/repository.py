@@ -187,20 +187,22 @@ class MemberHealthProjectionReadRepository:
             "limit": limit,
         }
         if cursor is not None:
-            cursor_sql = " AND (measured_at,fact_ref)<(:cursor_measured_at,:cursor_fact_ref)"
+            cursor_sql = " AND (f.measured_at,f.fact_ref)<(:cursor_measured_at,:cursor_fact_ref)"
             parameters.update(
                 cursor_measured_at=cursor[0], cursor_fact_ref=cursor[1]
             )
         rows = (
             await self.session.execute(
                 sa.text(
-                    "SELECT generation_id,fact_ref,subject_member_id,subject_user_id,indicator_code,"
-                    "numeric_value,unit,measured_at,received_at,source_type,business_day,"
-                    "verification_state,status_event_seq FROM public.health_ready_projection_fact_v2 "
-                    "WHERE generation_id=:generation_id AND subject_member_id=:subject_member_id "
-                    "AND indicator_code=ANY(:indicators) AND measured_at>=:measured_from "
-                    "AND measured_at<:measured_to" + cursor_sql
-                    + " ORDER BY measured_at DESC,fact_ref DESC LIMIT :limit"
+                    "SELECT f.generation_id,f.fact_ref,f.subject_member_id,f.subject_user_id,f.indicator_code,"
+                    "f.numeric_value,f.unit,f.measured_at,f.received_at,f.source_type,f.business_day,"
+                    "verification_state,status_event_seq,c.measurement_context FROM public.health_ready_projection_fact_v2 f "
+                    "LEFT JOIN public.slice5_ready_projection_measurement_context_v1 c "
+                    "ON c.generation_id=f.generation_id AND c.fact_ref=f.fact_ref "
+                    "WHERE f.generation_id=:generation_id AND f.subject_member_id=:subject_member_id "
+                    "AND f.indicator_code=ANY(:indicators) AND f.measured_at>=:measured_from "
+                    "AND f.measured_at<:measured_to" + cursor_sql
+                    + " ORDER BY f.measured_at DESC,f.fact_ref DESC LIMIT :limit"
                 ),
                 parameters,
             )
@@ -220,6 +222,7 @@ class MemberHealthProjectionReadRepository:
                 business_day=row["business_day"],
                 verification_state=row["verification_state"],
                 status_event_seq=row["status_event_seq"],
+                measurement_context=row["measurement_context"],
             )
             for row in rows
         )

@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260823_0028"
+EXPECTED_HEAD = "20260824_0029"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260823_0028; found stale revision 20260816_0020"
+    "20260824_0029; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -832,6 +832,12 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_SLICE4_CLINICAL_READER_ROLE", "kg_ci_clinical_reader_test_run")
         monkeypatch.setenv("KG_TEST_SLICE4_INSTITUTION_READER_ROLE", "kg_ci_institution_reader_test_run")
         monkeypatch.setenv("KG_TEST_SLICE4_IDENTITY_AUTHORITY_ROLE", "kg_ci_identity_authority_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_ASSESSMENT_WRITER_ROLE", "kg_ci_slice5_assessment_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_RISK_WORKFLOW_WRITER_ROLE", "kg_ci_slice5_risk_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_RULE_GOVERNANCE_WRITER_ROLE", "kg_ci_slice5_rule_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_WORKFLOW_WORKER_ROLE", "kg_ci_slice5_worker_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_CLINICAL_READER_ROLE", "kg_ci_slice5_clinical_test_run")
+        monkeypatch.setenv("KG_TEST_SLICE5_OVERSIGHT_READER_ROLE", "kg_ci_slice5_oversight_test_run")
         monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
@@ -1246,8 +1252,8 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
     assert 'values["KG_IDENTITY_PII_HMAC_KEY_B64"]' in backend_integration_job
     assert "Member enrollment key material is not isolated" in backend_integration_job
     assert "*member_enrollment_key_materials.values()," in backend_integration_job
-    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 3
-    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 3
+    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 4
+    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 4
     assert backend_integration_job.count(
         'key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"'
     ) == 1
@@ -1303,6 +1309,56 @@ def test_slice4_runtime_roles_urls_and_keyrings_are_created_masked_and_propagate
         declaration = f'"{prefix}": "{purpose}"'
         assert backend_integration_job.count(declaration) == 1
         assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+def test_slice5_runtime_roles_urls_and_keyrings_are_created_masked_and_propagated():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    runtime_prefixes = {
+        "KG_SLICE5_ASSESSMENT_WRITER": "slice5_assessment_role",
+        "KG_SLICE5_RISK_WORKFLOW_WRITER": "slice5_risk_role",
+        "KG_SLICE5_RULE_GOVERNANCE_WRITER": "slice5_rule_role",
+        "KG_SLICE5_WORKFLOW_WORKER": "slice5_worker_role",
+        "KG_SLICE5_CLINICAL_READER": "slice5_clinical_role",
+        "KG_SLICE5_OVERSIGHT_READER": "slice5_oversight_role",
+    }
+    export_position = backend_integration_job.index("GITHUB_ENV")
+    for prefix, role_variable in runtime_prefixes.items():
+        test_prefix = prefix.replace("KG_", "KG_TEST_", 1)
+        assert backend_integration_job.count(
+            f'"{test_prefix}_DATABASE_URL": "{test_prefix}_ROLE"'
+        ) == 1
+        assert backend_integration_job.count(f'CREATE ROLE :"{role_variable}" LOGIN') == 1
+        assert backend_integration_job.index(f'"{prefix}",') < export_position
+
+    key_purposes = {"KG_SLICE5_DIGEST": "digest", "KG_SLICE5_PHI": "phi"}
+    mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
+    assert "slice5_key_materials = {" in backend_integration_job
+    assert "Slice 5 key material is not isolated" in backend_integration_job
+    for prefix, purpose in key_purposes.items():
+        declaration = f'"{prefix}": "{purpose}"'
+        assert backend_integration_job.count(declaration) == 1
+        assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+def test_slice5_ci_uses_disposable_rabbitmq_and_an_independent_worker():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    worker = _workflow_step_block("Start independent Slice 5 Celery worker")
+    contract = _workflow_step_block(
+        "Run Slice 5 RabbitMQ and independent worker contract"
+    )
+    cleanup = _workflow_step_block("Stop independent Slice 5 Celery worker")
+
+    assert "slice5-assessment-workflow" in worker
+    assert "--pool=solo" in worker
+    assert 'worker_ready="false"' in worker
+    assert 'worker_ready="true"' in worker
+    assert '[[ "$worker_ready" != "true" ]]' in worker
+    assert "KG_TEST_SLICE5_REAL_RABBIT" in contract
+    assert "test_一期切片5Outbox与RabbitMQ闭环.py" in contract
+    assert "pytest-slice5-rabbit-report.xml" in contract
+    assert "        if: always()" in cleanup
+    assert 'kill "$worker_pid"' in cleanup
+    assert "kg-slice5-worker.log" in cleanup
 
 
 SLICE3_RUNTIME_KEYRING_PREFIXES = (
