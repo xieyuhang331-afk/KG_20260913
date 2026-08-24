@@ -73,7 +73,7 @@ async def _seed_closure_sources(application_database) -> None:
 
 
 def test_0020对象与四身份最小权限(pg_database, application_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260825_0030"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260826_0031"
     assert pg_database.fetch_value("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('institution_invitation','institution_onboarding_account','institution_application','institution_application_revision','institution_license','private_file','institution_onboarding_idempotency','institution_onboarding_audit','institution_onboarding_outbox','institution_onboarding_delivery')") == 10
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
