@@ -60,8 +60,8 @@ export function IdentityReviewListPage() {
     <main className="mx-auto w-full max-w-[1280px] space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-teal-700">会员治理 / 身份终审</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">会员实名认证审核</h1>
+          <p className="text-xs font-semibold tracking-wide text-teal-700">用户治理 / 身份终审</p>
+          <h1 className="mt-1 text-2xl font-semibold text-slate-950">用户实名认证审核</h1>
           <p className="mt-2 text-sm text-slate-500">仅显示脱敏身份摘要；领取后按当前实名材料版本终审。</p>
         </div>
         <button
@@ -187,7 +187,7 @@ function reviewStatusLabel(status: string) {
       INSTITUTION_CHECKED: "机构核验通过，待平台终审",
       CLAIMED: "审核员已领取",
       PLATFORM_REVIEWING: "平台审核中",
-      NEEDS_CORRECTION: "待会员补正",
+      NEEDS_CORRECTION: "待用户补正",
       VERIFIED: "审核已通过",
       APPROVED: "审核已通过",
       REJECTED: "审核未通过",

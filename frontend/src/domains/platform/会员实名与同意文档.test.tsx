@@ -4,17 +4,26 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsentDocumentPage } from "./pages/ConsentDocumentPage";
 import { IdentityReviewListPage } from "./pages/实名认证审核列表页";
+import { platformNavigation } from "./navigation";
 
-describe("平台会员实名与同意文档", () => {
+describe("平台用户实名与同意文档", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it("实名队列使用会员审核业务语言", () => {
-    render(<IdentityReviewListPage />, { wrapper: MemoryRouter });
-    expect(screen.getByRole("heading", { name: "会员实名认证审核" })).toBeInTheDocument();
-  });
+	it("实名队列使用用户审核业务语言而非会员身份", () => {
+		render(<IdentityReviewListPage />, { wrapper: MemoryRouter });
+		expect(screen.getByRole("heading", { name: "用户实名认证审核" })).toBeInTheDocument();
+		expect(screen.queryByText(/会员实名认证/)).not.toBeInTheDocument();
+	});
+
+	it("平台正式导航使用用户实名术语并保留原路由", () => {
+		expect(platformNavigation).toEqual(
+			expect.arrayContaining([expect.objectContaining({ label: "用户实名审核", path: "/platform/identity-reviews" })]),
+		);
+		expect(platformNavigation.map((item) => item.label)).not.toContain("会员实名审核");
+	});
 
   it("同意文档使用业务语言说明中文正文、重新同意与生效规则", () => {
     render(<ConsentDocumentPage />, { wrapper: MemoryRouter });
