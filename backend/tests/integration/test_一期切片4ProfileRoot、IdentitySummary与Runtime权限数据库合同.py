@@ -1343,7 +1343,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     slice4_institution_reader_database,
     slice4_identity_authority_database,
 ) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
     databases = (
         health_record_writer_database,
         assessment_readiness_writer_database,

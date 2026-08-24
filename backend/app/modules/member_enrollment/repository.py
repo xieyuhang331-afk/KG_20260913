@@ -393,6 +393,68 @@ class MemberEnrollmentRepository:
             )
         return preimage
 
+    async def case_enrollment_preimage_for_update(
+        self,
+        *,
+        assignment_id: UUID,
+        enrollment_id: UUID,
+        therapist_id: UUID,
+        actor_user_id: int,
+    ):
+        assignment_uuid = UUID(str(assignment_id))
+        enrollment_uuid = UUID(str(enrollment_id))
+        therapist_uuid = UUID(str(therapist_id))
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice3_case_enrollment_preimage_authority_v1("
+                ":assignment_id,:enrollment_id,:therapist_id,:actor_user_id)"
+            ).bindparams(
+                bindparam("assignment_id", type_=PostgreSQLUUID(as_uuid=True)),
+                bindparam("enrollment_id", type_=PostgreSQLUUID(as_uuid=True)),
+                bindparam("therapist_id", type_=PostgreSQLUUID(as_uuid=True)),
+            ),
+            {
+                "assignment_id": assignment_uuid,
+                "enrollment_id": enrollment_uuid,
+                "therapist_id": therapist_uuid,
+                "actor_user_id": actor_user_id,
+            },
+        )
+        preimage = result.scalar_one_or_none()
+        if preimage is None:
+            return None
+        expected_columns = {
+            column.name for column in ServiceEnrollmentModel.__table__.columns
+        }
+        if type(preimage) is not dict or set(preimage) != expected_columns:
+            raise RuntimeError("Slice 3 case enrollment preimage is invalid")
+        plan = self._plan()
+        if plan is not None:
+            key = self._json_value({"enrollment_id": enrollment_uuid})
+            value = self._json_value(preimage)
+            matching = [
+                row
+                for row in plan.setdefault("pre_rows", [])
+                if row["table"] == ServiceEnrollmentModel.__table__.name
+                and row["key"] == key
+            ]
+            if matching and any(row["value"] != value for row in matching):
+                raise RuntimeError("Slice 3 case enrollment preimage changed")
+            if not matching:
+                plan["pre_rows"].append(
+                    {
+                        "table": ServiceEnrollmentModel.__table__.name,
+                        "key": key,
+                        "value": value,
+                    }
+                )
+            self._record_expected_row(
+                ServiceEnrollmentModel.__table__,
+                preimage,
+                key={"enrollment_id": enrollment_uuid},
+            )
+        return preimage
+
     async def case_enrollment_for_update(self, enrollment_id: UUID):
         result = await self.session.execute(
             select(
@@ -1136,7 +1198,28 @@ class MemberEnrollmentRepository:
             ),
             {"therapist_id": therapist_id},
         )
-        return result.mappings().one_or_none()
+        current = result.mappings().one_or_none()
+        plan = self._plan()
+        if current is not None and plan is not None:
+            key = self._json_value({"therapist_id": therapist_id})
+            value = self._json_value(dict(current))
+            matching = [
+                row
+                for row in plan.setdefault("pre_rows", [])
+                if row["table"] == "therapist_profile" and row["key"] == key
+            ]
+            if matching and any(row["value"] != value for row in matching):
+                raise RuntimeError("Slice 3 case therapist preimage changed")
+            if not matching:
+                plan["pre_rows"].append(
+                    {"table": "therapist_profile", "key": key, "value": value}
+                )
+            self._record_expected_named_row(
+                "therapist_profile",
+                dict(current),
+                key={"therapist_id": therapist_id},
+            )
+        return current
 
     async def assignment_candidate_guard(
         self, therapist_id: UUID, tenant_id: int, service_scope_tags: tuple[str, ...]
@@ -1245,35 +1328,34 @@ class MemberEnrollmentRepository:
     async def update_therapist_case_count(self, therapist_id: UUID, *, expected_version: int, now) -> bool:
         plan = self._plan()
         if plan is not None:
-            result = await self.session.execute(
-                text(
-                    "SELECT therapist_id,tenant_id,status,service_tags,capacity_limit,"
-                    "active_case_count,current_qualification_version_id,"
-                    "qualification_valid_until,updated_at,version "
-                    "FROM public.therapist_profile WHERE therapist_id=:therapist_id FOR UPDATE"
+            key = self._json_value({"therapist_id": therapist_id})
+            expected_columns = {
+                "therapist_id", "tenant_id", "status", "service_tags",
+                "capacity_limit", "active_case_count",
+                "current_qualification_version_id", "qualification_valid_until",
+                "version",
+            }
+            current = next(
+                (
+                    row["value"]
+                    for row in plan.setdefault("rows", [])
+                    if row["table"] == "therapist_profile" and row["key"] == key
                 ),
-                {"therapist_id": therapist_id},
+                None,
             )
-            current = result.mappings().one_or_none()
-            if current is not None:
-                plan.setdefault("pre_rows", []).append(
-                    {
-                        "table": "therapist_profile",
-                        "key": self._json_value({"therapist_id": therapist_id}),
-                        "value": self._json_value(dict(current)),
-                    }
-                )
-                expected = dict(current)
-                expected.update(
-                    active_case_count=current["active_case_count"] + 1,
-                    updated_at=now,
-                    version=current["version"] + 1,
-                )
-                self._record_expected_named_row(
-                    "therapist_profile",
-                    expected,
-                    key={"therapist_id": therapist_id},
-                )
+            if type(current) is not dict or set(current) != expected_columns:
+                raise RuntimeError("Slice 3 case therapist preimage is invalid")
+            expected = dict(current)
+            expected.update(
+                active_case_count=current["active_case_count"] + 1,
+                updated_at=now,
+                version=current["version"] + 1,
+            )
+            self._record_expected_named_row(
+                "therapist_profile",
+                expected,
+                key={"therapist_id": therapist_id},
+            )
         result = await self.session.execute(
             text(
                 "UPDATE public.therapist_profile SET active_case_count=active_case_count+1,"
@@ -1367,6 +1449,14 @@ class MemberEnrollmentRepository:
             select(*ServiceCaseModel.__table__.c)
             .where(ServiceCaseModel.case_id == case_id)
             .with_for_update()
+        )
+        return result.mappings().one_or_none()
+
+    async def service_case_after_create(self, case_id: UUID):
+        result = await self.session.execute(
+            select(*ServiceCaseModel.__table__.c).where(
+                ServiceCaseModel.case_id == case_id
+            )
         )
         return result.mappings().one_or_none()
 
