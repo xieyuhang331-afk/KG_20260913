@@ -18,7 +18,7 @@ def test_0016升级Schema和四角色权限矩阵(
     mapping_audit_database,
     mapping_shadow_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
     assert pg_database.fetch_value("SELECT to_regclass('public.organization_legacy_mapping') IS NOT NULL")
     assert pg_database.fetch_value("SELECT to_regclass('public.health_indicator_legacy_mapping') IS NOT NULL")
     assert pg_database.fetch_value(

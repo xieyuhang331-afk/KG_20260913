@@ -1667,8 +1667,11 @@ class MemberEnrollmentService:
         if subject_guard is None or subject_guard["proxy_authorized"] is not True:
             raise MemberEnrollmentConflict("PROXY_GRANT_INVALID")
         await self.repo.lock_consent_boundary(assignment["enrollment_id"])
-        enrollment = await self.repo.case_enrollment_for_update(
-            assignment["enrollment_id"]
+        enrollment = await self.repo.case_enrollment_preimage_for_update(
+            assignment_id=assignment_id,
+            enrollment_id=assignment["enrollment_id"],
+            therapist_id=assignment["therapist_id"],
+            actor_user_id=context.actor.id,
         )
         readiness = await self.repo.readiness_guard(assignment["tenant_id"])
         therapist = await self.repo.therapist_for_case_update(assignment["therapist_id"])

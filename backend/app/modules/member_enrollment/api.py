@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -365,6 +366,13 @@ def _enrollment_list_row(row) -> dict:
     value = _public_row(row)
     for field in ("identity", "proxy", "consents", "assignment"):
         value.pop(field, None)
+    return value
+
+
+def _assignment_list_row(row) -> dict:
+    value = _public_row(row)
+    value.pop("subject_masked_label", None)
+    value.pop("therapist_display_name", None)
     return value
 
 
@@ -873,10 +881,14 @@ async def _platform_tenant(
     )
 
 
-async def _therapist_current(authority, actor: CurrentUser):
+async def _therapist_current(
+    authority, actor: CurrentUser, *, lock_profile: bool = True
+):
     if actor.role != "therapist" or actor.tenant_id is None: raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
-    result=await authority.execute(text('SELECT p.therapist_id,p.tenant_id,p.status,u.role,u.status AS user_status,u.tenant_id AS user_tenant_id FROM public.therapist_profile p JOIN public."user" u ON u.id=p.user_id WHERE u.id=:user_id FOR SHARE OF p,u'),{"user_id":actor.id}); row=result.mappings().one_or_none()
-    if row is None or row["status"]!="APPROVED_ACTIVE" or row["role"]!="therapist" or row["user_status"]!="active" or row["tenant_id"]!=actor.tenant_id or row["user_tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
+    lock_clause = "FOR SHARE OF p,u" if lock_profile else "FOR SHARE OF u"
+    result=await authority.execute(text(f'SELECT p.therapist_id,p.tenant_id,p.status,p.current_qualification_version_id,p.qualification_valid_until,u.role,u.status AS user_status,u.tenant_id AS user_tenant_id FROM public.therapist_profile p JOIN public."user" u ON u.id=p.user_id WHERE u.id=:user_id {lock_clause}'),{"user_id":actor.id}); row=result.mappings().one_or_none()
+    business_date = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).date()
+    if row is None or row["status"]!="APPROVED_ACTIVE" or row["current_qualification_version_id"] is None or row["qualification_valid_until"] is None or row["qualification_valid_until"]<business_date or row["role"]!="therapist" or row["user_status"]!="active" or row["tenant_id"]!=actor.tenant_id or row["user_tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
     return row
 
 
@@ -1180,7 +1192,7 @@ async def retire_document(document_version_id:UuidV7,payload:ConsentRetireReques
 async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
     therapist=await _therapist_current(authority,actor); predicates={"therapist_id":therapist["therapist_id"]}
     if status is not None: predicates["status"]=status
-    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_public_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_assignment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
 
 
 @therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO, summary="Therapist Assignment")
@@ -1192,13 +1204,13 @@ async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUse
 
 @therapist_router.post("/primary-assignments/{assignment_id}/accept", response_model=PreparingCaseDTO,status_code=201)
 async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    therapist=await _therapist_current(authority,actor); repo=MemberEnrollmentRepository(session); assignment=await repo.assignment_for_update(assignment_id)
+    therapist=await _therapist_current(authority,actor,lock_profile=False); repo=MemberEnrollmentRepository(session); assignment=await repo.assignment_for_update(assignment_id)
     if assignment is None: raise _error("ASSIGNMENT_NOT_FOUND")
-    if assignment["therapist_id"]!=therapist["therapist_id"]: raise _error("THERAPIST_SCOPE_FORBIDDEN")
-    enrollment=await repo.enrollment_for_update(assignment["enrollment_id"]); public_id=await _tenant_public_id(institution_authority,assignment["tenant_id"]); context=_context(request,actor,assignment["tenant_id"],public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
+    if str(assignment["therapist_id"])!=str(therapist["therapist_id"]): raise _error("THERAPIST_SCOPE_FORBIDDEN")
+    enrollment=await repo.case_enrollment_for_update(assignment["enrollment_id"]); public_id=await _tenant_public_id(institution_authority,assignment["tenant_id"]); context=_context(request,actor,assignment["tenant_id"],public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
     if replay is not None: return replay
     required=("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK") + (("PROXY_AUTHORIZATION",) if enrollment["mode"]=="PROXY_ELDER" else ())
-    case_id=await _safe(_service(session).accept_assignment(context,assignment_id,expected_version=payload.expected_version,required_document_types=required)); row=await repo.service_case_for_update(case_id); result=_case(row,public_id)
+    case_id=await _safe(_service(session).accept_assignment(context,assignment_id,expected_version=payload.expected_version,required_document_types=required)); row=await repo.service_case_after_create(case_id); result=_case(row,public_id)
     return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_ACCEPT",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
