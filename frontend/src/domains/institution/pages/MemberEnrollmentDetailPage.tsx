@@ -1,6 +1,7 @@
 import {
 	ArrowLeft,
 	CheckCircle2,
+	Clock3,
 	FileHeart,
 	RefreshCw,
 	ShieldCheck,
@@ -41,6 +42,27 @@ const scopeOptions: Array<{ value: ServiceScopeTag; label: string }> = [
 	{ value: "HYPERTENSION", label: "高血压" },
 	{ value: "OBESITY", label: "肥胖" },
 ];
+
+const institutionReviewableIdentityStatuses = new Set([
+	"SUBMITTED",
+	"RESUBMITTED",
+]);
+const knownIdentityStatuses = new Set([
+	"SUBMITTED",
+	"INSTITUTION_CHECKED",
+	"PLATFORM_REVIEWING",
+	"NEEDS_CORRECTION",
+	"RESUBMITTED",
+	"VERIFIED",
+	"REJECTED",
+]);
+const requiredConsentTypes = [
+	"USER_AGREEMENT",
+	"PRIVACY_POLICY",
+	"HEALTH_DATA_PROCESSING",
+	"INSTITUTION_SERVICE",
+	"NON_MEDICAL_RISK",
+] as const;
 
 export function MemberEnrollmentDetailPage() {
 	const { enrollmentId = "" } = useParams();
@@ -118,9 +140,13 @@ export function MemberEnrollmentDetailPage() {
 
 	async function submitIdentity(event: React.FormEvent<HTMLFormElement>) {
 		event.preventDefault();
-		if (!detail?.identity) {
+		if (
+			!detail?.identity ||
+			!institutionReviewableIdentityStatuses.has(detail.identity.status) ||
+			hasUnsafeStateCombination(detail)
+		) {
 			setFeedback({
-				message: "服务客户尚未提交实名资料，当前不能核验。",
+				message: "当前实名状态不可由机构提交核验，请刷新后重试。",
 				tone: "error",
 			});
 			return;
@@ -156,9 +182,17 @@ export function MemberEnrollmentDetailPage() {
 
 	async function submitAssignment(event: React.FormEvent<HTMLFormElement>) {
 		event.preventDefault();
-		if (!detail || !therapistId || scopeTags.length === 0) {
+		if (
+			!detail ||
+			hasUnsafeStateCombination(detail) ||
+			detail.identity?.status !== "VERIFIED" ||
+			!hasRequiredConsents(detail) ||
+			detail.assignment ||
+			!therapistId ||
+			scopeTags.length === 0
+		) {
 			setFeedback({
-				message: "请选择主健管师和至少一个服务领域。",
+				message: "当前状态尚不能创建主健管师分配，请刷新并确认实名与服务同意状态。",
 				tone: "error",
 			});
 			return;
@@ -186,7 +220,11 @@ export function MemberEnrollmentDetailPage() {
 	}
 
 	async function cancelAssignment() {
-		if (!detail?.assignment || !window.confirm("确认取消当前主健管师分配？"))
+		if (
+			detail?.assignment?.status !== "PENDING_ACCEPTANCE" ||
+			hasUnsafeStateCombination(detail) ||
+			!window.confirm("确认取消当前主健管师分配？")
+		)
 			return;
 		const assignment = detail.assignment;
 		await runMutation(
@@ -202,6 +240,26 @@ export function MemberEnrollmentDetailPage() {
 	}
 
 	if (loading) return <LoadingPanel label="正在加载客户服务接入详情…" />;
+
+	const consentReady = detail ? hasRequiredConsents(detail) : false;
+	const unsafeState = detail ? hasUnsafeStateCombination(detail) : false;
+	const identityCanReview = Boolean(
+		detail?.identity &&
+			institutionReviewableIdentityStatuses.has(detail.identity.status) &&
+			!unsafeState,
+	);
+	const assignmentCanCreate = Boolean(
+		detail &&
+			!detail.assignment &&
+			detail.identity?.status === "VERIFIED" &&
+			consentReady &&
+			!unsafeState,
+	);
+	const assignedTherapist = detail?.assignment
+		? therapists.find(
+				(item) => item.therapist_id === detail.assignment?.therapist_id,
+			)
+		: null;
 
 	return (
 		<main className="mx-auto w-full max-w-[1280px] space-y-5">
@@ -234,23 +292,48 @@ export function MemberEnrollmentDetailPage() {
 			<Feedback message={feedback.message} tone={feedback.tone} />
 			{detail ? (
 				<>
+					{unsafeState ? (
+						<section
+							className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+							role="alert"
+						>
+							状态信息暂不一致。为保护服务客户数据，相关操作已停用；请刷新后重试，仍未恢复请联系平台支持。
+						</section>
+					) : null}
 					<section
 						aria-label="客户服务接入流程"
-						className="grid gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-panel sm:grid-cols-5"
+						className="grid gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-panel sm:grid-cols-3 xl:grid-cols-6"
 					>
-						{journey(detail).map((step) => (
+						{journey(detail, consentReady).map((step) => (
 							<div
-								className={`rounded-lg px-3 py-3 ${step.done ? "bg-teal-50 text-teal-800" : "bg-slate-50 text-slate-500"}`}
+								aria-current={step.state === "current" ? "step" : undefined}
+								className={`rounded-lg px-3 py-3 ${journeyStateClassName(step.state)}`}
 								key={step.label}
 							>
 								<div className="flex items-center gap-2 text-xs font-semibold">
-									{step.done ? (
+									{step.state === "complete" ? (
 										<CheckCircle2 aria-hidden="true" size={15} />
+									) : step.state === "current" ? (
+										<Clock3 aria-hidden="true" size={15} />
 									) : (
 										<span className="h-2 w-2 rounded-full bg-slate-300" />
 									)}
 									{step.label}
+									<span className="sr-only">
+										{step.state === "complete"
+											? "已完成"
+											: step.state === "current"
+												? "当前状态"
+												: "待处理"}
+									</span>
 								</div>
+								<p className="mt-1 text-[11px] font-medium">
+									{step.state === "complete"
+										? "已完成"
+										: step.state === "current"
+											? "当前状态"
+											: "待处理"}
+								</p>
 							</div>
 						))}
 					</section>
@@ -280,11 +363,8 @@ export function MemberEnrollmentDetailPage() {
 												label="实名材料版本"
 												value={`第 ${detail.identity.version} 版`}
 											/>
-											<Field
-												label="版本"
-												value={String(detail.identity.version)}
-											/>
 										</dl>
+										{identityCanReview ? (
 										<form
 											className="mt-5 space-y-3 border-t border-slate-100 pt-4"
 											onSubmit={submitIdentity}
@@ -360,6 +440,11 @@ export function MemberEnrollmentDetailPage() {
 												{busy ? "提交中…" : "确认并提交核验"}
 											</button>
 										</form>
+										) : (
+											<p className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+												当前实名状态由平台流程管理，机构仅可查看。
+											</p>
+										)}
 									</>
 								) : (
 									<p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
@@ -380,25 +465,29 @@ export function MemberEnrollmentDetailPage() {
 									<div className="mt-4">
 										<Field
 											label="健管师"
-											value={compactId(detail.assignment.therapist_id)}
+											value={
+												assignedTherapist?.display_name?.trim() ||
+												"已绑定健管师（名称待同步）"
+											}
 										/>
 										<div className="mt-3 flex items-center justify-between">
 											<span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
 												{assignmentStatusLabel(detail.assignment.status)}
 											</span>
-											<button
-												className={secondaryButtonClassName}
-												disabled={
-													busy || detail.assignment.status === "CANCELLED"
-												}
-												onClick={() => void cancelAssignment()}
-												type="button"
-											>
-												取消分配
-											</button>
+											{detail.assignment.status === "PENDING_ACCEPTANCE" &&
+											!unsafeState ? (
+												<button
+													className={secondaryButtonClassName}
+													disabled={busy}
+													onClick={() => void cancelAssignment()}
+													type="button"
+												>
+													取消分配
+												</button>
+											) : null}
 										</div>
 									</div>
-								) : (
+								) : assignmentCanCreate ? (
 									<form className="mt-4 space-y-3" onSubmit={submitAssignment}>
 										<label className="block text-sm font-medium">
 											可用健管师
@@ -450,12 +539,16 @@ export function MemberEnrollmentDetailPage() {
 											创建分配
 										</button>
 									</form>
+								) : (
+									<p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+										完成平台实名终审和必要服务同意后，才可创建主健管师分配。
+									</p>
 								)}
 							</article>
 						</div>
 						<aside className="space-y-5">
 							<article className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
-								<h2 className="font-semibold">入组摘要</h2>
+								<h2 className="font-semibold">服务接入摘要</h2>
 								<dl className="mt-4 space-y-3 text-sm">
 									<Field
 										label="模式"
@@ -463,18 +556,21 @@ export function MemberEnrollmentDetailPage() {
 									/>
 									<Field
 										label="状态"
-										value={enrollmentStatusLabel(detail.status)}
+										value={
+											unsafeState
+												? "状态待确认"
+												: enrollmentStatusLabel(detail.status)
+										}
 									/>
 									<Field
 										label="同意记录"
 										value={`${detail.consents.length} 条`}
 									/>
-									<Field label="版本" value={String(detail.version)} />
 								</dl>
 							</article>
 							<article className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
 								<h2 className="font-semibold">服务案例</h2>
-								{caseDetail ? (
+								{caseDetail && !unsafeState ? (
 									<>
 										<dl className="mt-4 space-y-3 text-sm">
 											<Field label="状态" value="服务准备中" />
@@ -495,6 +591,10 @@ export function MemberEnrollmentDetailPage() {
 											查看客户健康档案与评估准备
 										</Link>
 									</>
+								) : detail.service_case_id ? (
+									<p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+										服务案例状态暂不可确认，请刷新后重试。
+									</p>
 								) : (
 									<p className="mt-3 text-sm text-slate-500">
 										主健管师接受分配后，系统才会创建服务准备中案例。
@@ -568,19 +668,115 @@ function enrollmentStatusLabel(status: string) {
 function assignmentStatusLabel(status: string) {
 	return (
 		{
-			PENDING: "等待健管师确认",
+			PENDING_ACCEPTANCE: "等待健管师确认",
 			ACCEPTED: "健管师已接受",
 			DECLINED: "健管师已拒绝",
 			CANCELLED: "分配已取消",
 		}[status] ?? "状态待确认"
 	);
 }
-function journey(detail: MemberEnrollmentDetail) {
+
+type JourneyState = "complete" | "current" | "pending";
+
+function journey(
+	detail: MemberEnrollmentDetail,
+	consentReady: boolean,
+): Array<{ label: string; state: JourneyState }> {
+	const identityVerified = detail.identity?.status === "VERIFIED";
+	const assignmentAccepted = detail.assignment?.status === "ACCEPTED";
+	const assignmentPending = detail.assignment?.status === "PENDING_ACCEPTANCE";
 	return [
-		{ label: "邀请已接受", done: Boolean(detail.accepted_at) },
-		{ label: "实名已提交", done: Boolean(detail.identity) },
-		{ label: "平台已终审", done: Boolean(detail.identity_verified_at) },
-		{ label: "主健管师已分配", done: Boolean(detail.assignment) },
-		{ label: "服务准备中", done: Boolean(detail.service_case_id) },
+		{
+			label: "邀请已接受",
+			state: detail.accepted_at ? "complete" : "current",
+		},
+		{
+			label: "实名已提交",
+			state: detail.identity
+				? "complete"
+				: detail.accepted_at
+					? "current"
+					: "pending",
+		},
+		{
+			label: "平台已终审",
+			state: identityVerified
+				? "complete"
+				: detail.identity
+					? "current"
+					: "pending",
+		},
+		{
+			label: "服务同意已确认",
+			state: consentReady
+				? "complete"
+				: identityVerified
+					? "current"
+					: "pending",
+		},
+		{
+			label: assignmentAccepted
+				? "主健管师已接受"
+				: assignmentPending
+					? "等待健管师接受"
+					: "主健管师待确认",
+			state: assignmentAccepted
+				? "complete"
+				: assignmentPending || consentReady
+					? "current"
+					: "pending",
+		},
+		{
+			label: hasUnsafeStateCombination(detail)
+				? "服务状态待确认"
+				: detail.service_case_id
+					? "服务准备中"
+					: "服务案例待创建",
+			state: hasUnsafeStateCombination(detail)
+				? "pending"
+				: detail.service_case_id
+				? "current"
+				: assignmentAccepted
+					? "current"
+					: "pending",
+		},
 	];
+}
+
+function journeyStateClassName(state: JourneyState) {
+	if (state === "complete") return "bg-teal-50 text-teal-800";
+	if (state === "current") return "bg-blue-50 text-blue-800";
+	return "bg-slate-50 text-slate-500";
+}
+
+function hasRequiredConsents(detail: MemberEnrollmentDetail) {
+	const required = [
+		...requiredConsentTypes,
+		...(detail.mode === "PROXY_ELDER" ? ["PROXY_AUTHORIZATION"] : []),
+	];
+	return required.every((documentType) =>
+		detail.consents.some(
+			(consent) =>
+				consent.document_type === documentType &&
+				consent.choice === "ACCEPTED" &&
+				consent.status === "ACCEPTED" &&
+				Boolean(consent.accepted_at) &&
+				!consent.withdrawn_at,
+		),
+	);
+}
+
+function hasUnsafeStateCombination(detail: MemberEnrollmentDetail) {
+	if (
+		detail.identity &&
+		!knownIdentityStatuses.has(detail.identity.status)
+	) {
+		return true;
+	}
+	if (!detail.service_case_id) return false;
+	return (
+		detail.identity?.status !== "VERIFIED" ||
+		!hasRequiredConsents(detail) ||
+		detail.assignment?.status !== "ACCEPTED"
+	);
 }

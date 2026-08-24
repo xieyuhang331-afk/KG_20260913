@@ -195,6 +195,187 @@ describe("机构客户服务邀约与服务接入", () => {
 		expect(screen.getByRole("heading", { name: "客户服务接入详情" })).toBeInTheDocument();
 		expect(screen.queryByText(/付费会员|会员购买/)).not.toBeInTheDocument();
 	});
+
+	it.each([
+		["VERIFIED", "IDENTITY_VERIFIED"],
+		["PLATFORM_REVIEWING", "PLATFORM_REVIEWING"],
+		["UNRECOGNIZED_STATE", "IDENTITY_SUBMITTED"],
+	])("实名状态 %s 时机构写操作 fail-closed", async (identityStatus, enrollmentStatus) => {
+		mockSequence(
+			success(
+				enrollmentDetail({
+					status: enrollmentStatus,
+					identity: {
+						...enrollmentDetail().identity,
+						status: identityStatus,
+					},
+				}),
+			),
+			success(page([])),
+		);
+		renderEnrollmentDetail();
+
+		await screen.findByText("110***********1234");
+		expect(
+			screen.queryByRole("button", { name: "确认并提交核验" }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "创建分配" })).not.toBeInTheDocument();
+		if (identityStatus === "UNRECOGNIZED_STATE") {
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"状态信息暂不一致",
+			);
+		}
+	});
+
+	it("必要同意、已接受分配和业务名称形成完整服务接入流程", async () => {
+		const therapistId = "0198b963-38f0-7d7d-8000-000000000042";
+		const serviceCaseId = "0198b963-38f0-7d7d-8000-000000000043";
+		mockSequence(
+			success(
+				enrollmentDetail({
+					status: "CASE_CREATED",
+					identity_verified_at: "2026-08-21T08:00:00+08:00",
+					service_case_id: serviceCaseId,
+					consents: acceptedConsents(),
+					assignment: assignment({
+						therapist_id: therapistId,
+						status: "ACCEPTED",
+						service_case_id: serviceCaseId,
+					}),
+					identity: {
+						...enrollmentDetail().identity,
+						status: "VERIFIED",
+					},
+				}),
+			),
+			success(
+				page([
+					{
+						therapist_id: therapistId,
+						display_name: "康护健管师甲",
+						active_case_count: 2,
+						capacity_limit: 20,
+					},
+				]),
+			),
+			success({
+				case_id: serviceCaseId,
+				enrollment_id: invitationId,
+				subject_member_id: "0198b963-38f0-7d7d-8000-000000000034",
+				tenant_id: "0198b963-38f0-7d7d-8000-000000000032",
+				primary_therapist_id: therapistId,
+				assignment_id: "0198b963-38f0-7d7d-8000-000000000044",
+				status: "PREPARING",
+				service_scope_tags: ["HYPERTENSION"],
+				created_at: "2026-08-21T09:00:00+08:00",
+				version: 1,
+			}),
+		);
+		renderEnrollmentDetail();
+
+		expect(await screen.findByText("康护健管师甲")).toBeInTheDocument();
+		expect(screen.queryByText(/0198b963…000042/)).not.toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "服务接入摘要" })).toBeInTheDocument();
+		expect(screen.queryByRole("heading", { name: "入组摘要" })).not.toBeInTheDocument();
+		expect(screen.queryByText("版本")).not.toBeInTheDocument();
+		expect(screen.getByText("服务同意已确认").closest("div")).toHaveTextContent(
+			"已完成",
+		);
+		expect(screen.getByText("主健管师已接受").closest("div")).toHaveTextContent(
+			"已完成",
+		);
+		expect(screen.queryByRole("button", { name: "取消分配" })).not.toBeInTheDocument();
+	});
+
+	it("只有待接受分配允许取消且不能提前标记完成", async () => {
+		mockSequence(
+			success(
+				enrollmentDetail({
+					status: "THERAPIST_PENDING",
+					identity_verified_at: "2026-08-21T08:00:00+08:00",
+					consents: acceptedConsents(),
+					assignment: assignment({ status: "PENDING_ACCEPTANCE" }),
+					identity: {
+						...enrollmentDetail().identity,
+						status: "VERIFIED",
+					},
+				}),
+			),
+			success(page([])),
+		);
+		renderEnrollmentDetail();
+
+		await screen.findByText("等待健管师确认");
+		expect(screen.getByRole("button", { name: "取消分配" })).toBeInTheDocument();
+		expect(screen.getByText("等待健管师接受").closest("div")).toHaveTextContent(
+			"当前状态",
+		);
+	});
+
+	it.each(["ACCEPTED", "DECLINED", "CANCELLED"])(
+		"分配状态 %s 不显示取消操作",
+		async (status) => {
+			mockSequence(
+				success(
+					enrollmentDetail({
+						status: status === "ACCEPTED" ? "CASE_CREATED" : "THERAPIST_PENDING",
+						identity_verified_at: "2026-08-21T08:00:00+08:00",
+						consents: acceptedConsents(),
+						assignment: assignment({ status }),
+						identity: {
+							...enrollmentDetail().identity,
+							status: "VERIFIED",
+						},
+					}),
+				),
+				success(page([])),
+			);
+			renderEnrollmentDetail();
+
+			await screen.findByText(assignmentLabel(status));
+			expect(
+				screen.queryByRole("button", { name: "取消分配" }),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	it("服务案例缺少必要同意时显示受控错误且停用操作", async () => {
+		const serviceCaseId = "0198b963-38f0-7d7d-8000-000000000043";
+		mockSequence(
+			success(
+				enrollmentDetail({
+					status: "CASE_CREATED",
+					identity_verified_at: "2026-08-21T08:00:00+08:00",
+					service_case_id: serviceCaseId,
+					consents: [],
+					assignment: assignment({
+						status: "ACCEPTED",
+						service_case_id: serviceCaseId,
+					}),
+					identity: {
+						...enrollmentDetail().identity,
+						status: "VERIFIED",
+					},
+				}),
+			),
+			success(page([])),
+			success({
+				case_id: serviceCaseId,
+				status: "PREPARING",
+				created_at: "2026-08-21T09:00:00+08:00",
+			}),
+		);
+		renderEnrollmentDetail();
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"状态信息暂不一致",
+		);
+		expect(screen.queryByText("服务准备中")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("link", { name: /查看客户健康档案/ }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /取消分配|创建分配/ })).not.toBeInTheDocument();
+	});
 });
 
 const invitationId = "0198b963-38f0-7d7d-8000-000000000031";
@@ -250,6 +431,70 @@ function enrollmentDetail(overrides: object = {}) {
 		assignment: null,
 		...overrides,
 	};
+}
+
+function renderEnrollmentDetail() {
+	return render(
+		<MemoryRouter initialEntries={[`/institution/member-enrollments/${invitationId}`]}>
+			<Routes>
+				<Route
+					element={<MemberEnrollmentDetailPage />}
+					path="/institution/member-enrollments/:enrollmentId"
+				/>
+			</Routes>
+		</MemoryRouter>,
+	);
+}
+
+function acceptedConsents() {
+	return [
+		"USER_AGREEMENT",
+		"PRIVACY_POLICY",
+		"HEALTH_DATA_PROCESSING",
+		"INSTITUTION_SERVICE",
+		"NON_MEDICAL_RISK",
+	].map((documentType, index) => ({
+		consent_record_id: `0198b963-38f0-7d7d-8000-00000000005${index}`,
+		enrollment_id: invitationId,
+		document_type: documentType,
+		document_version_id: `0198b963-38f0-7d7d-8000-00000000006${index}`,
+		rendition_id: `0198b963-38f0-7d7d-8000-00000000007${index}`,
+		locale: "zh-CN",
+		choice: "ACCEPTED",
+		status: "ACCEPTED",
+		presented_at: "2026-08-21T07:00:00+08:00",
+		accepted_at: "2026-08-21T07:01:00+08:00",
+		withdrawn_at: null,
+		version: 1,
+	}));
+}
+
+function assignment(overrides: object = {}) {
+	return {
+		assignment_id: "0198b963-38f0-7d7d-8000-000000000044",
+		enrollment_id: invitationId,
+		tenant_id: "0198b963-38f0-7d7d-8000-000000000032",
+		subject_member_id: "0198b963-38f0-7d7d-8000-000000000034",
+		therapist_id: "0198b963-38f0-7d7d-8000-000000000042",
+		status: "PENDING_ACCEPTANCE",
+		service_scope_tags: ["HYPERTENSION"],
+		reason_code: null,
+		service_case_id: null,
+		created_at: "2026-08-21T08:30:00+08:00",
+		decided_at: null,
+		version: 1,
+		...overrides,
+	};
+}
+
+function assignmentLabel(status: string) {
+	return (
+		({
+		ACCEPTED: "健管师已接受",
+		DECLINED: "健管师已拒绝",
+		CANCELLED: "分配已取消",
+		} as Record<string, string>)[status] ?? "状态待确认"
+	);
 }
 
 function mockSequence(...responses: Response[]) {
