@@ -88,7 +88,7 @@ def test_0022对象与五身份最小权限(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
     assert pg_database.fetch_value(
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name=ANY($$%s$$::text[])"
@@ -469,7 +469,7 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260823_0028"
+    ) == "20260824_0029"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -501,7 +501,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260823_0028"
+    ) == "20260824_0029"
 
 
 @pytest.mark.asyncio
@@ -722,10 +722,12 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
     pg_database,
     member_enrollment_writer_database,
     member_identity_review_writer_database,
+    member_case_writer_database,
     member_enrollment_reader_database,
+    real_db_client,
 ):
     from app.core.database import dispose_slice3_runtime, get_slice3_session_factory
-    from app.core.security import CurrentUser
+    from app.core.security import CurrentUser, create_access_token
     from app.modules.member_enrollment.domain import MemberEnrollmentConflict
     from app.modules.member_enrollment.repository import MemberEnrollmentRepository
     from app.modules.member_enrollment.schemas import (
@@ -751,8 +753,9 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
 
     tenant_id = 96001
     user_id = 96002
-    member_id = uuid4()
-    tenant_public_id = uuid4()
+    uuid7 = Uuid7Generator()
+    member_id = uuid7.generate()
+    tenant_public_id = uuid7.generate()
     institution_invitation_id = uuid4()
     institution_application_id = uuid4()
     await pg_database._execute(
@@ -1713,7 +1716,6 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             )
             await session.commit()
 
-        uuid7 = Uuid7Generator()
         therapist_invitation_id = uuid7.generate()
         therapist_id = uuid7.generate()
         therapist_revision_id = uuid7.generate()
@@ -1920,28 +1922,74 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
             )
             await session.commit()
 
-        case_factory = await get_slice3_session_factory("case_writer")
-        async with case_factory() as session:
-            service = MemberEnrollmentService(
-                MemberEnrollmentRepository(session), secrets_port=secrets
-            )
-            case_id = await service.accept_assignment(
-                MutationContext(
-                    actor=CurrentUser(
-                        id=therapist_user_id,
-                        role="therapist",
-                        tenant_id=tenant_id,
-                    ),
-                    tenant_id=tenant_id,
-                    tenant_public_id=tenant_public_id,
-                    idempotency_key="slice3-self-assignment-accept",
-                    request_id=uuid4(),
-                ),
-                assignment_id,
-                expected_version=1,
-                required_document_types=document_types,
-            )
-            await session.commit()
+        function_sql = (
+            "public.slice3_case_enrollment_preimage_authority_v1("
+            "$1::uuid,$2::uuid,$3::uuid,$4::bigint)"
+        )
+        expected_columns = await pg_database._fetch_column(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='service_enrollment' "
+            "ORDER BY column_name"
+        )
+        actual_rows = await member_case_writer_database._fetch_rows(
+            f"SELECT key FROM jsonb_object_keys({function_sql}) AS keys(key) "
+            "ORDER BY key",
+            assignment_id,
+            enrollment_id,
+            therapist_id,
+            therapist_user_id,
+        )
+        actual_columns = [row["key"] for row in actual_rows]
+        assert actual_columns == expected_columns
+        for arguments in (
+            (assignment_id, enrollment_id, therapist_id, therapist_user_id + 999),
+            (assignment_id, enrollment_id, uuid4(), therapist_user_id),
+            (uuid4(), enrollment_id, therapist_id, therapist_user_id),
+            (assignment_id, uuid4(), therapist_id, therapist_user_id),
+        ):
+            assert await member_case_writer_database._fetch_value(
+                f"SELECT {function_sql}", *arguments
+            ) is None
+
+        therapist_token = create_access_token({
+            "sub": str(therapist_user_id),
+            "role": "therapist",
+            "tenant_id": tenant_id,
+        })
+        authorization = {"Authorization": f"Bearer {therapist_token}"}
+        listed = real_db_client.get(
+            "/api/v1/therapist/primary-assignments",
+            headers=authorization,
+            params={"status": "PENDING_ACCEPTANCE"},
+        )
+        assert listed.status_code == 200
+        assert len(listed.json()["items"]) == 1
+        assert listed.json()["items"][0]["assignment_id"] == str(assignment_id)
+        assert "subject_masked_label" not in listed.json()["items"][0]
+        assert "therapist_display_name" not in listed.json()["items"][0]
+
+        accepted = real_db_client.post(
+            f"/api/v1/therapist/primary-assignments/{assignment_id}/accept",
+            headers={
+                **authorization,
+                "Idempotency-Key": "slice3-self-assignment-accept-http",
+            },
+            json={"expected_version": 1},
+        )
+        assert accepted.status_code == 201, accepted.json()
+        assert accepted.json()["status"] == "PREPARING"
+        assert accepted.json()["assignment_id"] == str(assignment_id)
+        case_id = UUID(accepted.json()["case_id"])
+        replay = real_db_client.post(
+            f"/api/v1/therapist/primary-assignments/{assignment_id}/accept",
+            headers={
+                **authorization,
+                "Idempotency-Key": "slice3-self-assignment-accept-http",
+            },
+            json={"expected_version": 1},
+        )
+        assert replay.status_code == 201
+        assert replay.json() == accepted.json()
     finally:
         await dispose_slice3_runtime("enrollment_writer")
         await dispose_slice3_runtime("identity_review_writer")
@@ -1992,6 +2040,19 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
     assert await pg_database._fetch_value(
         f"SELECT status FROM public.service_case WHERE case_id='{case_id}'"
     ) == "PREPARING"
+    assignment_state = (await pg_database._fetch_rows(
+        "SELECT status,service_case_id FROM public.primary_therapist_assignment "
+        "WHERE assignment_id=$1",
+        assignment_id,
+    ))[0]
+    assert assignment_state == {
+        "status": "ACCEPTED",
+        "service_case_id": case_id,
+    }
+    assert await pg_database._fetch_value(
+        "SELECT count(*) FROM public.service_case WHERE assignment_id=$1",
+        assignment_id,
+    ) == 1
     assert await pg_database._fetch_value(
         f"SELECT active_case_count FROM public.therapist_profile WHERE therapist_id='{therapist_id}'"
     ) == 1
