@@ -184,13 +184,19 @@ class FormalHealthProfileSnapshotRequest(_StrictModel):
 class FormalHealthFactWriteItem(_StrictModel):
     indicator_code: Literal[
         "height", "weight", "waist", "systolic_bp", "diastolic_bp",
-        "heart_rate", "fasting_glucose", "hba1c",
+        "heart_rate", "fasting_glucose", "postprandial_glucose_2h", "hba1c",
+        "total_cholesterol", "triglyceride", "hdl_c", "ldl_c",
     ]
     value: Decimal
     unit: str = Field(min_length=1, max_length=32)
     measured_at: datetime
     source_type: Literal["APP", "REPORT", "STORE"]
     report_id: UUID | None = None
+    measurement_context: Literal[
+        "OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE",
+        "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE",
+        "FASTING_VENOUS", "OGTT_2H_VENOUS", "LAB", "FASTING_LAB",
+    ] | None = None
 
     @field_validator("value")
     @classmethod
@@ -212,11 +218,26 @@ class FormalHealthFactWriteItem(_StrictModel):
             "height": "cm", "weight": "kg", "waist": "cm",
             "systolic_bp": "mmHg", "diastolic_bp": "mmHg",
             "heart_rate": "bpm", "fasting_glucose": "mmol/L", "hba1c": "%",
+            "postprandial_glucose_2h": "mmol/L", "total_cholesterol": "mmol/L",
+            "triglyceride": "mmol/L", "hdl_c": "mmol/L", "ldl_c": "mmol/L",
         }
         if self.unit != units[self.indicator_code]:
             raise ValueError("indicator unit is invalid")
         if (self.source_type == "REPORT") != (self.report_id is not None):
             raise ValueError("report binding is invalid")
+        allowed = {
+            "systolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+            "diastolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+            "fasting_glucose": {"FASTING_VENOUS"},
+            "postprandial_glucose_2h": {"OGTT_2H_VENOUS"},
+            "hba1c": {"LAB"},
+            "total_cholesterol": {"FASTING_LAB"},
+            "triglyceride": {"FASTING_LAB"},
+            "hdl_c": {"FASTING_LAB"},
+            "ldl_c": {"FASTING_LAB"},
+        }
+        if self.measurement_context is not None and self.measurement_context not in allowed.get(self.indicator_code, set()):
+            raise ValueError("measurement context is invalid")
         return self
 
 
@@ -326,7 +347,29 @@ class HealthFactCorrectionRequest(_StrictModel):
     value: Decimal
     unit: str
     measured_at: datetime
+    measurement_context: Literal[
+        "OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE",
+        "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE",
+        "FASTING_VENOUS", "OGTT_2H_VENOUS", "LAB", "FASTING_LAB",
+    ] | None = None
     reason_code: Literal["DATA_ENTRY_ERROR", "SOURCE_CORRECTION", "MEMBER_CORRECTION"]
+
+    @model_validator(mode="after")
+    def measurement_context_binding(self):
+        allowed = {
+            "systolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+            "diastolic_bp": {"OFFICE", "HOME_AVERAGE", "ABPM_24H_AVERAGE", "ABPM_DAY_AVERAGE", "ABPM_NIGHT_AVERAGE"},
+            "fasting_glucose": {"FASTING_VENOUS"},
+            "postprandial_glucose_2h": {"OGTT_2H_VENOUS"},
+            "hba1c": {"LAB"},
+            "total_cholesterol": {"FASTING_LAB"},
+            "triglyceride": {"FASTING_LAB"},
+            "hdl_c": {"FASTING_LAB"},
+            "ldl_c": {"FASTING_LAB"},
+        }
+        if self.measurement_context is not None and self.measurement_context not in allowed.get(self.indicator_code, set()):
+            raise ValueError("measurement context is invalid")
+        return self
 
 
 class HealthFactStateRequest(_StrictModel):

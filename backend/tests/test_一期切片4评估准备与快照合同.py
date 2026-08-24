@@ -39,6 +39,19 @@ def test_D23_D24_D30_D35_assembly后像预先冻结且partial为UNKNOWN():
     assert classify_assembly_confirmation(plan, partial) == "UNKNOWN"
 
 
+def test_Assembly事实测量场景进入行摘要和Assembly摘要():
+    import inspect
+    from app.modules.assessment_readiness import service
+    from app.modules.assessment_readiness.models import AssessmentInputAssemblyFactModel
+
+    assert "measurement_context" in AssessmentInputAssemblyFactModel.__table__.columns
+    source = inspect.getsource(service.recompute_assessment_readiness)
+    assert "fact.measurement_context" in source
+    assert '"measurement_context"' in source
+    assert 'if name != "measurement_context"' in source
+    assert source.index("write_assembly") < source.index("bind_measurement_contexts")
+
+
 def test_D25_D34_GET无pointer不写并返回重算等待且DTO无内部字段():
     from app.modules.assessment_readiness.schemas import AssessmentReadinessDTO
     from app.modules.assessment_readiness.service import read_current_readiness

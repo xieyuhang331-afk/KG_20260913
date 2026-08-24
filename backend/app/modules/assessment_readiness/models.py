@@ -80,6 +80,7 @@ class AssessmentInputAssemblyFactModel(Base):
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    measurement_context: Mapped[str | None] = mapped_column(String(32), nullable=True)
     verification_state: Mapped[str] = mapped_column(String(24), nullable=False)
     value_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     value_key_id: Mapped[str] = mapped_column(String(64), nullable=False)

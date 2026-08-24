@@ -49,7 +49,9 @@ class CanonicalHealthFactOrmModel(Base):
             "'fasting_glucose','postprandial_glucose_2h','hba1c',"
             "'total_cholesterol','triglyceride','hdl_c','ldl_c','weight',"
             "'bmi','uric_acid','spo2','bone_density_t_score')) OR "
-            "(catalog_version=2 AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','hba1c','weight','height','waist'))",
+            "(catalog_version=2 AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate',"
+            "'fasting_glucose','postprandial_glucose_2h','hba1c','total_cholesterol',"
+            "'triglyceride','hdl_c','ldl_c','weight','height','waist'))",
             name="indicator_v1_v2",
         ),
         CheckConstraint(
@@ -126,6 +128,7 @@ class CanonicalHealthFactOrmModel(Base):
     numeric_value: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     unit: Mapped[str] = mapped_column(String(16), nullable=False)
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    measurement_context: Mapped[str | None] = mapped_column(String(32), nullable=True)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

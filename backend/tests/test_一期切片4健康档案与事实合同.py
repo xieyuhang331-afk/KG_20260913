@@ -51,6 +51,55 @@ def test_D04_D07_正式健康事实拒绝BMI_DEVICE和received_at并冻结时间
     assert [initial_verification_state(v) for v in ("APP", "REPORT", "STORE")] == ["SELF_REPORTED", "UNKNOWN", "UNKNOWN"]
 
 
+def test_测量场景只接受批准值且缺失保持None不推断():
+    from app.modules.health_fact.domain import CATALOG_V2
+    from app.modules.user_health.schemas import FormalHealthFactWriteItem
+
+    base = {
+        "indicator_code": "systolic_bp", "value": "120", "unit": "mmHg",
+        "measured_at": "2026-08-20T09:00:00+08:00", "source_type": "APP",
+    }
+    assert FormalHealthFactWriteItem.model_validate(base).measurement_context is None
+    assert FormalHealthFactWriteItem.model_validate(
+        {**base, "measurement_context": "OFFICE"}
+    ).measurement_context == "OFFICE"
+    for value in ("DEVICE", "RANDOM_GLUCOSE", "FASTING_LAB", ""):
+        with pytest.raises(ValidationError):
+            FormalHealthFactWriteItem.model_validate(
+                {**base, "measurement_context": value}
+            )
+
+    glucose = {**base, "indicator_code": "fasting_glucose", "value": "5.6", "unit": "mmol/L"}
+    assert FormalHealthFactWriteItem.model_validate(
+        {**glucose, "measurement_context": "FASTING_VENOUS"}
+    ).measurement_context == "FASTING_VENOUS"
+    with pytest.raises(ValidationError):
+        FormalHealthFactWriteItem.model_validate(
+            {**glucose, "measurement_context": "OFFICE"}
+        )
+
+    approved = (
+        ("postprandial_glucose_2h", "7.5", "mmol/L", "OGTT_2H_VENOUS"),
+        ("hba1c", "5.6", "%", "LAB"),
+        ("total_cholesterol", "5.1", "mmol/L", "FASTING_LAB"),
+        ("triglyceride", "1.2", "mmol/L", "FASTING_LAB"),
+        ("hdl_c", "1.3", "mmol/L", "FASTING_LAB"),
+        ("ldl_c", "2.8", "mmol/L", "FASTING_LAB"),
+    )
+    for indicator, value, unit, context in approved:
+        assert CATALOG_V2[indicator] == unit
+        item = FormalHealthFactWriteItem.model_validate(
+            {
+                **base,
+                "indicator_code": indicator,
+                "value": value,
+                "unit": unit,
+                "measurement_context": context,
+            }
+        )
+        assert item.measurement_context == context
+
+
 def test_D05_D07_member_first事实使用v2真值且不复用代理User():
     from app.modules.health_fact.domain import (
         CanonicalHealthFactDraft,

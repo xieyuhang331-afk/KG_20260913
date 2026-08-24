@@ -254,7 +254,7 @@ async def recompute_assessment_readiness(
         )
         row_digest, _ = secret_box.digest(
             "AUDIT_DIGEST",
-            _json_value((assembly_id, code, fact.fact_ref, fact.status_event_seq)),
+            _json_value((assembly_id, code, fact.fact_ref, fact.status_event_seq, fact.measurement_context)),
         )
         encrypted_rows.append(
             {
@@ -263,6 +263,7 @@ async def recompute_assessment_readiness(
                 "measured_at": fact.measured_at.isoformat(),
                 "received_at": fact.received_at.isoformat(),
                 "source_type": fact.source_type,
+                "measurement_context": fact.measurement_context,
                 "verification_state": fact.verification_state,
                 "status_event_seq": fact.status_event_seq,
                 "value_ciphertext": ciphertext.hex(),
@@ -304,6 +305,10 @@ async def recompute_assessment_readiness(
         "facts": encrypted_rows,
     }
     expected_digest, _ = secret_box.digest("REPLAY_DIGEST", expected)
+    slice4_fact_rows = [
+        {name: value for name, value in fact.items() if name != "measurement_context"}
+        for fact in encrypted_rows
+    ]
     row = await repository.write_assembly(
         service_case_id=service_case_id,
         requested_assembly_id=assembly_id,
@@ -321,11 +326,12 @@ async def recompute_assessment_readiness(
         rule_version=policy["rule_version"] if policy else "UNAVAILABLE",
         source_snapshot=coverage.source_snapshot if coverage else "UNAVAILABLE",
         source_vector=source_vector,
-        encrypted_fact_rows=encrypted_rows,
+        encrypted_fact_rows=slice4_fact_rows,
         readiness_status=result.status,
         reason_codes=list(result.reason_codes),
         idempotency_key=idempotency_key,
         request_digest=request_digest,
         expected_postimage_digest=expected_digest,
     )
+    await repository.bind_measurement_contexts(assembly_id, encrypted_rows)
     return row

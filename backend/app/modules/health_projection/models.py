@@ -118,7 +118,7 @@ class HealthProjectionFactModel(Base):
     __table_args__ = (
         ForeignKeyConstraint(("generation_id", "digest_key_id"), ("public.health_projection_generation.id", "public.health_projection_generation.digest_key_id"), name="fk_health_projection_fact_generation_key", ondelete="CASCADE"),
         UniqueConstraint("generation_id", "fact_id", "subject_user_id", "indicator_code", "business_day", "digest_key_id", name="uq_health_projection_fact_winner_identity"),
-        CheckConstraint("(subject_member_id IS NULL AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','postprandial_glucose_2h','hba1c','total_cholesterol','triglyceride','hdl_c','ldl_c','weight','bmi','uric_acid','spo2','bone_density_t_score')) OR (subject_member_id IS NOT NULL AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','hba1c','weight','height','waist'))", name="indicator_v1_v2"),
+        CheckConstraint("(subject_member_id IS NULL AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','postprandial_glucose_2h','hba1c','total_cholesterol','triglyceride','hdl_c','ldl_c','weight','bmi','uric_acid','spo2','bone_density_t_score')) OR (subject_member_id IS NOT NULL AND indicator_code IN ('systolic_bp','diastolic_bp','heart_rate','fasting_glucose','postprandial_glucose_2h','hba1c','total_cholesterol','triglyceride','hdl_c','ldl_c','weight','height','waist'))", name="indicator_v1_v2"),
         CheckConstraint("((indicator_code IN ('systolic_bp','diastolic_bp') AND unit='mmHg') OR (indicator_code='heart_rate' AND unit='bpm') OR (indicator_code IN ('fasting_glucose','postprandial_glucose_2h','total_cholesterol','triglyceride','hdl_c','ldl_c') AND unit='mmol/L') OR (indicator_code IN ('hba1c','spo2') AND unit='%') OR (indicator_code='weight' AND unit='kg') OR (indicator_code IN ('height','waist') AND unit='cm') OR (indicator_code='bmi' AND unit='kg/m2') OR (indicator_code='uric_acid' AND unit='umol/L') OR (indicator_code='bone_density_t_score' AND unit='T-score'))", name="unit_v1_v2"),
         CheckConstraint("numeric_value::text NOT IN ('NaN','Infinity','-Infinity')", name="numeric"),
         CheckConstraint("(subject_member_id IS NULL AND source_type IN ('DEVICE','STORE','REPORT','APP')) OR (subject_member_id IS NOT NULL AND source_type IN ('STORE','REPORT','APP'))", name="source"),
@@ -139,6 +139,7 @@ class HealthProjectionFactModel(Base):
     unit: Mapped[str] = mapped_column(String(16), nullable=False)
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    measurement_context: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_type: Mapped[str] = mapped_column(String(16), nullable=False)
     business_day: Mapped[date] = mapped_column(Date, nullable=False)
     window_start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

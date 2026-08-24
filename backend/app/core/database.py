@@ -88,6 +88,9 @@ _SLICE3_RUNTIME_ERROR = "Member enrollment database runtime is unavailable"
 _SLICE4_RUNTIMES = {}
 _SLICE4_RUNTIME_LOCKS = {}
 _SLICE4_RUNTIME_ERROR = "Slice 4 database runtime is unavailable"
+_SLICE5_RUNTIMES = {}
+_SLICE5_RUNTIME_LOCKS = {}
+_SLICE5_RUNTIME_ERROR = "Slice 5 database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -354,6 +357,11 @@ async def dispose_database_runtimes() -> None:
                     _SLICE4_RUNTIMES.clear()
                     _SLICE4_RUNTIME_LOCKS.clear()
                     for _, engine, _ in slice4_entries:
+                        await engine.dispose()
+                    slice5_entries = tuple(_SLICE5_RUNTIMES.values())
+                    _SLICE5_RUNTIMES.clear()
+                    _SLICE5_RUNTIME_LOCKS.clear()
+                    for _, engine, _ in slice5_entries:
                         await engine.dispose()
 
 
@@ -830,4 +838,132 @@ async def get_slice4_institution_reader_session():
 
 async def get_slice4_identity_authority_session():
     async for session in _slice4_session("identity_authority"):
+        yield session
+
+
+_SLICE5_KINDS = {
+    "assessment_writer",
+    "risk_workflow_writer",
+    "rule_governance_writer",
+    "workflow_worker",
+    "clinical_reader",
+    "oversight_reader",
+}
+
+
+def _slice5_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "assessment_writer": settings.slice5_assessment_writer_database_url,
+        "risk_workflow_writer": settings.slice5_risk_workflow_writer_database_url,
+        "rule_governance_writer": settings.slice5_rule_governance_writer_database_url,
+        "workflow_worker": settings.slice5_workflow_worker_database_url,
+        "clinical_reader": settings.slice5_clinical_reader_database_url,
+        "oversight_reader": settings.slice5_oversight_reader_database_url,
+    }
+    roles = {
+        "assessment_writer": settings.slice5_assessment_writer_role,
+        "risk_workflow_writer": settings.slice5_risk_workflow_writer_role,
+        "rule_governance_writer": settings.slice5_rule_governance_writer_role,
+        "workflow_worker": settings.slice5_workflow_worker_role,
+        "clinical_reader": settings.slice5_clinical_reader_role,
+        "oversight_reader": settings.slice5_oversight_reader_role,
+    }
+    try:
+        if kind not in _SLICE5_KINDS:
+            raise ValueError
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            len(parsed) == 6
+            and len(set(users)) == 6
+            and all(
+                value.drivername == "postgresql+asyncpg"
+                and value.username
+                and value.password
+                for value in parsed.values()
+            )
+            and all(
+                (value.host, value.port, value.database)
+                == (settings.database_host, settings.database_port, settings.database_name)
+                for value in parsed.values()
+            )
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users
+            and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE5_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+async def get_slice5_session_factory(kind: str):
+    if kind not in _SLICE5_KINDS:
+        raise RuntimeError(_SLICE5_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    key = (id(loop), kind)
+    lock = _SLICE5_RUNTIME_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        entry = _SLICE5_RUNTIMES.get(key)
+        if entry is None:
+            try:
+                engine = create_async_engine(_slice5_url(get_settings(), kind), pool_pre_ping=True)
+                entry = (weakref.ref(loop), engine, create_session_factory(engine))
+            except Exception:
+                raise RuntimeError(_SLICE5_RUNTIME_ERROR) from None
+            _SLICE5_RUNTIMES[key] = entry
+        return entry[2]
+
+
+async def dispose_slice5_runtime(kind: str) -> None:
+    if kind not in _SLICE5_KINDS:
+        raise RuntimeError(_SLICE5_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    entry = _SLICE5_RUNTIMES.pop((id(loop), kind), None)
+    _SLICE5_RUNTIME_LOCKS.pop((id(loop), kind), None)
+    if entry is not None:
+        owner = entry[0]()
+        if owner is not loop:
+            raise RuntimeError(_SLICE5_RUNTIME_ERROR) from None
+        await entry[1].dispose()
+
+
+async def _slice5_session(kind: str):
+    factory = await get_slice5_session_factory(kind)
+    async with factory() as session:
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()
+
+
+async def get_slice5_assessment_writer_session():
+    async for session in _slice5_session("assessment_writer"):
+        yield session
+
+
+async def get_slice5_risk_workflow_writer_session():
+    async for session in _slice5_session("risk_workflow_writer"):
+        yield session
+
+
+async def get_slice5_rule_governance_writer_session():
+    async for session in _slice5_session("rule_governance_writer"):
+        yield session
+
+
+async def get_slice5_workflow_worker_session():
+    async for session in _slice5_session("workflow_worker"):
+        yield session
+
+
+async def get_slice5_clinical_reader_session():
+    async for session in _slice5_session("clinical_reader"):
+        yield session
+
+
+async def get_slice5_oversight_reader_session():
+    async for session in _slice5_session("oversight_reader"):
         yield session

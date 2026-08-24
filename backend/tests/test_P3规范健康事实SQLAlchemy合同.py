@@ -17,7 +17,8 @@ def test_规范健康事实SQLAlchemy持久化尚未实现():
     assert {column.name for column in table.columns} == {
         "id", "subject_user_id", "indicator_code", "catalog_version",
         "subject_member_id", "fact_ref", "report_id",
-        "value_kind", "numeric_value", "unit", "measured_at", "received_at",
+        "value_kind", "numeric_value", "unit", "measurement_context",
+        "measured_at", "received_at",
         "created_at", "source_type", "source_identity_digest",
         "producer_event_key", "payload_digest", "digest_key_id",
         "supersedes_fact_id", "correction_reason_code", "created_by",
