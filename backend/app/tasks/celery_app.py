@@ -13,6 +13,7 @@ THERAPIST_WORKFLOW_QUEUE = "therapist-workflow"
 MEMBER_ENROLLMENT_QUEUE = "member-enrollment-workflow"
 SLICE4_HEALTH_QUEUE = "slice4-health-workflow"
 SLICE5_ASSESSMENT_QUEUE = "slice5-assessment-workflow"
+SLICE6_HEALTH_PLAN_QUEUE = "slice6-health-plan-workflow"
 _DECLARED_QUEUES = (
     "ai",
     "judgment",
@@ -26,6 +27,7 @@ _DECLARED_QUEUES = (
     MEMBER_ENROLLMENT_QUEUE,
     SLICE4_HEALTH_QUEUE,
     SLICE5_ASSESSMENT_QUEUE,
+    SLICE6_HEALTH_PLAN_QUEUE,
 )
 
 
@@ -40,7 +42,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks", "app.tasks.slice4_health_data_tasks", "app.tasks.slice5_assessment_tasks"),
+        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks", "app.tasks.slice4_health_data_tasks", "app.tasks.slice5_assessment_tasks", "app.tasks.slice6_health_plan_tasks"),
     )
     app.conf.update(
         accept_content=("json",),
@@ -78,6 +80,10 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             "phase1.slice5.dispatch_outbox": {"queue": SLICE5_ASSESSMENT_QUEUE},
             "phase1.slice5.consume_outbox": {"queue": SLICE5_ASSESSMENT_QUEUE},
             "phase1.slice5.recover_outbox": {"queue": SLICE5_ASSESSMENT_QUEUE},
+            "phase1.slice6.generate_plan": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
+            "phase1.slice6.dispatch_outbox": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
+            "phase1.slice6.consume_outbox": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
+            "phase1.slice6.recover_outbox": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
         },
         beat_schedule={
             "registration-dispatch": {
@@ -149,6 +155,16 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
                 "task": "phase1.slice5.recover_outbox",
                 "schedule": 60.0,
                 "options": {"queue": SLICE5_ASSESSMENT_QUEUE},
+            },
+            "slice6-health-plan-dispatch": {
+                "task": "phase1.slice6.dispatch_outbox",
+                "schedule": 5.0,
+                "options": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
+            },
+            "slice6-health-plan-recovery": {
+                "task": "phase1.slice6.recover_outbox",
+                "schedule": 60.0,
+                "options": {"queue": SLICE6_HEALTH_PLAN_QUEUE},
             },
         },
     )
