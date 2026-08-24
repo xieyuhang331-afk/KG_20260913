@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-MIGRATION = ROOT / "app/migrations/versions/20260824_0029_phase1_slice5_deterministic_assessment_high_risk.py"
+MIGRATION = ROOT / "app/migrations/versions/20260825_0030_phase1_slice5_deterministic_assessment_high_risk.py"
 
 TABLES = {
     "assessment_rule_set_version",
@@ -42,7 +42,7 @@ FUNCTIONS = {
 }
 
 
-def test_0029是0028后的唯一线性候选且对象目录闭合() -> None:
+def test_0030是Hotfix0029后的唯一线性候选且对象目录闭合() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     tree = ast.parse(source)
     assignments = {
@@ -54,8 +54,8 @@ def test_0029是0028后的唯一线性候选且对象目录闭合() -> None:
         and node.targets[0].id in {"revision", "down_revision", "branch_labels", "depends_on"}
     }
     assert assignments == {
-        "revision": "20260824_0029",
-        "down_revision": "20260823_0028",
+        "revision": "20260825_0030",
+        "down_revision": "20260824_0029",
         "branch_labels": None,
         "depends_on": None,
     }
@@ -63,7 +63,7 @@ def test_0029是0028后的唯一线性候选且对象目录闭合() -> None:
     assert "20260823_0028_phase1_slice4" not in source
 
 
-def test_0029六身份最小权限和受限函数安全边界() -> None:
+def test_0030六身份最小权限和受限函数安全边界() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     for purpose in (
         "ASSESSMENT_WRITER",
@@ -88,7 +88,7 @@ def test_0029六身份最小权限和受限函数安全边界() -> None:
     assert "CREATE SEQUENCE" not in source
 
 
-def test_0029回滚先做非空预检且不修改历史对象() -> None:
+def test_0030回滚先做非空预检且不修改历史对象() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     downgrade = source[source.index("def downgrade()") :]
     assert "Slice 5 downgrade requires empty module tables" in downgrade
@@ -107,7 +107,7 @@ def test_0029回滚先做非空预检且不修改历史对象() -> None:
     assert "CASCADE" not in downgrade
 
 
-def test_0029发布规则与完成评估都由数据库权威收口() -> None:
+def test_0030发布规则与完成评估都由数据库权威收口() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     assert "author_user_id <> reviewer_user_id" in source
     assert "PUBLISHED" in source
@@ -118,7 +118,7 @@ def test_0029发布规则与完成评估都由数据库权威收口() -> None:
     assert "ordinary plan blocked by current high risk assessment" in source
 
 
-def test_0029测量场景列为空兼容且完整传播到Worker快照() -> None:
+def test_0030测量场景列为空兼容且完整传播到Worker快照() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     compact = "".join(source.split())
     assert '("canonical_health_fact","health_projection_fact","assessment_input_assembly_fact")' in compact

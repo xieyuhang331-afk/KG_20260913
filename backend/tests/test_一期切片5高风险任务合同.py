@@ -17,7 +17,7 @@ MIGRATION_SOURCE = (
     / "app"
     / "migrations"
     / "versions"
-    / "20260824_0029_phase1_slice5_deterministic_assessment_high_risk.py"
+    / "20260825_0030_phase1_slice5_deterministic_assessment_high_risk.py"
 ).read_text(encoding="utf-8")
 
 

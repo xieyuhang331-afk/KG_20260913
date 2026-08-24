@@ -136,8 +136,8 @@ def _task_action_payload(index: int, *, task_id: str, actor: int, version: int, 
     }
 
 
-def test_PG01_PG11_0029单一Head六身份函数与基础表ACL精确闭合(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
+def test_PG01_PG11_0030单一Head六身份函数与基础表ACL精确闭合(pg_database):
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260825_0030"
     runtime_roles = {name: os.environ[name] for name in FUNCTION_GRANTS}
     assert len(set(runtime_roles.values())) == 6
 
@@ -258,11 +258,25 @@ def test_PG11_Reader只读取安全View且无规则payload或原始健康值(pg_
     )
 
 
-def test_PG12_0028到0029降级再升级保持单一Head和权限对称(pg_database):
+def test_PG12_0028_0029_0030线性生命周期保持单一Head和权限对称(pg_database):
     config = _build_alembic_config(_get_test_database_url())
+    hotfix_signature = (
+        "public.slice3_case_enrollment_preimage_authority_v1(uuid,uuid,uuid,bigint)"
+    )
+
+    command.downgrade(config, "20260824_0029")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
+    assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") is None
+    assert pg_database.fetch_value(
+        f"SELECT to_regprocedure('{hotfix_signature}') IS NOT NULL"
+    )
+
     command.downgrade(config, "20260823_0028")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260823_0028"
     assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") is None
+    assert pg_database.fetch_value(
+        f"SELECT to_regprocedure('{hotfix_signature}') IS NULL"
+    )
     assert pg_database.fetch_value(
         "SELECT to_regprocedure('public.slice5_family_subject_authority_v1(bigint,uuid)')"
     ) is None
@@ -273,6 +287,13 @@ def test_PG12_0028到0029降级再升级保持单一Head和权限对称(pg_datab
 
     command.upgrade(config, "20260824_0029")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
+    assert pg_database.fetch_value(
+        f"SELECT to_regprocedure('{hotfix_signature}') IS NOT NULL"
+    )
+    assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") is None
+
+    command.upgrade(config, "20260825_0030")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260825_0030"
     assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") == "health_assessment"
     clinical_role = os.environ["KG_TEST_SLICE5_CLINICAL_READER_ROLE"]
     assert pg_database.fetch_value(
@@ -281,7 +302,7 @@ def test_PG12_0028到0029降级再升级保持单一Head和权限对称(pg_datab
     )
 
 
-def test_PG13_0029非空降级在任何DDL前失败并保留Head(pg_database):
+def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
     target = _uuid7(399)
     pg_database.execute(
         "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,created_at,updated_at) "
@@ -295,8 +316,8 @@ def test_PG13_0029非空降级在任何DDL前失败并保留Head(pg_database):
     try:
         config = _build_alembic_config(_get_test_database_url())
         with pytest.raises(RuntimeError, match="Slice 5 downgrade requires empty module tables"):
-            command.downgrade(config, "20260823_0028")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260824_0029"
+            command.downgrade(config, "20260824_0029")
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260825_0030"
         assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") == "health_assessment"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure("
