@@ -9,9 +9,11 @@ import {
 	MailPlus,
 	UserRoundCheck,
 	FileCheck2,
+	FileLock2,
+	Stethoscope,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { platformNavigation } from "@/domains/platform/navigation";
+import { allPlatformNavigation } from "@/domains/platform/navigation";
 import { useAuthStore } from "@/shared/auth/authStore";
 import { BrandLogo } from "@/shared/ui/BrandLogo";
 
@@ -24,6 +26,8 @@ const navigationIcons: Record<string, ReactNode> = {
 	健管师状态: <HeartPulse aria-hidden="true" size={17} />,
 	用户实名审核: <BadgeCheck aria-hidden="true" size={17} />,
 	同意文档: <FileCheck2 aria-hidden="true" size={17} />,
+	方案模板治理: <FileLock2 aria-hidden="true" size={17} />,
+	健康方案审核: <Stethoscope aria-hidden="true" size={17} />,
 	组织治理: <Building2 aria-hidden="true" size={17} />,
 };
 
@@ -31,6 +35,7 @@ const roleLabels: Record<string, string> = {
 	super_admin: "平台管理员",
 	province_admin: "省级管理员",
 	city_admin: "市级管理员",
+	health_expert: "医学专家",
 };
 
 const navigationGroups = [
@@ -41,12 +46,13 @@ const navigationGroups = [
 	},
 	{ label: "人员服务", items: ["健管师资质审核", "健管师状态"] },
 	{ label: "用户合规", items: ["用户实名审核", "同意文档"] },
+	{ label: "方案治理", items: ["方案模板治理", "健康方案审核"] },
 ];
 
 export function PlatformShell() {
 	const { currentUser } = useAuthStore();
 	const location = useLocation();
-	const visibleNavigation = platformNavigation.filter(
+	const visibleNavigation = allPlatformNavigation.filter(
 		(item) =>
 			!item.roles ||
 			(currentUser ? item.roles.includes(currentUser.role) : false),

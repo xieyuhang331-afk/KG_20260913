@@ -16,6 +16,7 @@ describe("Credential-safe login routing", () => {
   it.each([
     [USER_ROLES.orgAdmin, "/institution/store/application", "INSTITUTION TARGET"],
     [USER_ROLES.provinceAdmin, "/platform/home", "PLATFORM TARGET"],
+    [USER_ROLES.healthExpert, "/platform/health-plan-reviews", "EXPERT TARGET"],
   ])("stores a session and routes %s to the authorized workspace", async (role, target, marker) => {
     mockLogin(role);
     render(

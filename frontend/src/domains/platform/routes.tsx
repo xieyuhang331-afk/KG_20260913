@@ -12,13 +12,31 @@ import { InstitutionReviewPage } from "./pages/InstitutionReviewPage";
 import { TherapistReviewPage } from "./pages/TherapistReviewPage";
 import { TherapistStatusPage } from "./pages/TherapistStatusPage";
 import { ConsentDocumentPage } from "./pages/ConsentDocumentPage";
+import { HealthPlanTemplatePage } from "./pages/HealthPlanTemplatePage";
+import { HealthPlanReviewPage } from "./pages/HealthPlanReviewPage";
+import { useAuthStore } from "@/shared/auth/authStore";
+
+function PlatformIndexRedirect() {
+  const { currentUser } = useAuthStore();
+  return (
+    <Navigate
+      to={currentUser?.role === USER_ROLES.healthExpert ? "/platform/health-plan-reviews" : "/platform/home"}
+      replace
+    />
+  );
+}
 
 export const platformRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
-    { index: true, element: <Navigate to="/platform/home" replace /> },
-    { path: "home", element: <PlatformHomePage /> },
-    { path: "stores/reviews", element: <TenantReviewListPage /> },
-    { path: "stores/reviews/:tenantId", element: <TenantReviewDetailPage /> },
+    { index: true, element: <PlatformIndexRedirect /> },
+    {
+      element: <ProtectedRoute roles={[USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin]} />,
+      children: [
+        { path: "home", element: <PlatformHomePage /> },
+        { path: "stores/reviews", element: <TenantReviewListPage /> },
+        { path: "stores/reviews/:tenantId", element: <TenantReviewDetailPage /> },
+      ],
+    },
     {
       element: <ProtectedRoute roles={[USER_ROLES.superAdmin, USER_ROLES.provinceAdmin, USER_ROLES.cityAdmin]} />,
       children: [
@@ -36,6 +54,15 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
         { path: "institution-reviews", element: <InstitutionReviewPage /> },
         { path: "therapist-reviews", element: <TherapistReviewPage /> },
         { path: "therapist-status", element: <TherapistStatusPage /> },
+        { path: "health-plan-templates", element: <HealthPlanTemplatePage /> },
+        { path: "health-plan-templates/:templateVersionId", element: <HealthPlanTemplatePage /> },
+      ],
+    },
+    {
+      element: <ProtectedRoute roles={[USER_ROLES.healthExpert]} />,
+      children: [
+        { path: "health-plan-reviews", element: <HealthPlanReviewPage /> },
+        { path: "health-plan-reviews/:reviewId", element: <HealthPlanReviewPage /> },
       ],
     },
   ],

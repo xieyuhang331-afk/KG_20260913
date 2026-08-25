@@ -108,6 +108,10 @@ function getRoleHomePath(role: UserRole): string {
     return "/institution/store/application";
   }
 
+  if (role === USER_ROLES.healthExpert) {
+    return "/platform/health-plan-reviews";
+  }
+
   if (PLATFORM_REVIEW_ROLES.includes(role)) {
     return "/platform/home";
   }
