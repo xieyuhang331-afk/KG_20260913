@@ -20,7 +20,13 @@ function PlatformIndexRedirect() {
   const { currentUser } = useAuthStore();
   return (
     <Navigate
-      to={currentUser?.role === USER_ROLES.healthExpert ? "/platform/health-plan-reviews" : "/platform/home"}
+      to={
+        currentUser?.role === USER_ROLES.expert
+          ? "/platform/health-plan-reviews"
+          : currentUser?.role === USER_ROLES.sysAdmin
+            ? "/platform/health-plan-templates"
+            : "/platform/home"
+      }
       replace
     />
   );
@@ -54,12 +60,17 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
         { path: "institution-reviews", element: <InstitutionReviewPage /> },
         { path: "therapist-reviews", element: <TherapistReviewPage /> },
         { path: "therapist-status", element: <TherapistStatusPage /> },
+      ],
+    },
+    {
+      element: <ProtectedRoute roles={[USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin]} />,
+      children: [
         { path: "health-plan-templates", element: <HealthPlanTemplatePage /> },
         { path: "health-plan-templates/:templateVersionId", element: <HealthPlanTemplatePage /> },
       ],
     },
     {
-      element: <ProtectedRoute roles={[USER_ROLES.healthExpert]} />,
+      element: <ProtectedRoute roles={[USER_ROLES.expert]} />,
       children: [
         { path: "health-plan-reviews", element: <HealthPlanReviewPage /> },
         { path: "health-plan-reviews/:reviewId", element: <HealthPlanReviewPage /> },

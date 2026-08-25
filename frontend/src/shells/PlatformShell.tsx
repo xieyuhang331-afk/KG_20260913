@@ -33,9 +33,10 @@ const navigationIcons: Record<string, ReactNode> = {
 
 const roleLabels: Record<string, string> = {
 	super_admin: "平台管理员",
+	sys_admin: "系统管理员",
 	province_admin: "省级管理员",
 	city_admin: "市级管理员",
-	health_expert: "医学专家",
+	expert: "医学专家",
 };
 
 const navigationGroups = [

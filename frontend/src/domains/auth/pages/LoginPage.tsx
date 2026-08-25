@@ -104,12 +104,16 @@ function getRoleHomePath(role: UserRole): string {
     return "/family/home";
   }
 
-  if (role === USER_ROLES.orgAdmin) {
+  if (role === USER_ROLES.orgAdmin || role === USER_ROLES.orgOperator) {
     return "/institution/store/application";
   }
 
-  if (role === USER_ROLES.healthExpert) {
+  if (role === USER_ROLES.expert) {
     return "/platform/health-plan-reviews";
+  }
+
+  if (role === USER_ROLES.sysAdmin) {
+    return "/platform/health-plan-templates";
   }
 
   if (PLATFORM_REVIEW_ROLES.includes(role)) {

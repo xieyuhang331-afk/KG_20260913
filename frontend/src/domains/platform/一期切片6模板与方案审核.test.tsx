@@ -20,12 +20,12 @@ describe("一期切片6平台模板与方案审核", () => {
         expect.objectContaining({
           label: "方案模板治理",
           path: "/platform/health-plan-templates",
-          roles: [USER_ROLES.superAdmin],
+          roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
         }),
         expect.objectContaining({
           label: "健康方案审核",
           path: "/platform/health-plan-reviews",
-          roles: [USER_ROLES.healthExpert],
+          roles: [USER_ROLES.expert],
         }),
       ]),
     );
@@ -33,7 +33,7 @@ describe("一期切片6平台模板与方案审核", () => {
     expect(JSON.stringify(platformRoutes.protectedChildren)).toContain("health-plan-reviews");
   });
 
-  it("模板页面只展示结构化锁定字段且合同未冻结时不伪造创建成功", async () => {
+  it("模板页面按正式DTO展示结构化锁定字段", async () => {
     mockByPath({
       "/api/v1/platform/health-plan-templates?limit=20": {
         items: [templateSummary()],
@@ -43,16 +43,15 @@ describe("一期切片6平台模板与方案审核", () => {
     render(<HealthPlanTemplatePage />, { wrapper: MemoryRouter });
 
     expect(await screen.findByRole("heading", { name: "方案模板治理" })).toBeInTheDocument();
-    expect(screen.getByText("代谢健康基础模板")).toBeInTheDocument();
+    expect(screen.getByText("代谢健康基础方案")).toBeInTheDocument();
     expect(screen.getByText("医学锁定字段只读")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "创建模板草稿" })).toBeDisabled();
-    expect(screen.getByText(/等待后端OpenAPI冻结创建DTO/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建模板草稿" })).toBeEnabled();
     expect(screen.queryByText(/AI|价格|BOM|诊断|处方/)).not.toBeInTheDocument();
   });
 
   it("专家审核详情只允许结构化决定且不出现生成入口", async () => {
     mockByPath({
-      "/api/v1/platform/health-plan-reviews?status=IN_REVIEW&limit=20": {
+      "/api/v1/platform/health-plan-reviews?status=CLAIMED&limit=20": {
         items: [reviewSummary()],
         next_cursor: null,
       },
@@ -69,6 +68,11 @@ describe("一期切片6平台模板与方案审核", () => {
     expect(await screen.findByRole("heading", { name: "健康方案审核详情" })).toBeInTheDocument();
     expect(screen.getByText("客户健康档案摘要（只读）")).toBeInTheDocument();
     expect(screen.getByText("方案版本差异（只读）")).toBeInTheDocument();
+    expect(screen.getByText("代谢健康基础方案")).toBeInTheDocument();
+    expect(screen.getAllByText("体重与腹型肥胖：需关注").length).toBeGreaterThan(0);
+    expect(screen.getByText("健康目标已更新")).toBeInTheDocument();
+    expect(screen.queryByText("METABOLIC_FOUNDATION")).not.toBeInTheDocument();
+    expect(screen.queryByText("结构化摘要")).not.toBeInTheDocument();
     expect(screen.getByLabelText("结构化补正原因")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "生成方案" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /方案正文|医学内容/ })).not.toBeInTheDocument();
@@ -101,7 +105,7 @@ describe("一期切片6平台模板与方案审核", () => {
     );
 
     await screen.findByRole("heading", { name: "健康方案审核详情" });
-    await userEvent.selectOptions(screen.getByLabelText("结构化补正原因"), "GOAL_REQUIRES_CORRECTION");
+    await userEvent.selectOptions(screen.getByLabelText("结构化补正原因"), "TEMPLATE_REAPPLY");
     await userEvent.click(screen.getByRole("button", { name: "要求补正" }));
 
     expect(await screen.findByText(/数据已更新/)).toBeInTheDocument();
@@ -117,14 +121,21 @@ function templateSummary() {
   return {
     template_version_id: "0198d6a1-1111-7abc-8000-000000000302",
     template_code: "METABOLIC_FOUNDATION",
-    template_name: "代谢健康基础模板",
-    semantic_version: "1.0.0",
+    version_no: 1,
     status: "DRAFT",
-    applicable_scope_codes: ["WEIGHT_MANAGEMENT"],
-    locked_module_codes: ["GOAL", "STAGE", "SOP", "CONTRAINDICATION"],
+    applicable_modules: ["WEIGHT_ABDOMINAL_OBESITY"],
+    goals_by_module: { WEIGHT_ABDOMINAL_OBESITY: ["WEIGHT_GOAL"] },
+    stage_codes: ["FOUNDATION_STAGE"],
+    milestone_codes: ["WEEK_FOUR_REVIEW"],
+    sop_codes: ["WEEKLY_FOLLOW_UP"],
+    contraindication_codes: ["ACUTE_SYMPTOM_STOP"],
+    user_message_codes: ["FOLLOW_APPROVED_PLAN"],
+    therapist_action_codes: ["EXPLAIN_APPROVED_PLAN"],
+    medical_approval_ref: "MEDICAL-COMMITTEE-2026-01",
     version: 1,
     created_at: "2026-08-24T08:00:00Z",
-    updated_at: "2026-08-24T08:00:00Z",
+    published_at: null,
+    retired_at: null,
   };
 }
 
@@ -133,27 +144,38 @@ function reviewSummary() {
     review_id: reviewId,
     plan_id: "0198d6a1-1111-7abc-8000-000000000303",
     service_case_id: "0198d6a1-1111-7abc-8000-000000000304",
-    status: "IN_REVIEW",
-    plan_version: 1,
-    overall_risk_level: "MEDIUM",
-    claimed: true,
+    request_id: "0198d6a1-1111-7abc-8000-000000000305",
+    status: "CLAIMED",
+    plan_version_no: 2,
+    overall_risk_level: "ATTENTION",
+    claimed_at: "2026-08-24T08:05:00Z",
+    decided_at: null,
     version: 2,
-    created_at: "2026-08-24T08:00:00Z",
-    updated_at: "2026-08-24T08:10:00Z",
   };
 }
 
 function reviewDetail() {
   return {
     ...reviewSummary(),
-    customer_summary_codes: ["PROFILE_COMPLETE", "ASSESSMENT_COMPLETED"],
-    assessment_summary_codes: ["METABOLIC_RISK_MEDIUM"],
+    customer_summary_codes: ["ASSESSMENT_INPUT_CURRENT", "PROFILE_CONTEXT_INCLUDED"],
+    assessment_summary_codes: ["OVERALL_RISK_ATTENTION", "WEIGHT_ABDOMINAL_OBESITY_ATTENTION"],
     plan_summary: {
       template_code: "METABOLIC_FOUNDATION",
-      module_summaries: ["体重管理", "运动管理"],
+      template_version: 1,
+      plan_status: "IN_REVIEW",
+      module_summaries: ["WEIGHT_ABDOMINAL_OBESITY_ATTENTION"],
+      goals: ["WEIGHT_GOAL"],
+      stages: ["FOUNDATION_STAGE"],
+      milestones: ["WEEK_FOUR_REVIEW"],
+      sop_items: ["WEEKLY_FOLLOW_UP"],
+      contraindication_codes: ["ACUTE_SYMPTOM_STOP"],
+      user_message_codes: ["FOLLOW_APPROVED_PLAN"],
+      therapist_action_codes: ["EXPLAIN_APPROVED_PLAN"],
     },
-    version_diff_codes: ["INITIAL_VERSION"],
-    history: [],
+    version_diff_codes: ["GOALS_CHANGED"],
+    history: [{ action: "REVIEW_CLAIMED", plan_version_no: 2, occurred_at: "2026-08-24T08:05:00Z" }],
+    reason_codes: [],
+    user_decision: null,
   };
 }
 

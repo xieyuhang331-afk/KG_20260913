@@ -8,17 +8,17 @@ import {
   getPlanGenerationEligibility,
   getSafeSlice6Error,
   listInstitutionPlans,
-  type HealthPlanDetail,
-  type HealthPlanSummary,
-  type PlanGenerationEligibility,
-  type PlanGenerationRequest,
+  type PlanDetailDTO,
+  type PlanGenerationEligibilityDTO,
+  type PlanGenerationRequestDTO,
+  type PlanSummaryDTO,
 } from "@/shared/api/slice6";
 import { createIdempotencyKey, isUuidV7, toUuidV7 } from "@/shared/api/slice3";
 import { Feedback, LoadingPanel, secondaryButtonClassName } from "../受控入驻界面";
 
 export function PlanEligibilityPanel({ caseId, autoLoad = true }: { caseId: string; autoLoad?: boolean }) {
-  const [eligibility, setEligibility] = useState<PlanGenerationEligibility | null>(null);
-  const [generation, setGeneration] = useState<PlanGenerationRequest | null>(null);
+  const [eligibility, setEligibility] = useState<PlanGenerationEligibilityDTO | null>(null);
+  const [generation, setGeneration] = useState<PlanGenerationRequestDTO | null>(null);
   const [loading, setLoading] = useState(autoLoad);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -161,9 +161,9 @@ export function PlanEligibilityPanel({ caseId, autoLoad = true }: { caseId: stri
 
 export function HealthPlanPage({ mode }: { mode: "generation" | "list" | "detail" }) {
   const { requestId = "", caseId = "", planId = "" } = useParams();
-  const [generation, setGeneration] = useState<PlanGenerationRequest | null>(null);
-  const [plans, setPlans] = useState<HealthPlanSummary[]>([]);
-  const [detail, setDetail] = useState<HealthPlanDetail | null>(null);
+  const [generation, setGeneration] = useState<PlanGenerationRequestDTO | null>(null);
+  const [plans, setPlans] = useState<PlanSummaryDTO[]>([]);
+  const [detail, setDetail] = useState<PlanDetailDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState("");
 
@@ -177,7 +177,7 @@ export function HealthPlanPage({ mode }: { mode: "generation" | "list" | "detail
     setLoading(true);
     try {
       if (mode === "generation") setGeneration(await getPlanGeneration(toUuidV7(requestId)));
-      if (mode === "list") setPlans((await listInstitutionPlans(toUuidV7(caseId), { limit: 20 })).items);
+      if (mode === "list") setPlans((await listInstitutionPlans(toUuidV7(caseId))).items);
       if (mode === "detail") setDetail(await getInstitutionPlan(toUuidV7(planId)));
       setFeedback("");
     } catch (error) {
@@ -214,7 +214,7 @@ export function HealthPlanPage({ mode }: { mode: "generation" | "list" | "detail
   );
 }
 
-function GenerationPanel({ generation }: { generation: PlanGenerationRequest }) {
+function GenerationPanel({ generation }: { generation: PlanGenerationRequestDTO }) {
   const label = generationStatusLabel(generation.status);
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -229,6 +229,11 @@ function GenerationPanel({ generation }: { generation: PlanGenerationRequest }) 
         <p className="mt-4 text-sm leading-6 text-slate-600">
           系统按已发布模板和已完成评估生成结构化方案；医学专家审核后才会进入用户确认。
         </p>
+        {generation.failure_code ? (
+          <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {generationFailureLabel(generation.failure_code)}
+          </p>
+        ) : null}
       </article>
       <article className="rounded-xl border border-primary-100 bg-primary-50 p-5">
         <h2 className="font-semibold text-primary-700">下一步</h2>
@@ -240,7 +245,7 @@ function GenerationPanel({ generation }: { generation: PlanGenerationRequest }) 
   );
 }
 
-function PlanList({ plans }: { plans: HealthPlanSummary[] }) {
+function PlanList({ plans }: { plans: PlanSummaryDTO[] }) {
   return (
     <section className="rounded-xl border border-slate-200 bg-white shadow-panel">
       <div className="border-b border-slate-100 px-5 py-4">
@@ -255,7 +260,7 @@ function PlanList({ plans }: { plans: HealthPlanSummary[] }) {
           >
             <div>
               <p className="font-medium">{templateLabel(plan.template_code)}</p>
-              <p className="mt-1 text-xs text-slate-500">版本 {plan.version}</p>
+              <p className="mt-1 text-xs text-slate-500">方案版本 {plan.version_no}</p>
             </div>
             <span className="text-sm font-semibold text-teal-700">{generationStatusLabel(plan.status)}</span>
           </Link>
@@ -267,13 +272,19 @@ function PlanList({ plans }: { plans: HealthPlanSummary[] }) {
   );
 }
 
-function PlanDetail({ detail }: { detail: HealthPlanDetail }) {
+function PlanDetail({ detail }: { detail: PlanDetailDTO }) {
   const sections = [
-    ["方案模块", detail.module_summaries],
-    ["健康目标", detail.goals],
-    ["执行阶段", detail.stages],
-    ["关键里程碑", detail.milestones],
-    ["服务操作规范", detail.sop_items],
+    [
+      "方案模块",
+      detail.module_summaries.map((item) => ({
+        key: item.module_code,
+        label: `${moduleLabel(item.module_code)} · ${riskLabel(item.risk_level)}`,
+      })),
+    ],
+    ["健康目标", detail.goals.map(displayCode)],
+    ["执行阶段", detail.stages.map(displayCode)],
+    ["关键里程碑", detail.milestones.map(displayCode)],
+    ["服务操作规范", detail.sop_items.map(displayCode)],
   ] as const;
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -283,8 +294,8 @@ function PlanDetail({ detail }: { detail: HealthPlanDetail }) {
             <h2 className="font-semibold">{title}</h2>
             <ul className="mt-3 grid gap-2 sm:grid-cols-2">
               {items.map((item) => (
-                <li className="rounded-lg bg-slate-50 px-3 py-2 text-sm" key={item.code}>
-                  {item.label ?? item.code}
+                <li className="rounded-lg bg-slate-50 px-3 py-2 text-sm" key={`${title}-${item.key}`}>
+                  {item.label}
                 </li>
               ))}
             </ul>
@@ -304,6 +315,8 @@ function PlanDetail({ detail }: { detail: HealthPlanDetail }) {
         <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-panel">
           <p className="text-xs text-slate-500">方案状态</p>
           <p className="mt-1 font-semibold">{generationStatusLabel(detail.status)}</p>
+          <p className="mt-3 text-xs text-slate-500">方案版本</p>
+          <p className="mt-1 font-semibold">{detail.version_no}</p>
         </article>
       </aside>
     </section>
@@ -334,12 +347,10 @@ function generationStatusLabel(status: string) {
         GENERATION_FAILED: "方案生成未完成",
         IN_REVIEW: "医学专家审核中",
         NEEDS_CORRECTION: "方案需要补正",
-        APPROVED: "方案已批准",
         REJECTED: "方案未通过",
         USER_DECISION_PENDING: "等待用户确认",
         NEEDS_EXPLANATION: "用户需要解释",
         DECLINED: "用户已拒绝",
-        ACCEPTED: "用户已确认",
         ACTIVE: "方案已激活",
         SUPERSEDED: "已有更新版本",
       } as Record<string, string>
@@ -347,6 +358,69 @@ function generationStatusLabel(status: string) {
   );
 }
 
+function generationFailureLabel(code: string) {
+  return (
+    ({ GENERATION_DEPENDENCY_UNAVAILABLE: "方案生成依赖暂不可用，请稍后刷新确认" } as Record<string, string>)[code] ??
+    "方案生成未完成，请刷新确认最新状态"
+  );
+}
+
+function moduleLabel(code: string) {
+  return (
+    (
+      {
+        BLOOD_PRESSURE_CARDIOVASCULAR: "血压与心血管",
+        GLUCOSE_METABOLISM: "血糖代谢",
+        LIPID_METABOLISM: "血脂代谢",
+        WEIGHT_ABDOMINAL_OBESITY: "体重与腹型肥胖",
+      } as Record<string, string>
+    )[code] ?? "健康管理模块"
+  );
+}
+
+function riskLabel(code: string) {
+  return (
+    (
+      { NOT_ASSESSED: "尚未评估", WITHIN_RANGE: "范围内", ATTENTION: "需关注", HIGH_RISK: "高风险" } as Record<
+        string,
+        string
+      >
+    )[code] ?? "风险状态待核对"
+  );
+}
+
+function codeLabel(code: string) {
+  return (
+    (
+      {
+        WEIGHT_GOAL: "体重管理目标",
+        GOAL_BP: "保持血压管理目标",
+        GOAL_GLUCOSE: "改善血糖管理目标",
+        GOAL_LIPID: "改善血脂管理目标",
+        GOAL_WEIGHT: "改善体重与腰围管理目标",
+        FOUNDATION_STAGE: "基础执行阶段",
+        STAGE_BASELINE: "基础管理阶段",
+        WEEK_FOUR_REVIEW: "第四周复盘",
+        MILESTONE_REVIEW: "阶段目标复盘",
+        WEEKLY_FOLLOW_UP: "每周服务跟进",
+        SOP_FOLLOW_UP: "按计划开展健康跟进",
+      } as Record<string, string>
+    )[code] ?? "已纳入获批方案"
+  );
+}
+
+function displayCode(code: string) {
+  return { key: code, label: codeLabel(code) };
+}
+
 function templateLabel(code: string) {
-  return ({ METABOLIC_FOUNDATION: "代谢健康基础方案" } as Record<string, string>)[code] ?? "健康管理方案";
+  return (
+    (
+      {
+        METABOLIC_FOUNDATION: "代谢健康基础方案",
+        PHASE1_STANDARD: "一期标准健康管理方案",
+        HTTP_STANDARD: "综合健康管理方案",
+      } as Record<string, string>
+    )[code] ?? "健康管理方案"
+  );
 }

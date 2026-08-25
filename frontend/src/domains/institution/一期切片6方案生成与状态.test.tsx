@@ -51,15 +51,17 @@ describe("一期切片6机构方案生成与状态", () => {
   });
 
   it.each([
+    ["REQUESTED", "生成请求已受理"],
     ["GENERATING", "方案生成中"],
+    ["GENERATION_FAILED", "方案生成未完成"],
     ["IN_REVIEW", "医学专家审核中"],
     ["NEEDS_CORRECTION", "方案需要补正"],
-    ["APPROVED", "方案已批准"],
     ["REJECTED", "方案未通过"],
     ["USER_DECISION_PENDING", "等待用户确认"],
     ["NEEDS_EXPLANATION", "用户需要解释"],
     ["DECLINED", "用户已拒绝"],
     ["ACTIVE", "方案已激活"],
+    ["SUPERSEDED", "已有更新版本"],
   ] as const)("将%s显示为安全业务状态", async (status, label) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(success(generation(status))));
     renderPlanRoute(`/institution/plan-generations/${requestId}`);
@@ -117,6 +119,8 @@ describe("一期切片6机构方案生成与状态", () => {
 
     expect(await screen.findByRole("heading", { name: "健康管理方案详情" })).toBeInTheDocument();
     expect(screen.getByText("体重管理目标")).toBeInTheDocument();
+    expect(screen.getByText("保持血压管理目标")).toBeInTheDocument();
+    expect(screen.queryByText("结构化方案内容")).not.toBeInTheDocument();
     expect(screen.getByText("医学锁定内容仅供查看")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByText(/诊断|处方|药物调整|价格|BOM|AI/)).not.toBeInTheDocument();
@@ -159,8 +163,9 @@ function generation(status: string) {
     request_id: requestId,
     service_case_id: caseId,
     status,
-    plan_id: status === "APPROVED" || status === "ACTIVE" ? planId : null,
-    status_reason_codes: [],
+    current_plan_id: status === "ACTIVE" ? planId : null,
+    current_plan_version: status === "ACTIVE" ? 2 : null,
+    failure_code: status === "GENERATION_FAILED" ? "GENERATION_DEPENDENCY_UNAVAILABLE" : null,
     version: 2,
     created_at: "2026-08-24T08:00:00Z",
     updated_at: "2026-08-24T08:10:00Z",
@@ -171,23 +176,24 @@ function planDetail() {
   return {
     plan_id: planId,
     service_case_id: caseId,
-    version: 1,
-    status: "APPROVED",
+    version_no: 2,
+    status: "USER_DECISION_PENDING",
     template_code: "METABOLIC_FOUNDATION",
-    template_version: "1.0.0",
-    overall_risk_level: "MEDIUM",
+    template_version: 1,
+    overall_risk_level: "ATTENTION",
     created_at: "2026-08-24T08:00:00Z",
     updated_at: "2026-08-24T08:10:00Z",
-    module_summaries: [{ code: "WEIGHT", label: "体重管理" }],
-    goals: [{ code: "WEIGHT_GOAL", label: "体重管理目标" }],
-    stages: [{ code: "FOUNDATION", label: "基础阶段" }],
-    milestones: [{ code: "WEEK_4", label: "第4周复核" }],
-    sop_items: [{ code: "FOLLOW_UP_WEEKLY", label: "每周随访" }],
+    version: 5,
+    module_summaries: [{ module_code: "WEIGHT_ABDOMINAL_OBESITY", risk_level: "ATTENTION" }],
+    goals: ["WEIGHT_GOAL", "GOAL_BP"],
+    stages: ["FOUNDATION_STAGE"],
+    milestones: ["WEEK_FOUR_REVIEW"],
+    sop_items: ["WEEKLY_FOLLOW_UP"],
     contraindication_codes: ["STOP_ON_ACUTE_SYMPTOM"],
     user_message_codes: ["FOLLOW_PLAN_WITH_EXPERT"],
     therapist_action_codes: ["REVIEW_WEEKLY"],
-    review_summary: { status: "APPROVED" },
-    user_decision_summary: null,
+    review_summary: { status: "APPROVED", decision_codes: ["CONTENT_APPROVED"], decided_at: "2026-08-24T08:08:00Z" },
+    user_decision_summary: { decision: null, decided_at: null },
     explanations: [],
   };
 }

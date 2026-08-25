@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimHealthPlanReview,
+  createHealthPlanTemplate,
   createPlanGeneration,
   decideHealthPlanReview,
   getPlanGenerationEligibility,
   getSafeSlice6Error,
   listHealthPlanReviews,
+  listInstitutionPlans,
   publishHealthPlanTemplate,
   retireHealthPlanTemplate,
 } from "./slice6";
@@ -61,20 +63,45 @@ describe("一期切片6客户端合同", () => {
     );
   });
 
+  it("模板草稿严格提交正式结构化DTO且机构方案列表不虚构分页参数", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(success({ items: [], next_cursor: null })));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      template_code: "METABOLIC_FOUNDATION",
+      applicable_modules: ["WEIGHT_ABDOMINAL_OBESITY" as const],
+      goals_by_module: {
+        WEIGHT_ABDOMINAL_OBESITY: ["WEIGHT_GOAL"],
+      },
+      stage_codes: ["FOUNDATION_STAGE"],
+      milestone_codes: ["WEEK_FOUR_REVIEW"],
+      sop_codes: ["WEEKLY_FOLLOW_UP"],
+      contraindication_codes: ["ACUTE_SYMPTOM_STOP"],
+      user_message_codes: ["FOLLOW_APPROVED_PLAN"],
+      therapist_action_codes: ["EXPLAIN_APPROVED_PLAN"],
+      medical_approval_ref: "MEDICAL-COMMITTEE-2026-01",
+    };
+
+    await createHealthPlanTemplate(input, idempotencyKey);
+    await listInstitutionPlans(caseId);
+
+    expectMutation(fetchMock, 0, "/api/v1/platform/health-plan-templates", input, idempotencyKey);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/institutions/service-cases/${caseId}/plans`);
+  });
+
   it("专家审核使用opaque cursor且决定不提交替换正文", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(success({ items: [], next_cursor: null })));
     vi.stubGlobal("fetch", fetchMock);
 
-    await listHealthPlanReviews({ status: "IN_REVIEW", cursor: "opaque-next", limit: 20 });
+    await listHealthPlanReviews({ status: "CLAIMED", cursor: "opaque.next.signature", limit: 20 });
     await claimHealthPlanReview(reviewId, 2, idempotencyKey);
     await decideHealthPlanReview(
       reviewId,
-      { decision: "NEEDS_CORRECTION", reason_codes: ["GOAL_REQUIRES_CORRECTION"], expected_version: 3 },
+      { decision: "NEEDS_CORRECTION", reason_codes: ["TEMPLATE_REAPPLY"], expected_version: 3 },
       secondIdempotencyKey,
     );
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "/api/v1/platform/health-plan-reviews?status=IN_REVIEW&cursor=opaque-next&limit=20",
+      "/api/v1/platform/health-plan-reviews?status=CLAIMED&cursor=opaque.next.signature&limit=20",
     );
     expectMutation(
       fetchMock,
@@ -91,7 +118,7 @@ describe("一期切片6客户端合同", () => {
       `/api/v1/platform/health-plan-reviews/${reviewId}/decision`,
       {
         decision: "NEEDS_CORRECTION",
-        reason_codes: ["GOAL_REQUIRES_CORRECTION"],
+        reason_codes: ["TEMPLATE_REAPPLY"],
         expected_version: 3,
       },
       secondIdempotencyKey,
