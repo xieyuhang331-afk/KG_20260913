@@ -30,6 +30,7 @@ import {
 	secondaryButtonClassName,
 } from "../受控入驻界面";
 import { getSafeApiError, isUuidV7 } from "@/shared/api/slice3";
+import { PlanEligibilityPanel } from "./HealthPlanPage";
 
 interface HealthRecordBundle {
 	record: InstitutionHealthRecord;
@@ -189,6 +190,7 @@ export function HealthRecordPage() {
 							</p>
 						</div>
 					</section>
+					<PlanEligibilityPanel autoLoad={false} caseId={caseId} />
 					<section className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)]">
 						<div className="space-y-5">
 							<IndicatorPanel

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoginPage } from "./pages/LoginPage";
+import { ProtectedRoute } from "@/app/routeGuards";
 import { setCurrentUser } from "@/shared/auth/authStore";
 import { USER_ROLES, type UserRole } from "@/shared/constants/roles";
 
@@ -15,7 +16,9 @@ describe("Credential-safe login routing", () => {
 
   it.each([
     [USER_ROLES.orgAdmin, "/institution/store/application", "INSTITUTION TARGET"],
+    [USER_ROLES.orgOperator, "/institution/store/application", "INSTITUTION OPERATOR TARGET"],
     [USER_ROLES.provinceAdmin, "/platform/home", "PLATFORM TARGET"],
+    [USER_ROLES.expert, "/platform/health-plan-reviews", "EXPERT TARGET"],
   ])("stores a session and routes %s to the authorized workspace", async (role, target, marker) => {
     mockLogin(role);
     render(
@@ -34,6 +37,32 @@ describe("Credential-safe login routing", () => {
     expect(await screen.findByText(marker)).toBeInTheDocument();
     expect(window.localStorage.getItem("kanglin.access_token") !== null).toBe(true);
   });
+
+  it("uses only the formal Slice 6 roles", () => {
+    expect(USER_ROLES).toMatchObject({
+      orgOperator: "org_operator",
+      expert: "expert",
+    });
+    expect(Object.values(USER_ROLES)).not.toContain("health_expert");
+  });
+
+  it.each([USER_ROLES.member, USER_ROLES.expert, USER_ROLES.provinceAdmin])(
+    "rejects %s at the institution role boundary",
+    (role) => {
+      setCurrentUser({ id: 2, role, tenant_id: null, org_id: null });
+      renderProtectedPath([USER_ROLES.orgAdmin, USER_ROLES.orgOperator]);
+      expect(screen.getByText("FORBIDDEN TARGET")).toBeInTheDocument();
+    },
+  );
+
+  it.each([USER_ROLES.superAdmin, USER_ROLES.orgAdmin, USER_ROLES.orgOperator])(
+    "rejects %s at the medical review role boundary",
+    (role) => {
+      setCurrentUser({ id: 3, role, tenant_id: null, org_id: null });
+      renderProtectedPath([USER_ROLES.expert]);
+      expect(screen.getByText("FORBIDDEN TARGET")).toBeInTheDocument();
+    },
+  );
 
   it.each([
     ["", undefined],
@@ -65,6 +94,7 @@ describe("Credential-safe login routing", () => {
 });
 
 function mockLogin(role: UserRole) {
+  const institutionRole = role === USER_ROLES.orgAdmin || role === USER_ROLES.orgOperator;
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue(
@@ -79,13 +109,26 @@ function mockLogin(role: UserRole) {
             user: {
               id: 1,
               role,
-              tenant_id: role === USER_ROLES.orgAdmin ? 501 : null,
-              org_id: role === USER_ROLES.orgAdmin ? 41 : null,
+              tenant_id: institutionRole ? 501 : null,
+              org_id: institutionRole ? 41 : null,
             },
           },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     ),
+  );
+}
+
+function renderProtectedPath(roles: UserRole[]) {
+  render(
+    <MemoryRouter initialEntries={["/protected"]}>
+      <Routes>
+        <Route element={<ProtectedRoute roles={roles} />}>
+          <Route path="/protected" element={<div>PROTECTED TARGET</div>} />
+        </Route>
+        <Route path="/403" element={<div>FORBIDDEN TARGET</div>} />
+      </Routes>
+    </MemoryRouter>,
   );
 }

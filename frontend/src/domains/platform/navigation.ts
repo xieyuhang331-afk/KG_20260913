@@ -25,4 +25,15 @@ export const platformNavigation: PlatformNavigationItem[] = [
     roles: [USER_ROLES.superAdmin],
   },
   { label: "同意文档", path: "/platform/consent-documents", roles: [USER_ROLES.superAdmin] },
+  {
+    label: "方案模板治理",
+    path: "/platform/health-plan-templates",
+    roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
+  },
 ];
+
+export const expertNavigation: PlatformNavigationItem[] = [
+  { label: "健康方案审核", path: "/platform/health-plan-reviews", roles: [USER_ROLES.expert] },
+];
+
+export const allPlatformNavigation: PlatformNavigationItem[] = [...platformNavigation, ...expertNavigation];

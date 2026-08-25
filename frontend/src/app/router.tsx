@@ -62,7 +62,7 @@ export const router = createBrowserRouter([
     ]
   },
   {
-    element: <ProtectedRoute roles={[USER_ROLES.orgAdmin]} />,
+    element: <ProtectedRoute roles={[USER_ROLES.orgAdmin, USER_ROLES.orgOperator]} />,
     children: [
       {
         path: "/institution",
