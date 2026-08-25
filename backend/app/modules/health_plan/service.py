@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import base64
+import binascii
+from datetime import datetime, timezone
 from enum import StrEnum
 from hashlib import sha256
+import hmac
 import json
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal
@@ -11,8 +14,17 @@ from types import MappingProxyType
 from typing import Awaitable, Callable, Mapping
 from uuid import UUID
 
+from app.core.config import get_settings
 from app.modules.health_plan.domain import EligibilityFacts, deterministic_plan_content, eligibility_result
-from app.modules.health_plan.schemas import PlanGenerationEligibilityDTO
+from app.modules.health_plan.schemas import (
+    PlanGenerationEligibilityDTO,
+    PlanReviewDetailDTO,
+    PlanReviewListItemDTO,
+    ReviewHistoryEntryDTO,
+    ReviewPlanSummaryDTO,
+    ReviewSummaryDTO,
+    review_reason_codes_match,
+)
 
 
 class HealthPlanError(RuntimeError):
@@ -23,6 +35,388 @@ class CommitOutcome(StrEnum):
     COMMITTED = "COMMITTED"
     NOT_COMMITTED = "NOT_COMMITTED"
     UNKNOWN = "UNKNOWN"
+
+
+_REVIEW_CURSOR_DOMAIN = b"slice6-health-plan-review-cursor:v1:\x00"
+_REVIEW_STATUSES = {"PENDING", "CLAIMED", "APPROVED", "NEEDS_CORRECTION", "REJECTED"}
+
+
+def _review_cursor_key() -> bytes:
+    return get_settings().jwt_secret_key.encode("utf-8")
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def encode_review_cursor(review_id: UUID, status: str | None) -> str:
+    raw = json.dumps(
+        {"review_id": str(review_id), "status": status, "v": 1},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload = _base64url(raw)
+    signature = hmac.new(_review_cursor_key(), _REVIEW_CURSOR_DOMAIN + raw, sha256).digest()
+    encoded_signature = _base64url(signature)
+    return f"{payload}.{encoded_signature}"
+
+
+def decode_review_cursor(cursor: str | None, status: str | None) -> UUID | None:
+    if cursor is None:
+        return None
+    try:
+        encoded_payload, encoded_signature = cursor.split(".")
+        raw = base64.b64decode(
+            (encoded_payload + "=" * (-len(encoded_payload) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        signature = base64.b64decode(
+            (encoded_signature + "=" * (-len(encoded_signature) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        if _base64url(raw) != encoded_payload or _base64url(signature) != encoded_signature:
+            raise ValueError
+        expected = hmac.new(_review_cursor_key(), _REVIEW_CURSOR_DOMAIN + raw, sha256).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload = json.loads(raw)
+        if set(payload) != {"review_id", "status", "v"} or payload["v"] != 1:
+            raise ValueError
+        if payload["status"] != status or (status is not None and status not in _REVIEW_STATUSES):
+            raise ValueError
+        review_id = UUID(payload["review_id"])
+        if review_id.version != 7:
+            raise ValueError
+        return review_id
+    except (
+        AttributeError,
+        binascii.Error,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ):
+        raise HealthPlanError("INVALID_REQUEST") from None
+
+
+def _review_plan_binding(review: Mapping[str, object], plan: Mapping[str, object]) -> None:
+    if (
+        UUID(str(review.get("plan_id"))) != UUID(str(plan.get("plan_id")))
+        or UUID(str(review.get("service_case_id"))) != UUID(str(plan.get("service_case_id")))
+        or int(review.get("plan_version_no", 0)) != int(plan.get("version_no", -1))
+    ):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+
+
+def _timestamp(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise HealthPlanError("DEPENDENCY_UNAVAILABLE") from None
+    else:
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    if parsed.utcoffset() is None:
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    return parsed.astimezone(timezone.utc)
+
+
+def _review_postimage(review: Mapping[str, object]) -> tuple[object, ...]:
+    try:
+        return (
+            UUID(str(review["review_id"])),
+            UUID(str(review["request_id"])),
+            UUID(str(review["plan_id"])),
+            UUID(str(review["service_case_id"])),
+            str(review["status"]),
+            int(review["plan_version_no"]),
+            _timestamp(review.get("claimed_at")),
+            _timestamp(review.get("decided_at")),
+            int(review["version"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE") from None
+
+
+def _plan_postimage(plan: Mapping[str, object]) -> dict[str, object]:
+    fields = {
+        "plan_id",
+        "service_case_id",
+        "subject_member_id",
+        "tenant_id",
+        "version_no",
+        "status",
+        "template_code",
+        "template_version",
+        "overall_risk_level",
+        "created_at",
+        "updated_at",
+        "version",
+        "module_summaries",
+        "goals",
+        "stages",
+        "milestones",
+        "sop_items",
+        "contraindication_codes",
+        "user_message_codes",
+        "therapist_action_codes",
+        "review_summary",
+        "user_decision_summary",
+        "explanations",
+    }
+    if not fields.issubset(plan):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    return {field: _json_value(plan[field]) for field in fields}
+
+
+def _review_summary_matches(
+    review: Mapping[str, object], plan: Mapping[str, object]
+) -> bool:
+    raw_summary = plan.get("review_summary")
+    if not isinstance(raw_summary, Mapping):
+        return False
+    try:
+        summary = ReviewSummaryDTO.model_validate(raw_summary)
+    except (TypeError, ValueError):
+        return False
+    status = str(review.get("status"))
+    claimed_at = _timestamp(review.get("claimed_at"))
+    decided_at = _timestamp(review.get("decided_at"))
+    decision_codes = tuple(summary.decision_codes)
+    if summary.status != status or summary.decided_at != decided_at:
+        return False
+    if status == "PENDING":
+        return claimed_at is None and decided_at is None and not decision_codes
+    if status == "CLAIMED":
+        return claimed_at is not None and decided_at is None and not decision_codes
+    if status not in {"APPROVED", "NEEDS_CORRECTION", "REJECTED"}:
+        return False
+    return (
+        claimed_at is not None
+        and decided_at is not None
+        and review_reason_codes_match(status, decision_codes)
+    )
+
+
+def _review_plan_status_matches(review_status: str, plan_status: str) -> bool:
+    allowed = {
+        "PENDING": {"IN_REVIEW"},
+        "CLAIMED": {"IN_REVIEW"},
+        "NEEDS_CORRECTION": {"SUPERSEDED"},
+        "REJECTED": {"REJECTED"},
+        "APPROVED": {
+            "USER_DECISION_PENDING",
+            "NEEDS_EXPLANATION",
+            "ACTIVE",
+            "DECLINED",
+            "SUPERSEDED",
+        },
+    }
+    return plan_status in allowed.get(review_status, set())
+
+
+def review_list_item(
+    review: Mapping[str, object], plan: Mapping[str, object]
+) -> PlanReviewListItemDTO:
+    _review_plan_binding(review, plan)
+    return PlanReviewListItemDTO.model_validate(
+        {
+            **{key: review.get(key) for key in PlanReviewListItemDTO.model_fields},
+            "overall_risk_level": plan.get("overall_risk_level"),
+        }
+    )
+
+
+_VERSION_FIELDS = {
+    "template_code": "TEMPLATE_CHANGED",
+    "template_version": "TEMPLATE_CHANGED",
+    "overall_risk_level": "OVERALL_RISK_CHANGED",
+    "module_summaries": "MODULE_SUMMARIES_CHANGED",
+    "goals": "GOALS_CHANGED",
+    "stages": "STAGES_CHANGED",
+    "milestones": "MILESTONES_CHANGED",
+    "sop_items": "SOP_ITEMS_CHANGED",
+    "contraindication_codes": "CONTRAINDICATIONS_CHANGED",
+    "user_message_codes": "USER_MESSAGES_CHANGED",
+    "therapist_action_codes": "THERAPIST_ACTIONS_CHANGED",
+}
+
+
+def _version_diff_codes(
+    plan: Mapping[str, object], previous_plan: Mapping[str, object] | None
+) -> tuple[str, ...]:
+    if previous_plan is None:
+        return ("INITIAL_VERSION",)
+    if (
+        UUID(str(previous_plan.get("service_case_id")))
+        != UUID(str(plan.get("service_case_id")))
+        or int(previous_plan.get("version_no", 0)) >= int(plan.get("version_no", 0))
+    ):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    return tuple(
+        sorted(
+            {
+                code
+                for field, code in _VERSION_FIELDS.items()
+                if previous_plan.get(field) != plan.get(field)
+            }
+        )
+    )
+
+
+def review_detail_dto(
+    review: Mapping[str, object],
+    plan: Mapping[str, object],
+    previous_plan: Mapping[str, object] | None,
+    *,
+    confirmed_review: Mapping[str, object],
+    confirmed_plan: Mapping[str, object],
+    assessment_context: Mapping[str, object],
+    plan_history: tuple[Mapping[str, object], ...],
+    review_history: tuple[Mapping[str, object], ...],
+) -> PlanReviewDetailDTO:
+    if _review_postimage(review) != _review_postimage(confirmed_review):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    if _plan_postimage(plan) != _plan_postimage(confirmed_plan):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    item = review_list_item(review, plan)
+    plan_module_summaries = tuple(
+        sorted(
+            f"{module['module_code']}_{module['risk_level']}"
+            for module in plan.get("module_summaries", ())
+        )
+    )
+    evidence = assessment_context.get("input_evidence")
+    assessment_modules = assessment_context.get("module_results")
+    if (
+        not isinstance(evidence, Mapping)
+        or not isinstance(assessment_modules, (list, tuple))
+        or evidence.get("profile_revision_ref") is None
+        or evidence.get("watermark_status") != "CURRENT"
+        or assessment_context.get("overall_risk") != plan.get("overall_risk_level")
+    ):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    try:
+        UUID(str(evidence["profile_revision_ref"]))
+        assessment_module_summaries = tuple(
+            sorted(
+                f"{module['module_code']}_{module['risk_level']}"
+                for module in assessment_modules
+                if isinstance(module, Mapping)
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE") from None
+    if (
+        len(assessment_module_summaries) != len(assessment_modules)
+        or assessment_module_summaries != plan_module_summaries
+    ):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    review_summary = plan.get("review_summary")
+    user_summary = plan.get("user_decision_summary")
+    if not isinstance(review_summary, Mapping) or not isinstance(user_summary, Mapping):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    case_id = UUID(str(plan["service_case_id"]))
+    current_version = int(plan["version_no"])
+    plans_by_version: dict[int, Mapping[str, object]] = {}
+    for history_plan in plan_history:
+        version_no = int(history_plan.get("version_no", 0))
+        if (
+            UUID(str(history_plan.get("service_case_id"))) != case_id
+            or version_no < 1
+            or version_no > current_version
+            or version_no in plans_by_version
+        ):
+            raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+        plans_by_version[version_no] = history_plan
+    if set(plans_by_version) != set(range(1, current_version + 1)):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    reviews_by_version: dict[int, Mapping[str, object]] = {}
+    for history_review in review_history:
+        version_no = int(history_review.get("plan_version_no", 0))
+        if (
+            UUID(str(history_review.get("service_case_id"))) != case_id
+            or version_no not in plans_by_version
+            or version_no in reviews_by_version
+        ):
+            raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+        reviews_by_version[version_no] = history_review
+    if set(reviews_by_version) != set(plans_by_version):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    current_history_review = reviews_by_version[current_version]
+    if _review_postimage(current_history_review) != _review_postimage(confirmed_review):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    if _plan_postimage(plans_by_version[current_version]) != _plan_postimage(confirmed_plan):
+        raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+    history: list[ReviewHistoryEntryDTO] = []
+    for version_no in sorted(plans_by_version):
+        history_plan = plans_by_version[version_no]
+        history_review = reviews_by_version[version_no]
+        _review_plan_binding(history_review, history_plan)
+        if not _review_summary_matches(history_review, history_plan) or not _review_plan_status_matches(
+            str(history_review["status"]), str(history_plan["status"])
+        ):
+            raise HealthPlanError("DEPENDENCY_UNAVAILABLE")
+        history.append(
+            ReviewHistoryEntryDTO(
+                action="PLAN_GENERATED",
+                plan_version_no=version_no,
+                occurred_at=history_plan["created_at"],
+            )
+        )
+        if history_review.get("claimed_at") is not None:
+            history.append(
+                ReviewHistoryEntryDTO(
+                    action="REVIEW_CLAIMED",
+                    plan_version_no=version_no,
+                    occurred_at=history_review["claimed_at"],
+                )
+            )
+        if history_review.get("decided_at") is not None:
+            history.append(
+                ReviewHistoryEntryDTO(
+                    action="REVIEW_DECIDED",
+                    plan_version_no=version_no,
+                    occurred_at=history_review["decided_at"],
+                )
+            )
+    plan_summary = ReviewPlanSummaryDTO(
+        plan_status=plan["status"],
+        template_code=plan["template_code"],
+        template_version=plan["template_version"],
+        module_summaries=plan_module_summaries,
+        goals=tuple(plan.get("goals", ())),
+        stages=tuple(plan.get("stages", ())),
+        milestones=tuple(plan.get("milestones", ())),
+        sop_items=tuple(plan.get("sop_items", ())),
+        contraindication_codes=tuple(plan.get("contraindication_codes", ())),
+        user_message_codes=tuple(plan.get("user_message_codes", ())),
+        therapist_action_codes=tuple(plan.get("therapist_action_codes", ())),
+    )
+    return PlanReviewDetailDTO(
+        **item.model_dump(),
+        customer_summary_codes=(
+            "ASSESSMENT_INPUT_CURRENT",
+            "PROFILE_CONTEXT_INCLUDED",
+        ),
+        assessment_summary_codes=(
+            f"OVERALL_RISK_{plan['overall_risk_level']}",
+            *assessment_module_summaries,
+        ),
+        plan_summary=plan_summary,
+        version_diff_codes=_version_diff_codes(plan, previous_plan),
+        history=tuple(history),
+        reason_codes=tuple(review_summary.get("decision_codes") or ()),
+        user_decision=user_summary.get("decision"),
+    )
 
 
 def _json_value(value: object) -> object:
@@ -374,7 +768,7 @@ async def review_plan(
 ) -> dict:
     if actor_role != "expert":
         raise HealthPlanError("FORBIDDEN")
-    if decision not in {"APPROVED", "NEEDS_CORRECTION", "REJECTED"} or not reason_codes:
+    if not review_reason_codes_match(decision, reason_codes):
         raise HealthPlanError("INVALID_REQUEST")
     operation = "PLAN_REVIEW_DECISION"
     request_digest = digest_hex(

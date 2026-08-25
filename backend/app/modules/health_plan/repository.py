@@ -7,8 +7,8 @@ import json
 from typing import Mapping
 from uuid import UUID
 
-from sqlalchemy import BigInteger, bindparam, text
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy import BigInteger, DateTime, String, bindparam, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PostgreSQLUUID
 
 
 def _json_value(value: object) -> object:
@@ -282,6 +282,115 @@ class HealthPlanRepository:
     async def plan_detail(self, plan_id: UUID) -> dict | None:
         return await self._one_by_uuid("slice6_plan_read_v1", "plan_id", plan_id)
 
+    async def plan_details(self, plan_ids: tuple[UUID, ...]) -> list[dict]:
+        if not plan_ids:
+            return []
+        statement = text(
+            "SELECT * FROM public.slice6_plan_read_v1 "
+            "WHERE plan_id=ANY(:plan_ids) ORDER BY plan_id"
+        ).bindparams(
+            bindparam("plan_ids", type_=ARRAY(PostgreSQLUUID(as_uuid=True)))
+        )
+        return list(
+            (await self.session.execute(statement, {"plan_ids": list(plan_ids)}))
+            .mappings()
+            .all()
+        )
+
+    async def previous_plan_detail(
+        self, *, service_case_id: UUID, plan_version_no: int
+    ) -> dict | None:
+        statement = text(
+            "SELECT * FROM public.slice6_plan_read_v1 "
+            "WHERE service_case_id=:service_case_id AND version_no<:plan_version_no "
+            "ORDER BY version_no DESC LIMIT 1"
+        ).bindparams(
+            bindparam("service_case_id", type_=PostgreSQLUUID(as_uuid=True)),
+            bindparam("plan_version_no", type_=BigInteger),
+        )
+        return (
+            await self.session.execute(
+                statement,
+                {
+                    "service_case_id": service_case_id,
+                    "plan_version_no": plan_version_no,
+                },
+            )
+        ).mappings().first()
+
+    async def plan_history(
+        self, *, service_case_id: UUID, through_version_no: int
+    ) -> list[dict]:
+        statement = text(
+            "SELECT * FROM public.slice6_plan_read_v1 "
+            "WHERE service_case_id=:service_case_id AND version_no<=:through_version_no "
+            "ORDER BY version_no"
+        ).bindparams(
+            bindparam("service_case_id", type_=PostgreSQLUUID(as_uuid=True)),
+            bindparam("through_version_no", type_=BigInteger),
+        )
+        return list(
+            (
+                await self.session.execute(
+                    statement,
+                    {
+                        "service_case_id": service_case_id,
+                        "through_version_no": through_version_no,
+                    },
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    async def review_history(
+        self, *, service_case_id: UUID, through_version_no: int
+    ) -> list[dict]:
+        statement = text(
+            "SELECT * FROM public.slice6_review_read_v1 "
+            "WHERE service_case_id=:service_case_id AND plan_version_no<=:through_version_no "
+            "ORDER BY plan_version_no,review_id"
+        ).bindparams(
+            bindparam("service_case_id", type_=PostgreSQLUUID(as_uuid=True)),
+            bindparam("through_version_no", type_=BigInteger),
+        )
+        return list(
+            (
+                await self.session.execute(
+                    statement,
+                    {
+                        "service_case_id": service_case_id,
+                        "through_version_no": through_version_no,
+                    },
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    async def formal_assessment_context(
+        self, *, service_case_id: UUID, plan_created_at
+    ) -> dict | None:
+        statement = text(
+            "SELECT overall_risk,input_evidence,module_results "
+            "FROM public.slice5_assessment_read_v1 "
+            "WHERE service_case_id=:service_case_id AND status='COMPLETED' "
+            "AND completed_at<=:plan_created_at "
+            "ORDER BY sequence_no DESC LIMIT 1"
+        ).bindparams(
+            bindparam("service_case_id", type_=PostgreSQLUUID(as_uuid=True)),
+            bindparam("plan_created_at", type_=DateTime(timezone=True)),
+        )
+        return (
+            await self.session.execute(
+                statement,
+                {
+                    "service_case_id": service_case_id,
+                    "plan_created_at": plan_created_at,
+                },
+            )
+        ).mappings().first()
+
     async def _one_by_uuid(self, view: str, column: str, value: UUID) -> dict | None:
         statement = text(f"SELECT * FROM public.{view} WHERE {column}=:value").bindparams(
             bindparam("value", type_=PostgreSQLUUID(as_uuid=True))
@@ -302,8 +411,28 @@ class HealthPlanRepository:
     async def template_page(self, cursor_id: UUID | None, limit: int) -> list[dict]:
         return await self._page("slice6_template_governance_read_v1", "template_version_id", cursor_id, limit)
 
-    async def review_page(self, cursor_id: UUID | None, limit: int) -> list[dict]:
-        return await self._page("slice6_review_read_v1", "review_id", cursor_id, limit)
+    async def review_page(
+        self, *, cursor_id: UUID | None, status: str | None, limit: int
+    ) -> list[dict]:
+        statement = text(
+            "SELECT * FROM public.slice6_review_read_v1 "
+            "WHERE (:status IS NULL OR status=:status) "
+            "AND (:cursor_id IS NULL OR review_id>:cursor_id) "
+            "ORDER BY review_id LIMIT :limit"
+        ).bindparams(
+            bindparam("cursor_id", type_=PostgreSQLUUID(as_uuid=True)),
+            bindparam("status", type_=String),
+        )
+        return list(
+            (
+                await self.session.execute(
+                    statement,
+                    {"cursor_id": cursor_id, "status": status, "limit": limit},
+                )
+            )
+            .mappings()
+            .all()
+        )
 
     async def plan_page(
         self, *, service_case_id: UUID, cursor_id: UUID | None, limit: int
