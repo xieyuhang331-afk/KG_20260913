@@ -22,6 +22,7 @@ StructuredCode = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")]
 MilestoneCodeValue = Literal["D0", "D7", "D14", "D21", "D28"]
 MilestoneStatusValue = Literal["PENDING", "DUE", "COMPLETED", "MISSED", "INVALIDATED"]
 CaseStatusValue = Literal[
+    "PLAN_PENDING",
     "ACTIVE",
     "PAUSED",
     "CLOSING",
@@ -81,10 +82,10 @@ class ServiceFulfillmentDTO(StrictModel):
     service_case_id: UuidV7
     lifecycle_status: CaseStatusValue
     risk_flag: Literal["AT_RISK"] | None = None
-    active_plan_id: UuidV7
-    cycle_anchor_at: AwareDatetime
-    current_schedule_version: ExpectedVersion
-    milestones: tuple[MilestoneDTO, ...] = Field(min_length=5, max_length=5)
+    active_plan_id: UuidV7 | None = None
+    cycle_anchor_at: AwareDatetime | None = None
+    current_schedule_version: ExpectedVersion | None = None
+    milestones: tuple[MilestoneDTO, ...] = Field(max_length=5)
     open_high_risk_count: int = Field(ge=0)
     closing_readiness: Literal[
         "NOT_READY",
@@ -94,6 +95,25 @@ class ServiceFulfillmentDTO(StrictModel):
         "BLOCKED_BY_USER_ACK",
     ]
     version: ExpectedVersion
+
+    @model_validator(mode="after")
+    def cycle_shape_matches_lifecycle(self):
+        if self.lifecycle_status == "PLAN_PENDING":
+            if (
+                self.active_plan_id is not None
+                or self.cycle_anchor_at is not None
+                or self.current_schedule_version is not None
+                or self.milestones
+            ):
+                raise ValueError("PLAN_PENDING_CYCLE_FORBIDDEN")
+        elif (
+            self.active_plan_id is None
+            or self.cycle_anchor_at is None
+            or self.current_schedule_version is None
+            or len(self.milestones) != 5
+        ):
+            raise ValueError("ACTIVE_CYCLE_REQUIRED")
+        return self
 
 
 class ServiceFulfillmentPageDTO(StrictModel):

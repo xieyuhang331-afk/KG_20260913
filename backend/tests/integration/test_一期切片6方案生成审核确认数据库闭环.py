@@ -465,6 +465,19 @@ def test_PG11_PG20_六身份函数完成生成审核与用户确认原子闭环(
     )["status"] == "ACTIVE"
 
     assert pg_database.fetch_value(
+        f"SELECT count(*) FROM public.service_cycle_schedule WHERE active_plan_id='{corrected_plan_id}'"
+    ) == 1
+    assert pg_database.fetch_value(
+        f"SELECT count(*) FROM public.service_milestone WHERE service_case_id='{seeded['case_id']}'"
+    ) == 5
+    assert pg_database.fetch_value(
+        f"SELECT cycle_anchor_at=(TIMESTAMPTZ '{created_at}') FROM public.service_cycle_schedule WHERE active_plan_id='{corrected_plan_id}'"
+    ) is True
+    assert pg_database.fetch_value(
+        f"SELECT count(*) FROM public.service_case_lifecycle_event WHERE service_case_id='{seeded['case_id']}' AND to_status='ACTIVE' AND reason_code='PLAN_ACCEPTED'"
+    ) == 1
+
+    assert pg_database.fetch_value(
         f"SELECT status FROM public.health_plan_version WHERE plan_id='{plan_id}'"
     ) == "SUPERSEDED"
     assert pg_database.fetch_value(

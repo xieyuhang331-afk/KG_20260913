@@ -128,3 +128,39 @@ def test_0032仅向前扩展PrivateFile内部ZIP且降级预检先于DDL() -> No
     downgrade = source[source.index("def downgrade()") :]
     assert "Slice 7 downgrade requires no generated export private files" in downgrade
     assert downgrade.index("PERSONAL_DATA_EXPORT") < downgrade.index("DROP FUNCTION")
+
+
+def test_整改A_方案接受在0032内原子建立唯一履约周期() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "slice7_plan_activation_v1" in source
+    assert "trg_slice7_plan_activation_v1" in source
+    assert "AFTER UPDATE OF status ON public.health_plan_version" in source
+    assert "OLD.status IS DISTINCT FROM 'ACTIVE'" in source
+    assert "NEW.status='ACTIVE'" in source
+    assert "ON CONFLICT (service_case_id) WHERE is_current DO NOTHING" in source
+    assert "PLAN_ACCEPTED" in source
+
+
+def test_整改A_MARK_MISSED具有真实幂等Mutation分支() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "operation_name='MARK_MISSED' THEN UPDATE" in source
+    assert "status IN ('PENDING','DUE')" in source
+    assert "status='MISSED'" in source
+    assert "MILESTONE_MISSED" in source
+
+
+def test_整改A_读模型不把无周期PREPARING误报ACTIVE并计算真实关闭水位() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "'PLAN_PENDING'" in source
+    assert "'closing_readiness',public.slice7_closing_readiness_v1" in source
+    assert "'closing_readiness','NOT_READY'" not in source
+
+
+def test_整改A_关闭材料与ACK均在数据库比较expected_version() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    for operation in ("CREATE_CLOSING_ASSESSMENT", "CREATE_SUMMARY", "ACK_SUMMARY"):
+        branch = source[source.index(f"operation_name='{operation}'") :]
+        branch = branch[: branch.index("ELSIF", 1) if "ELSIF" in branch[1:] else len(branch)]
+        assert "expected_version" in branch
+    assert "ACK_SUMMARY" in source
+    assert "'COMPLETED'" in source

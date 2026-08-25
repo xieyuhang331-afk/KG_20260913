@@ -162,14 +162,23 @@ def test_必要Runtime仅通过固定受限接口工作(pg_database) -> None:
         )
 
 
-def _seed_active_plan(pg_database) -> dict[str, object]:
+def _seed_active_plan(
+    pg_database,
+    slice6_institution_writer_database,
+    *,
+    ordinal: int | None = None,
+    accepted_at: datetime | None = None,
+) -> dict[str, object]:
     seed_module = importlib.import_module(
         "tests.integration.test_一期切片6方案生成审核确认数据库闭环"
     )
-    ordinal = int(os.getenv("KG_SLICE7_TEST_ORDINAL", "77"))
+    ordinal = ordinal or int(os.getenv("KG_SLICE7_TEST_ORDINAL", "77"))
     seeded = seed_module._seed_ready_case(pg_database, ordinal=ordinal)
     request_id = f"019c7000-0000-7000-8000-{ordinal:012d}"
     plan_id = f"019c7001-0000-7000-8000-{ordinal:012d}"
+    accepted_at_value = (
+        accepted_at or datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
+    ).isoformat()
     pg_database.execute(
         "BEGIN;"
         "INSERT INTO public.health_plan_generation_request("
@@ -178,22 +187,57 @@ def _seed_active_plan(pg_database) -> dict[str, object]:
         "authority_digest,initiated_by,initiated_role,created_at,updated_at,version) VALUES ("
         f"'{request_id}','{seeded['case_id']}','{seeded['subject_member_id']}',{seeded['tenant_id']},"
         f"'{seeded['assessment_id']}',3,'{seeded['assembly_id']}','{seeded['template_id']}',1,"
-        f"'ACTIVE','{plan_id}',NULL,decode(repeat('ab',32),'hex'),{seeded['org_actor_id']},"
+        f"'USER_DECISION_PENDING','{plan_id}',NULL,decode(repeat('ab',32),'hex'),{seeded['org_actor_id']},"
         "'org_admin',now(),now(),1);"
         "INSERT INTO public.health_plan_version("
         "plan_id,request_id,service_case_id,subject_member_id,tenant_id,version_no,template_version_id,"
         "assessment_id,status,content,content_digest,supersedes_plan_id,created_at,updated_at,version) VALUES ("
         f"'{plan_id}','{request_id}','{seeded['case_id']}','{seeded['subject_member_id']}',"
         f"{seeded['tenant_id']},1,'{seeded['template_id']}','{seeded['assessment_id']}',"
-        "'ACTIVE','{}'::jsonb,decode(repeat('cd',32),'hex'),NULL,now(),now(),1);"
+        "'USER_DECISION_PENDING','{}'::jsonb,decode(repeat('cd',32),'hex'),NULL,now(),now(),1);"
         "COMMIT;"
     )
+    decision_payload = {
+        "decision_id": f"019c7002-0000-7000-8000-{ordinal:012d}",
+        "plan_id": plan_id,
+        "decision": "ACCEPT",
+        "expected_version": 1,
+        "actor_user_id": seeded["family_actor_id"],
+        "actor_role": "member",
+        "actor_context": "AUTO",
+        "proxy_grant_id": None,
+        "idempotency_key": f"slice7-plan-accept-{ordinal}",
+        "request_digest": "ce" * 32,
+        "audit_id": f"019c7003-0000-7000-8000-{ordinal:012d}",
+        "event_id": f"019c7004-0000-7000-8000-{ordinal:012d}",
+        "receipt_id": f"019c7005-0000-7000-8000-{ordinal:012d}",
+        "occurred_at": accepted_at_value,
+        "response": {
+            "decision_id": f"019c7002-0000-7000-8000-{ordinal:012d}",
+            "plan_id": plan_id,
+            "decision": "ACCEPT",
+            "status": "ACTIVE",
+            "version": 2,
+        },
+        "postimage_digest": "cf" * 32,
+    }
+    activated = seed_module._call_json(
+        slice6_institution_writer_database,
+        "slice6_user_decision_v1",
+        decision_payload,
+    )
+    replayed = seed_module._call_json(
+        slice6_institution_writer_database,
+        "slice6_user_decision_v1",
+        decision_payload,
+    )
+    assert activated == replayed
     return {**seeded, "plan_id": plan_id}
 
 
 @pytest.fixture(scope="module")
-def slice7_seeded(pg_database) -> dict[str, object]:
-    return _seed_active_plan(pg_database)
+def slice7_seeded(pg_database, slice6_institution_writer_database) -> dict[str, object]:
+    return _seed_active_plan(pg_database, slice6_institution_writer_database)
 
 
 def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
@@ -203,35 +247,37 @@ def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
     seeded = slice7_seeded
 
     async def exercise() -> tuple[dict, dict, dict]:
-        engine = create_async_engine(
+        milestone_engine = create_async_engine(
             os.environ["KG_TEST_SLICE7_MILESTONE_WRITER_DATABASE_URL"],
             pool_pre_ping=True,
         )
+        family_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
         try:
-            async with AsyncSession(engine, expire_on_commit=False) as session:
+            async with AsyncSession(family_engine, expire_on_commit=False) as session:
+                reader = ServiceFulfillmentRepository(session)
+                activated = await reader.read_one(
+                    "FULFILLMENT",
+                    UUID(str(seeded["case_id"])),
+                    int(seeded["family_actor_id"]),
+                    "member",
+                )
+                replayed = await reader.read_one(
+                    "FULFILLMENT",
+                    UUID(str(seeded["case_id"])),
+                    int(seeded["family_actor_id"]),
+                    "member",
+                )
+            assert activated is not None
+            assert replayed is not None
+            async with AsyncSession(milestone_engine, expire_on_commit=False) as session:
                 service = ServiceFulfillmentService(
                     ServiceFulfillmentRepository(session),
                     SystemBusinessClock(),
                     Uuid7Generator().generate,
                 )
-                activated = await service.activate_cycle(
-                    service_case_id=UUID(str(seeded["case_id"])),
-                    actor_user_id=int(seeded["therapist_actor_id"]),
-                    actor_role="therapist",
-                    actor_tenant_id=int(seeded["tenant_id"]),
-                    idempotency_key="slice7-db-activate-0001",
-                    expected_version=1,
-                )
-                await session.commit()
-                replayed = await service.activate_cycle(
-                    service_case_id=UUID(str(seeded["case_id"])),
-                    actor_user_id=int(seeded["therapist_actor_id"]),
-                    actor_role="therapist",
-                    actor_tenant_id=int(seeded["tenant_id"]),
-                    idempotency_key="slice7-db-activate-0001",
-                    expected_version=1,
-                )
-                await session.commit()
                 d0 = next(item for item in activated["milestones"] if item["code"] == "D0")
                 completed = await service.complete_milestone(
                     milestone_id=UUID(str(d0["milestone_id"])),
@@ -246,7 +292,8 @@ def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
                 await session.commit()
                 return activated, replayed, completed
         finally:
-            await engine.dispose()
+            await milestone_engine.dispose()
+            await family_engine.dispose()
 
     activated, replayed, completed = asyncio.run(exercise())
     assert activated == replayed
@@ -255,15 +302,190 @@ def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
     assert pg_database.fetch_value(
         f"SELECT count(*) FROM public.service_cycle_schedule WHERE service_case_id='{seeded['case_id']}'"
     ) == 1
+
+
+class _FixedClock:
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def now(self) -> datetime:
+        return self.value
+
+
+def test_整改A_五节点到总结ACK在正式Runtime事务内自动进入COMPLETED(
+    pg_database,
+    slice7_seeded,
+) -> None:
+    seeded = slice7_seeded
+
+    async def exercise() -> dict:
+        milestone_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_MILESTONE_WRITER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        case_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_CASE_WRITER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        family_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        try:
+            async with AsyncSession(family_engine, expire_on_commit=False) as session:
+                current = await ServiceFulfillmentRepository(session).read_one(
+                    "FULFILLMENT",
+                    UUID(str(seeded["case_id"])),
+                    int(seeded["family_actor_id"]),
+                    "member",
+                )
+            assert current is not None
+            for milestone in current["milestones"]:
+                if milestone["status"] == "COMPLETED":
+                    continue
+                window_start = datetime.fromisoformat(
+                    f"{milestone['window_start']}T00:00:00+00:00"
+                )
+                async with AsyncSession(
+                    milestone_engine, expire_on_commit=False
+                ) as session:
+                    service = ServiceFulfillmentService(
+                        ServiceFulfillmentRepository(session),
+                        _FixedClock(window_start),
+                        Uuid7Generator().generate,
+                    )
+                    await service.complete_milestone(
+                        milestone_id=UUID(str(milestone["milestone_id"])),
+                        actor_user_id=int(seeded["therapist_actor_id"]),
+                        actor_role="therapist",
+                        actor_tenant_id=int(seeded["tenant_id"]),
+                        idempotency_key=f"slice7-close-{milestone['code']}",
+                        expected_version=int(milestone["version"]),
+                        record_summary={"EXECUTION_STATUS": "COMPLETED"},
+                        evidence_refs=(),
+                    )
+                    await session.commit()
+
+            transition_clock = _FixedClock(
+                datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc)
+            )
+            async with AsyncSession(case_engine, expire_on_commit=False) as session:
+                service = ServiceFulfillmentService(
+                    ServiceFulfillmentRepository(session),
+                    transition_clock,
+                    Uuid7Generator().generate,
+                )
+                with pytest.raises(Exception, match="STALE_VERSION"):
+                    await service.case_transition(
+                        operation="CREATE_CLOSING_ASSESSMENT",
+                        service_case_id=UUID(str(seeded["case_id"])),
+                        actor_user_id=int(seeded["therapist_actor_id"]),
+                        actor_role="therapist",
+                        actor_tenant_id=int(seeded["tenant_id"]),
+                        idempotency_key="slice7-closing-assessment-stale",
+                        request={
+                            "expected_version": 1,
+                            "assessment_id": UUID(str(seeded["assessment_id"])),
+                            "final_retest_evidence": ("REPORT_CLEAN",),
+                        },
+                    )
+                await session.rollback()
+                await service.case_transition(
+                    operation="CREATE_CLOSING_ASSESSMENT",
+                    service_case_id=UUID(str(seeded["case_id"])),
+                    actor_user_id=int(seeded["therapist_actor_id"]),
+                    actor_role="therapist",
+                    actor_tenant_id=int(seeded["tenant_id"]),
+                    idempotency_key="slice7-closing-assessment-1",
+                    request={
+                        "expected_version": 2,
+                        "assessment_id": UUID(str(seeded["assessment_id"])),
+                        "final_retest_evidence": ("REPORT_CLEAN",),
+                    },
+                )
+                await session.commit()
+                with pytest.raises(Exception, match="STALE_VERSION"):
+                    await service.case_transition(
+                        operation="CREATE_SUMMARY",
+                        service_case_id=UUID(str(seeded["case_id"])),
+                        actor_user_id=int(seeded["therapist_actor_id"]),
+                        actor_role="therapist",
+                        actor_tenant_id=int(seeded["tenant_id"]),
+                        idempotency_key="slice7-summary-stale",
+                        request={
+                            "expected_version": 2,
+                            "assessment_id": UUID(str(seeded["assessment_id"])),
+                            "final_retest_evidence": ("REPORT_CLEAN",),
+                            "milestone_outcomes": {"D28": "COMPLETED"},
+                            "safety_follow_up": ("FOLLOW_UP_PRIMARY_CARE",),
+                            "next_step": ("CONTINUE_MONITORING",),
+                        },
+                    )
+                await session.rollback()
+                summary = await service.case_transition(
+                    operation="CREATE_SUMMARY",
+                    service_case_id=UUID(str(seeded["case_id"])),
+                    actor_user_id=int(seeded["therapist_actor_id"]),
+                    actor_role="therapist",
+                    actor_tenant_id=int(seeded["tenant_id"]),
+                    idempotency_key="slice7-summary-1",
+                    request={
+                        "expected_version": 3,
+                        "assessment_id": UUID(str(seeded["assessment_id"])),
+                        "final_retest_evidence": ("REPORT_CLEAN",),
+                        "milestone_outcomes": {"D28": "COMPLETED"},
+                        "safety_follow_up": ("FOLLOW_UP_PRIMARY_CARE",),
+                        "next_step": ("CONTINUE_MONITORING",),
+                    },
+                )
+                await session.commit()
+                with pytest.raises(Exception, match="STALE_VERSION"):
+                    await service.case_transition(
+                        operation="ACK_SUMMARY",
+                        service_case_id=UUID(str(summary["summary_id"])),
+                        actor_user_id=int(seeded["family_actor_id"]),
+                        actor_role="member",
+                        actor_tenant_id=None,
+                        idempotency_key="slice7-summary-ack-stale",
+                        request={"expected_version": 2},
+                    )
+                await session.rollback()
+                await service.case_transition(
+                    operation="ACK_SUMMARY",
+                    service_case_id=UUID(str(summary["summary_id"])),
+                    actor_user_id=int(seeded["family_actor_id"]),
+                    actor_role="member",
+                    actor_tenant_id=None,
+                    idempotency_key="slice7-summary-ack-1",
+                    request={"expected_version": 1},
+                )
+                await session.commit()
+
+            async with AsyncSession(family_engine, expire_on_commit=False) as session:
+                completed = await ServiceFulfillmentRepository(session).read_one(
+                    "FULFILLMENT",
+                    UUID(str(seeded["case_id"])),
+                    int(seeded["family_actor_id"]),
+                    "member",
+                )
+            assert completed is not None
+            return completed
+        finally:
+            await milestone_engine.dispose()
+            await case_engine.dispose()
+            await family_engine.dispose()
+
+    completed = asyncio.run(exercise())
+    assert completed["lifecycle_status"] == "COMPLETED"
+    assert completed["closing_readiness"] == "READY_TO_CLOSE"
     assert pg_database.fetch_value(
-        f"SELECT count(*) FROM public.service_milestone WHERE service_case_id='{seeded['case_id']}'"
-    ) == 5
+        f"SELECT status FROM public.service_case WHERE case_id='{seeded['case_id']}'"
+    ) == "PREPARING"
     assert pg_database.fetch_value(
-        f"SELECT count(*) FROM public.service_milestone_revision r JOIN public.service_milestone m ON m.milestone_id=r.milestone_id WHERE m.service_case_id='{seeded['case_id']}'"
+        f"SELECT count(*) FROM public.service_summary_acknowledgement a JOIN public.service_summary s ON s.summary_id=a.summary_id WHERE s.service_case_id='{seeded['case_id']}'"
     ) == 1
-    assert pg_database.fetch_value(
-        f"SELECT count(*) FROM public.service_fulfillment_receipt WHERE target_id='{seeded['case_id']}' OR target_id IN (SELECT milestone_id FROM public.service_milestone WHERE service_case_id='{seeded['case_id']}')"
-    ) == 2
+
+
 
 
 def test_D37_D40_Worker崩溃后租约恢复且不重复事件(

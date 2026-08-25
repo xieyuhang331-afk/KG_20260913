@@ -149,6 +149,7 @@ class ServiceFulfillmentService:
             "audit_id": self.id_factory(),
             "event_id": self.id_factory(),
             "receipt_id": self.id_factory(),
+            "lifecycle_event_id": self.id_factory(),
             "response": response,
         }
         payload["expected_response_digest"] = digest_hex(response)
@@ -338,6 +339,23 @@ class ServiceFulfillmentService:
             "UNABLE_TO_CONTACT": "UNABLE_TO_CONTACT",
             "SAFETY_TERMINATE": "SAFETY_TERMINATED",
         }.get(operation, authority.get("case_status", "ACTIVE"))
+        statuses = {
+            MilestoneCode(str(row["code"])): MilestoneStatus(str(row["status"]))
+            for row in authority.get("milestones", ())
+        }
+        readiness = (
+            closing_readiness(
+                statuses,
+                closing_assessment_complete=bool(
+                    authority.get("closing_assessment_complete")
+                ),
+                summary_complete=bool(authority.get("summary_complete")),
+                user_acknowledged=bool(authority.get("summary_acknowledged")),
+                open_high_risk_count=int(authority.get("high_risk_count", 0)),
+            ).value
+            if len(statuses) == len(MilestoneCode)
+            else "BLOCKED_BY_MISSING_MILESTONE"
+        )
         return {
             "service_case_id": authority["service_case_id"],
             "lifecycle_status": lifecycle,
@@ -347,7 +365,7 @@ class ServiceFulfillmentService:
             "current_schedule_version": authority["schedule_version"],
             "milestones": authority["milestones"],
             "open_high_risk_count": authority["high_risk_count"],
-            "closing_readiness": "NOT_READY",
+            "closing_readiness": readiness,
             "version": int(authority.get("service_case_version", 1)) + 1,
         }
 
@@ -455,6 +473,8 @@ class ServiceFulfillmentService:
                 status is not MilestoneStatus.COMPLETED for status in statuses.values()
             ):
                 raise ServiceFulfillmentError("CLOSURE_PREREQUISITE_MISSING")
+        if operation in {"CREATE_CLOSING_ASSESSMENT", "CREATE_SUMMARY"} and current_status != "CLOSING":
+            raise ServiceFulfillmentError("CASE_STATE_CONFLICT")
         if operation == "CREATE_CLOSING_ASSESSMENT":
             if str(authority.get("latest_assessment_id")) != str(request.get("assessment_id")):
                 raise ServiceFulfillmentError("CLOSURE_PREREQUISITE_MISSING")
@@ -474,6 +494,22 @@ class ServiceFulfillmentService:
             if readiness.value == "BLOCKED_BY_HIGH_RISK":
                 raise ServiceFulfillmentError("HIGH_RISK_BLOCKS_COMPLETION")
             if readiness.value != "READY_TO_CLOSE":
+                raise ServiceFulfillmentError("CLOSURE_PREREQUISITE_MISSING")
+        if operation == "ACK_SUMMARY":
+            statuses = {
+                MilestoneCode(str(row["code"])): MilestoneStatus(str(row["status"]))
+                for row in authority.get("milestones", ())
+            }
+            readiness = closing_readiness(
+                statuses,
+                closing_assessment_complete=bool(
+                    authority.get("closing_assessment_complete")
+                ),
+                summary_complete=bool(authority.get("summary_complete")),
+                user_acknowledged=True,
+                open_high_risk_count=int(authority.get("high_risk_count", 0)),
+            )
+            if current_status != "CLOSING" or readiness.value != "READY_TO_CLOSE":
                 raise ServiceFulfillmentError("CLOSURE_PREREQUISITE_MISSING")
         return await self._mutation(
             operation=operation,
@@ -577,14 +613,49 @@ class ServiceFulfillmentService:
         work = await self.repository.claim_work("MILESTONE_OVERDUE", worker_id, limit)
         results: list[dict] = []
         for row in work:
+            now = self.clock.now()
+            response = {
+                "milestone_id": row["milestone_id"],
+                "service_case_id": row["service_case_id"],
+                "code": row["code"],
+                "window_start": row["window_start"],
+                "window_end": row["window_end"],
+                "status": "MISSED",
+                "completed_at": None,
+                "record_summary": None,
+                "version": int(row["version"]) + 1,
+            }
+            request_digest = digest_hex(
+                {
+                    "milestone_id": row["milestone_id"],
+                    "expected_version": row["version"],
+                    "occurred_at": now,
+                }
+            )
             results.append(
                 await self.repository.mutate(
                     "MARK_MISSED",
                     {
                         "operation": "MARK_MISSED",
-                        "milestone_id": row["milestone_id"],
+                        "target_id": row["milestone_id"],
+                        "operation_id": self.id_factory(),
+                        "lifecycle_event_id": self.id_factory(),
+                        "actor_user_id": 0,
+                        "actor_scope": worker_id,
+                        "actor_role": "export_worker",
+                        "actor_tenant_id": None,
+                        "idempotency_key": (
+                            f"MARK_MISSED:{row['milestone_id']}:{row['version']}"
+                        ),
+                        "request_digest": request_digest,
+                        "expected_version": row["version"],
                         "worker_id": worker_id,
-                        "occurred_at": self.clock.now(),
+                        "occurred_at": now,
+                        "audit_id": self.id_factory(),
+                        "event_id": self.id_factory(),
+                        "receipt_id": self.id_factory(),
+                        "response": response,
+                        "expected_response_digest": digest_hex(response),
                     },
                 )
             )

@@ -14,6 +14,7 @@ class ServiceCycleScheduleModel(Base):
     __tablename__ = "service_cycle_schedule"
     __table_args__ = (
         UniqueConstraint("service_case_id", "version_no", name="uq_service_cycle_schedule_version"),
+        UniqueConstraint("active_plan_id", name="uq_service_cycle_schedule_plan"),
         CheckConstraint("version_no>=1 AND version>=1", name="ck_service_cycle_schedule_version"),
         Index("uq_service_cycle_schedule_current", "service_case_id", unique=True, postgresql_where=text("is_current")),
         {"schema": "public"},
