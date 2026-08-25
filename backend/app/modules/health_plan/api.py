@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import (
+    get_slice5_clinical_reader_session,
     get_slice6_clinical_reader_session,
     get_slice6_family_reader_session,
     get_slice6_institution_writer_session,
@@ -32,10 +33,11 @@ from .schemas import (
     PlanGenerationEligibilityDTO,
     PlanGenerationRequestDTO,
     PlanPageDTO,
-    PlanReviewDTO,
+    PlanReviewDetailDTO,
     PlanReviewPageDTO,
     PlanSummaryDTO,
     ReviewDecisionRequest,
+    ReviewStatus,
     TemplateVersionRequest,
     UserDecisionRequest,
     UuidV7,
@@ -46,10 +48,14 @@ from .service import (
     claim_plan_review,
     commit_with_confirmation,
     decide_plan,
+    decode_review_cursor,
+    encode_review_cursor,
     explain_plan,
     get_generation_eligibility,
     govern_template,
     request_plan_generation,
+    review_detail_dto,
+    review_list_item,
     review_plan,
 )
 
@@ -371,44 +377,157 @@ async def retire_template(payload: TemplateVersionRequest, template_version_id: 
     return await _template_transition("RETIRE", template_version_id, payload, idempotency_key, actor, writer)
 
 
-@platform_router.get("/health-plan-reviews", response_model=PlanReviewPageDTO)
-async def reviews(limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), reader=Depends(get_slice6_review_writer_session)):
+@platform_router.get(
+    "/health-plan-reviews",
+    response_model=PlanReviewPageDTO,
+    responses={200: {"headers": _NO_STORE}},
+)
+async def reviews(
+    response: Response,
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = None,
+    status: ReviewStatus | None = None,
+    actor: CurrentUser = Depends(get_current_user_from_jwt),
+    reader=Depends(get_slice6_review_writer_session),
+    plan_reader=Depends(get_slice6_clinical_reader_session),
+):
     _require(actor, {"expert"})
-    rows = await HealthPlanRepository(reader).review_page(cursor, limit)
-    return PlanReviewPageDTO(items=tuple(PlanReviewDTO.model_validate(dict(row)) for row in rows))
+    cursor_id = decode_review_cursor(cursor, status)
+    rows = await HealthPlanRepository(reader).review_page(
+        cursor_id=cursor_id, status=status, limit=limit + 1
+    )
+    page_rows = rows[:limit]
+    plans = await HealthPlanRepository(plan_reader).plan_details(
+        tuple(_uuid(row["plan_id"]) for row in page_rows)
+    )
+    plans_by_id = {_uuid(row["plan_id"]): row for row in plans}
+    try:
+        items = tuple(
+            review_list_item(row, plans_by_id[_uuid(row["plan_id"])]) for row in page_rows
+        )
+    except KeyError:
+        raise _error("DEPENDENCY_UNAVAILABLE") from None
+    next_cursor = (
+        encode_review_cursor(_uuid(page_rows[-1]["review_id"]), status)
+        if len(rows) > limit
+        else None
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return PlanReviewPageDTO(items=items, next_cursor=next_cursor)
 
 
-@platform_router.get("/health-plan-reviews/{review_id}", response_model=PlanReviewDTO)
-async def review_detail(review_id: UuidV7, actor: CurrentUser = Depends(get_current_user_from_jwt), reader=Depends(get_slice6_review_writer_session)):
-    _require(actor, {"expert"})
-    row = await HealthPlanRepository(reader).review_detail(review_id)
+async def _review_detail(
+    review_id: UUID, review_reader, plan_reader, assessment_reader
+) -> PlanReviewDetailDTO:
+    review_repository = HealthPlanRepository(review_reader)
+    row = await review_repository.review_detail(review_id)
     if row is None:
         raise _error("PLAN_NOT_FOUND")
-    return PlanReviewDTO.model_validate(dict(row))
+    plan_repository = HealthPlanRepository(plan_reader)
+    plan = await plan_repository.plan_detail(_uuid(row["plan_id"]))
+    if plan is None:
+        raise _error("DEPENDENCY_UNAVAILABLE")
+    previous_plan = await plan_repository.previous_plan_detail(
+        service_case_id=_uuid(row["service_case_id"]),
+        plan_version_no=int(row["plan_version_no"]),
+    )
+    plan_history = await plan_repository.plan_history(
+        service_case_id=_uuid(row["service_case_id"]),
+        through_version_no=int(row["plan_version_no"]),
+    )
+    review_history = await review_repository.review_history(
+        service_case_id=_uuid(row["service_case_id"]),
+        through_version_no=int(row["plan_version_no"]),
+    )
+    assessment_context = await HealthPlanRepository(
+        assessment_reader
+    ).formal_assessment_context(
+        service_case_id=_uuid(row["service_case_id"]),
+        plan_created_at=plan["created_at"],
+    )
+    if assessment_context is None:
+        raise _error("DEPENDENCY_UNAVAILABLE")
+    confirmed_plan = await plan_repository.plan_detail(_uuid(row["plan_id"]))
+    confirmed_row = await review_repository.review_detail(review_id)
+    if confirmed_plan is None or confirmed_row is None:
+        raise _error("DEPENDENCY_UNAVAILABLE")
+    return review_detail_dto(
+        row,
+        plan,
+        previous_plan,
+        confirmed_review=confirmed_row,
+        confirmed_plan=confirmed_plan,
+        assessment_context=assessment_context,
+        plan_history=tuple(plan_history),
+        review_history=tuple(review_history),
+    )
 
 
-@platform_router.post("/health-plan-reviews/{review_id}/claim", response_model=PlanReviewDTO)
-async def claim_review(payload: ClaimRequest, review_id: UuidV7, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice6_review_writer_session)):
+@platform_router.get(
+    "/health-plan-reviews/{review_id}",
+    response_model=PlanReviewDetailDTO,
+    responses={200: {"headers": _NO_STORE}},
+)
+async def review_detail(
+    review_id: UuidV7,
+    response: Response,
+    actor: CurrentUser = Depends(get_current_user_from_jwt),
+    reader=Depends(get_slice6_review_writer_session),
+    plan_reader=Depends(get_slice6_clinical_reader_session),
+    assessment_reader=Depends(get_slice5_clinical_reader_session),
+):
+    _require(actor, {"expert"})
+    result = await _review_detail(review_id, reader, plan_reader, assessment_reader)
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@platform_router.post(
+    "/health-plan-reviews/{review_id}/claim",
+    response_model=PlanReviewDetailDTO,
+    responses={200: {"headers": _NO_STORE}},
+)
+async def claim_review(
+    payload: ClaimRequest,
+    review_id: UuidV7,
+    idempotency_key: IdempotencyKey,
+    response: Response,
+    actor: CurrentUser = Depends(get_current_user_from_jwt),
+    writer=Depends(get_slice6_review_writer_session),
+    plan_reader=Depends(get_slice6_clinical_reader_session),
+    assessment_reader=Depends(get_slice5_clinical_reader_session),
+):
     _require(actor, {"expert"})
     repository = HealthPlanRepository(writer)
     await claim_plan_review(repository, review_id=review_id, expected_version=payload.expected_version, actor_user_id=actor.id, actor_role=actor.role, idempotency_key=idempotency_key, now=datetime.now(timezone.utc), id_factory=Uuid7Generator().generate)
-    result = await repository.review_detail(review_id)
-    if result is None:
-        raise _error("PLAN_NOT_FOUND")
     await _commit_mutation(writer, repository, "review_writer")
-    return PlanReviewDTO.model_validate(result)
+    result = await _review_detail(review_id, writer, plan_reader, assessment_reader)
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
-@platform_router.post("/health-plan-reviews/{review_id}/decision", response_model=PlanReviewDTO)
-async def review_decision(payload: ReviewDecisionRequest, review_id: UuidV7, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice6_review_writer_session)):
+@platform_router.post(
+    "/health-plan-reviews/{review_id}/decision",
+    response_model=PlanReviewDetailDTO,
+    responses={200: {"headers": _NO_STORE}},
+)
+async def review_decision(
+    payload: ReviewDecisionRequest,
+    review_id: UuidV7,
+    idempotency_key: IdempotencyKey,
+    response: Response,
+    actor: CurrentUser = Depends(get_current_user_from_jwt),
+    writer=Depends(get_slice6_review_writer_session),
+    plan_reader=Depends(get_slice6_clinical_reader_session),
+    assessment_reader=Depends(get_slice5_clinical_reader_session),
+):
     _require(actor, {"expert"})
     repository = HealthPlanRepository(writer)
     await review_plan(repository, review_id=review_id, decision=payload.decision, reason_codes=payload.reason_codes, expected_version=payload.expected_version, actor_user_id=actor.id, actor_role=actor.role, idempotency_key=idempotency_key, now=datetime.now(timezone.utc), id_factory=Uuid7Generator().generate)
-    result = await repository.review_detail(review_id)
-    if result is None:
-        raise _error("PLAN_NOT_FOUND")
     await _commit_mutation(writer, repository, "review_writer")
-    return PlanReviewDTO.model_validate(result)
+    result = await _review_detail(review_id, writer, plan_reader, assessment_reader)
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @therapist_router.get("/service-cases/{service_case_id}/plans", response_model=PlanPageDTO)
