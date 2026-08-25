@@ -94,6 +94,9 @@ _SLICE5_RUNTIME_ERROR = "Slice 5 database runtime is unavailable"
 _SLICE6_RUNTIMES = {}
 _SLICE6_RUNTIME_LOCKS = {}
 _SLICE6_RUNTIME_ERROR = "Slice 6 database runtime is unavailable"
+_SLICE7_RUNTIMES = {}
+_SLICE7_RUNTIME_LOCKS = {}
+_SLICE7_RUNTIME_ERROR = "Slice 7 database runtime is unavailable"
 _VERIFICATION_WRITER_RUNTIME_ERROR = (
     "Verification writer database runtime is unavailable"
 )
@@ -370,6 +373,11 @@ async def dispose_database_runtimes() -> None:
                     _SLICE6_RUNTIMES.clear()
                     _SLICE6_RUNTIME_LOCKS.clear()
                     for _, engine, _ in slice6_entries:
+                        await engine.dispose()
+                    slice7_entries = tuple(_SLICE7_RUNTIMES.values())
+                    _SLICE7_RUNTIMES.clear()
+                    _SLICE7_RUNTIME_LOCKS.clear()
+                    for _, engine, _ in slice7_entries:
                         await engine.dispose()
 
 
@@ -1100,4 +1108,130 @@ async def get_slice6_clinical_reader_session():
 
 async def get_slice6_family_reader_session():
     async for session in _slice6_session("family_reader"):
+        yield session
+
+
+_SLICE7_KINDS = {
+    "milestone_writer",
+    "case_writer",
+    "transfer_writer",
+    "export_worker",
+    "family_reader",
+    "oversight_reader",
+}
+
+
+def _slice7_url(settings: Settings, kind: str) -> str:
+    urls = {
+        "milestone_writer": settings.slice7_milestone_writer_database_url,
+        "case_writer": settings.slice7_case_writer_database_url,
+        "transfer_writer": settings.slice7_transfer_writer_database_url,
+        "export_worker": settings.slice7_export_worker_database_url,
+        "family_reader": settings.slice7_family_reader_database_url,
+        "oversight_reader": settings.slice7_oversight_reader_database_url,
+    }
+    roles = {
+        "milestone_writer": settings.slice7_milestone_writer_role,
+        "case_writer": settings.slice7_case_writer_role,
+        "transfer_writer": settings.slice7_transfer_writer_role,
+        "export_worker": settings.slice7_export_worker_role,
+        "family_reader": settings.slice7_family_reader_role,
+        "oversight_reader": settings.slice7_oversight_reader_role,
+    }
+    try:
+        if kind not in _SLICE7_KINDS:
+            raise ValueError
+        parsed = {name: make_url(value) for name, value in urls.items() if value}
+        users = [value.username for value in parsed.values()]
+        valid = (
+            len(parsed) == 6
+            and len(set(users)) == 6
+            and all(
+                value.drivername == "postgresql+asyncpg" and value.username and value.password
+                for value in parsed.values()
+            )
+            and all(
+                (value.host, value.port, value.database)
+                == (settings.database_host, settings.database_port, settings.database_name)
+                for value in parsed.values()
+            )
+            and all(parsed[name].username == roles[name] for name in urls)
+            and settings.database_user not in users
+            and "postgres" not in users
+        )
+    except Exception:
+        valid = False
+    if not valid:
+        raise RuntimeError(_SLICE7_RUNTIME_ERROR) from None
+    return urls[kind]  # type: ignore[return-value]
+
+
+async def get_slice7_session_factory(kind: str):
+    if kind not in _SLICE7_KINDS:
+        raise RuntimeError(_SLICE7_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    key = (id(loop), kind)
+    lock = _SLICE7_RUNTIME_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        entry = _SLICE7_RUNTIMES.get(key)
+        if entry is None:
+            try:
+                engine = create_async_engine(_slice7_url(get_settings(), kind), pool_pre_ping=True)
+                entry = (weakref.ref(loop), engine, create_session_factory(engine))
+            except Exception:
+                raise RuntimeError(_SLICE7_RUNTIME_ERROR) from None
+            _SLICE7_RUNTIMES[key] = entry
+        return entry[2]
+
+
+async def dispose_slice7_runtime(kind: str) -> None:
+    if kind not in _SLICE7_KINDS:
+        raise RuntimeError(_SLICE7_RUNTIME_ERROR) from None
+    loop = asyncio.get_running_loop()
+    entry = _SLICE7_RUNTIMES.pop((id(loop), kind), None)
+    _SLICE7_RUNTIME_LOCKS.pop((id(loop), kind), None)
+    if entry is not None:
+        owner = entry[0]()
+        if owner is not loop:
+            raise RuntimeError(_SLICE7_RUNTIME_ERROR) from None
+        await entry[1].dispose()
+
+
+async def _slice7_session(kind: str):
+    factory = await get_slice7_session_factory(kind)
+    async with factory() as session:
+        try:
+            yield session
+        finally:
+            if session.in_transaction():
+                await session.rollback()
+
+
+async def get_slice7_milestone_writer_session():
+    async for session in _slice7_session("milestone_writer"):
+        yield session
+
+
+async def get_slice7_case_writer_session():
+    async for session in _slice7_session("case_writer"):
+        yield session
+
+
+async def get_slice7_transfer_writer_session():
+    async for session in _slice7_session("transfer_writer"):
+        yield session
+
+
+async def get_slice7_export_worker_session():
+    async for session in _slice7_session("export_worker"):
+        yield session
+
+
+async def get_slice7_family_reader_session():
+    async for session in _slice7_session("family_reader"):
+        yield session
+
+
+async def get_slice7_oversight_reader_session():
+    async for session in _slice7_session("oversight_reader"):
         yield session

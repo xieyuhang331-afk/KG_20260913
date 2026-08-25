@@ -127,6 +127,18 @@ class Settings(BaseModel):
     slice6_workflow_worker_role: str | None = None
     slice6_clinical_reader_role: str | None = None
     slice6_family_reader_role: str | None = None
+    slice7_milestone_writer_database_url: str | None = None
+    slice7_case_writer_database_url: str | None = None
+    slice7_transfer_writer_database_url: str | None = None
+    slice7_export_worker_database_url: str | None = None
+    slice7_family_reader_database_url: str | None = None
+    slice7_oversight_reader_database_url: str | None = None
+    slice7_milestone_writer_role: str | None = None
+    slice7_case_writer_role: str | None = None
+    slice7_transfer_writer_role: str | None = None
+    slice7_export_worker_role: str | None = None
+    slice7_family_reader_role: str | None = None
+    slice7_oversight_reader_role: str | None = None
     celery_queues: tuple[str, ...] = (
         "ai",
         "judgment",
@@ -268,4 +280,16 @@ def get_settings() -> Settings:
         slice6_workflow_worker_role=os.getenv("KG_SLICE6_WORKFLOW_WORKER_ROLE"),
         slice6_clinical_reader_role=os.getenv("KG_SLICE6_CLINICAL_READER_ROLE"),
         slice6_family_reader_role=os.getenv("KG_SLICE6_FAMILY_READER_ROLE"),
+        slice7_milestone_writer_database_url=os.getenv("KG_SLICE7_MILESTONE_WRITER_DATABASE_URL"),
+        slice7_case_writer_database_url=os.getenv("KG_SLICE7_CASE_WRITER_DATABASE_URL"),
+        slice7_transfer_writer_database_url=os.getenv("KG_SLICE7_TRANSFER_WRITER_DATABASE_URL"),
+        slice7_export_worker_database_url=os.getenv("KG_SLICE7_EXPORT_WORKER_DATABASE_URL"),
+        slice7_family_reader_database_url=os.getenv("KG_SLICE7_FAMILY_READER_DATABASE_URL"),
+        slice7_oversight_reader_database_url=os.getenv("KG_SLICE7_OVERSIGHT_READER_DATABASE_URL"),
+        slice7_milestone_writer_role=os.getenv("KG_SLICE7_MILESTONE_WRITER_ROLE"),
+        slice7_case_writer_role=os.getenv("KG_SLICE7_CASE_WRITER_ROLE"),
+        slice7_transfer_writer_role=os.getenv("KG_SLICE7_TRANSFER_WRITER_ROLE"),
+        slice7_export_worker_role=os.getenv("KG_SLICE7_EXPORT_WORKER_ROLE"),
+        slice7_family_reader_role=os.getenv("KG_SLICE7_FAMILY_READER_ROLE"),
+        slice7_oversight_reader_role=os.getenv("KG_SLICE7_OVERSIGHT_READER_ROLE"),
     )

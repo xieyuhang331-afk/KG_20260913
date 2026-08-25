@@ -18,6 +18,11 @@ from app.modules.health_plan.api import (
     routers as slice6_routers,
     strip_slice6_validation_responses,
 )
+from app.modules.service_fulfillment.api import (
+    consume_personal_data_export_download,
+    routers as slice7_routers,
+    strip_slice7_validation_responses,
+)
 from app.modules.organization.api import router as organization_router
 from app.modules.institution_onboarding.api import onboarding_router, platform_router
 from app.modules.member_enrollment.api import (
@@ -25,6 +30,7 @@ from app.modules.member_enrollment.api import (
     strip_member_enrollment_validation_responses,
 )
 from app.modules.private_file.api import router as private_file_router
+from app.modules.private_file.service import authorize_generated_export_access
 from app.modules.therapist_qualification.api import (
     institution_router as therapist_institution_router,
     platform_router as therapist_platform_router,
@@ -61,6 +67,8 @@ def create_app() -> FastAPI:
         ],
     )
     app.state.kg_modules = get_module_registry()
+    app.state.slice7_export_access_authorizer = authorize_generated_export_access
+    app.state.slice7_export_download_consumer = consume_personal_data_export_download
     add_request_middleware(app)
     app.include_router(auth_router)
     app.include_router(user_auth_router)
@@ -84,14 +92,18 @@ def create_app() -> FastAPI:
         app.include_router(slice5_router)
     for slice6_router in slice6_routers:
         app.include_router(slice6_router)
+    for slice7_router in slice7_routers:
+        app.include_router(slice7_router)
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        return strip_slice6_validation_responses(
-            strip_slice5_validation_responses(
-                strip_slice4_validation_responses(
-                    strip_member_enrollment_validation_responses(
-                        strip_therapist_validation_responses(default_openapi())
+        return strip_slice7_validation_responses(
+            strip_slice6_validation_responses(
+                strip_slice5_validation_responses(
+                    strip_slice4_validation_responses(
+                        strip_member_enrollment_validation_responses(
+                            strip_therapist_validation_responses(default_openapi())
+                        )
                     )
                 )
             )

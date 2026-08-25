@@ -13,7 +13,7 @@ class PrivateFileModel(Base):
     __tablename__ = "private_file"
     __table_args__ = (
         CheckConstraint("declared_size BETWEEN 1 AND 10485760 AND (actual_size IS NULL OR actual_size BETWEEN 1 AND 10485760)", name="size"),
-        CheckConstraint("declared_mime_type IN ('application/pdf','image/jpeg','image/png')", name="mime_type"),
+        CheckConstraint("declared_mime_type IN ('application/pdf','image/jpeg','image/png','application/zip')", name="mime_type"),
         CheckConstraint("status IN ('UPLOAD_INITIATED','PENDING_SCAN','CLEAN','REJECTED','SCAN_FAILED','DELETED')", name="status"),
         {"schema":"public"},
     )

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
+from zipfile import BadZipFile, ZipFile
 
 
 class PrivateFileConflict(ValueError):
@@ -60,6 +63,48 @@ def build_detection_report_access_evidence(
 
 _ALLOWED_TYPES = {"application/pdf", "image/jpeg", "image/png"}
 _MAX_SIZE = 10 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedExportArchiveEvidence:
+    size: int
+    sha256: str
+    mime_type: str = "application/zip"
+
+
+def validate_generated_export_archive(
+    *, purpose: str, data: bytes
+) -> GeneratedExportArchiveEvidence:
+    if purpose != "PERSONAL_DATA_EXPORT":
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_PURPOSE_REQUIRED")
+    if type(data) is not bytes or not 1 <= len(data) <= _MAX_SIZE:
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_INVALID")
+    try:
+        with ZipFile(BytesIO(data), "r") as archive:
+            entries = archive.infolist()
+            if (
+                not entries
+                or "manifest.json" not in {entry.filename for entry in entries}
+                or any(
+                    entry.flag_bits & 0x1
+                    or entry.is_dir()
+                    or entry.filename.startswith(("/", "\\"))
+                    or ".." in entry.filename.replace("\\", "/").split("/")
+                    for entry in entries
+                )
+                or sum(entry.file_size for entry in entries) > _MAX_SIZE
+            ):
+                raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_INVALID")
+            for entry in entries:
+                with archive.open(entry, "r") as source:
+                    while source.read(64 * 1024):
+                        pass
+    except (BadZipFile, OSError, RuntimeError):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_INVALID") from None
+    return GeneratedExportArchiveEvidence(
+        size=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
 
 
 @dataclass(slots=True)

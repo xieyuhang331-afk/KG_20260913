@@ -9,6 +9,8 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Awaitable, Callable
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,7 @@ from app.modules.private_file.domain import (
     PrivateFile,
     PrivateFileConflict,
     PrivateFileStatus,
+    validate_generated_export_archive,
 )
 from app.modules.private_file.models import PrivateFileModel
 from app.modules.private_file.ports import PrivateFileScanner, PrivateFileScannerUnavailable
@@ -108,6 +111,139 @@ def _detected_mime(data: bytes) -> str | None:
     if data.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
     if data.startswith(b"\xff\xd8\xff"): return "image/jpeg"
     return None
+
+
+async def register_generated_export_archive(
+    session,
+    *,
+    export_id: UUID,
+    file_id: UUID,
+    worker_id: str,
+    data: bytes,
+    created_at: datetime,
+    expires_at: datetime,
+) -> dict[str, object]:
+    evidence = validate_generated_export_archive(
+        purpose="PERSONAL_DATA_EXPORT",
+        data=data,
+    )
+    if (
+        type(file_id) is not UUID
+        or file_id.version != 7
+        or type(export_id) is not UUID
+        or export_id.version != 7
+        or not isinstance(worker_id, str)
+        or not 1 <= len(worker_id) <= 128
+        or created_at.tzinfo is None
+        or expires_at.tzinfo is None
+        or expires_at <= created_at
+    ):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_INVALID")
+    object_key = f"slice1/{created_at:%Y/%m}/{file_id}"
+    path = _path(object_key)
+    repository = PrivateFileRepository(session)
+    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.slice7.tmp")
+    await asyncio.to_thread(temporary.write_bytes, data)
+    await asyncio.to_thread(temporary.replace, path)
+    expected = {
+        "file_id": str(file_id),
+        "size": evidence.size,
+        "sha256": evidence.sha256,
+        "mime_type": evidence.mime_type,
+        "status": "CLEAN",
+    }
+    try:
+        persisted = await repository.register_generated_export_archive(
+            {
+                **expected,
+                "export_id": str(export_id),
+                "worker_id": worker_id,
+                "created_at": created_at,
+                "expires_at": expires_at,
+            }
+        )
+        await session.commit()
+    except asyncio.CancelledError:
+        await _safe_rollback(session)
+        raise
+    except Exception:
+        await _safe_rollback(session)
+        bind = session.bind
+        if bind is None:
+            raise HTTPException(503, PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN) from None
+        try:
+            async with AsyncSession(bind=bind, expire_on_commit=False) as confirmation:
+                persisted = await PrivateFileRepository(
+                    confirmation
+                ).generated_export_archive_snapshot(
+                    export_id=str(export_id), file_id=str(file_id)
+                )
+        except Exception:
+            raise HTTPException(503, PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN) from None
+        if persisted is None:
+            raise HTTPException(503, PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN) from None
+    if any(persisted.get(key) != value for key, value in expected.items()):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_CONFLICT")
+    return expected
+
+
+async def read_export_source_content(metadata: dict[str, object]) -> bytes:
+    try:
+        file_id = UUID(str(metadata["file_id"]))
+        created_at = metadata["created_at"]
+        size = int(metadata["size"])
+        digest = str(metadata["sha256"])
+        mime_type = str(metadata["mime_type"])
+    except (KeyError, TypeError, ValueError):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_SOURCE_INVALID") from None
+    if (
+        file_id.version != 7
+        or not isinstance(created_at, datetime)
+        or created_at.tzinfo is None
+        or not 1 <= size <= 10 * 1024 * 1024
+        or len(digest) != 64
+        or mime_type not in {"application/pdf", "image/jpeg", "image/png"}
+    ):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_SOURCE_INVALID")
+    path = _path(f"slice1/{created_at.astimezone(timezone.utc):%Y/%m}/{file_id}")
+    try:
+        data = await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError:
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_SOURCE_MISSING") from None
+    if len(data) != size or not hmac.compare_digest(
+        hashlib.sha256(data).hexdigest(), digest
+    ):
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_SOURCE_MISMATCH")
+    return data
+
+
+async def cleanup_generated_export_archive(
+    export_id: UUID, created_at: datetime | None
+) -> int:
+    if type(export_id) is not UUID or export_id.version != 7:
+        raise PrivateFileConflict("PRIVATE_FILE_EXPORT_ARCHIVE_INVALID")
+    root = _storage_root()
+    candidates: set[Path] = set()
+    if isinstance(created_at, datetime) and created_at.tzinfo is not None:
+        candidates.add(
+            _path(
+                f"slice1/{created_at.astimezone(timezone.utc):%Y/%m}/{export_id}"
+            )
+        )
+    candidates.update(root.rglob(str(export_id)))
+    removed = 0
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if (
+            resolved.name != str(export_id)
+            or root not in resolved.parents
+            or not resolved.is_file()
+        ):
+            continue
+        await asyncio.to_thread(resolved.unlink)
+        removed += 1
+    return removed
 
 
 async def initiate_upload(session, user_id: int, payload: UploadInitiateRequest) -> dict:
@@ -211,18 +347,21 @@ def _access_secret() -> bytes:
 
 def issue_access_token(
     *, file_id: str, user_id: int, reason_code: str, expires_at: int,
-    evidence_digest: str, access_scope: str = "OWNER",
+    evidence_digest: str, access_scope: str = "OWNER", token_id: str | None = None,
 ) -> str:
+    values = {
+        "expires_at": expires_at,
+        "access_scope": access_scope,
+        "evidence_digest": evidence_digest,
+        "file_id": file_id,
+        "reason_code": reason_code,
+        "user_id": user_id,
+        "version": 1,
+    }
+    if token_id is not None:
+        values["token_id"] = token_id
     payload = json.dumps(
-        {
-            "expires_at": expires_at,
-            "access_scope": access_scope,
-            "evidence_digest": evidence_digest,
-            "file_id": file_id,
-            "reason_code": reason_code,
-            "user_id": user_id,
-            "version": 1,
-        },
+        values,
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -263,6 +402,13 @@ def verify_access_token(
         or values["expires_at"] < int(time.time())
         or not isinstance(values.get("evidence_digest"), str)
         or len(values["evidence_digest"]) != 64
+        or (
+            access_scope == "EXPORT"
+            and (
+                not isinstance(values.get("token_id"), str)
+                or len(values["token_id"]) != 36
+            )
+        )
     ):
         raise HTTPException(403, "PRIVATE_FILE_ACCESS_INVALID")
     return values
@@ -314,15 +460,65 @@ async def authorize_file_access(
     )
 
 
+async def authorize_generated_export_access(
+    session,
+    *,
+    user_id: int,
+    file_id: str,
+    reason_code: str,
+    expires_at: int,
+    token_id: str,
+) -> str:
+    row = await PrivateFileRepository(session).access_snapshot(file_id)
+    if (
+        row is None
+        or row["purpose"] != "PERSONAL_DATA_EXPORT"
+        or row["owner_user_id"] != user_id
+        or row["status"] != "CLEAN"
+    ):
+        raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+    object_key = f"slice1/{row['created_at']:%Y/%m}/{file_id}"
+    try:
+        data = await asyncio.to_thread(_path(object_key).read_bytes)
+    except FileNotFoundError:
+        raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND") from None
+    if (
+        row["actual_size"] != len(data)
+        or not hmac.compare_digest(
+            row["actual_sha256"] or "", hashlib.sha256(data).hexdigest()
+        )
+    ):
+        raise HTTPException(409, "PRIVATE_FILE_EVIDENCE_MISMATCH")
+    return issue_access_token(
+        file_id=file_id,
+        user_id=user_id,
+        reason_code=reason_code,
+        expires_at=expires_at,
+        evidence_digest=_content_evidence(file_id=file_id, user_id=user_id, data=data),
+        access_scope="EXPORT",
+        token_id=token_id,
+    )
+
+
 async def read_authorized_content(
     session, user_id: int, file_id: str, token: str, *, reviewer: bool = False,
     report_authority_session=None, report_access_context: str | None = None,
+    export_access_consumer: Callable[[dict], Awaitable[bool]] | None = None,
 ) -> tuple[bytes, str]:
     row = await PrivateFileRepository(session).metadata(file_id)
     report_access = row is not None and row["purpose"] == "DETECTION_REPORT"
+    export_access = row is not None and row["purpose"] == "PERSONAL_DATA_EXPORT"
     token_values = verify_access_token(
         token=token, file_id=file_id, user_id=user_id,
-        access_scope="REPORT" if report_access else ("REVIEWER" if reviewer else "OWNER"),
+        access_scope=(
+            "REPORT"
+            if report_access
+            else "EXPORT"
+            if export_access
+            else "REVIEWER"
+            if reviewer
+            else "OWNER"
+        ),
     )
     if report_access:
         if report_authority_session is None or report_access_context is None:
@@ -334,6 +530,8 @@ async def read_authorized_content(
             actor_user_id=user_id,
             context=f"{report_access_context}_CONTENT",
         )
+    elif export_access:
+        permitted = row["owner_user_id"] == user_id and export_access_consumer is not None
     else:
         permitted = row is not None and (
             row["owner_user_id"] == user_id
@@ -351,6 +549,8 @@ async def read_authorized_content(
         _content_evidence(file_id=file_id, user_id=user_id, data=data),
     ):
         raise HTTPException(409, "PRIVATE_FILE_EVIDENCE_MISMATCH")
+    if export_access and not await export_access_consumer(token_values):
+        raise HTTPException(403, "PRIVATE_FILE_ACCESS_INVALID")
     if report_access:
         # REPORT_ORIGINAL_ACCESSED is appended by the bounded database authority.
         await report_authority_session.commit()
