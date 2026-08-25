@@ -5,6 +5,7 @@ from app.core.database import Base
 from app.modules.assessment_readiness import models as slice4_models  # noqa: F401
 from app.modules.health_assessment import models as slice5_models  # noqa: F401
 from app.modules.health_plan import models as slice6_models  # noqa: F401
+from app.modules.service_fulfillment import models as slice7_models  # noqa: F401
 from app.modules.member_enrollment import models as slice3_models  # noqa: F401
 
 
@@ -109,6 +110,18 @@ PHASE1_SLICE6_TABLES = {
         "health_plan_outbox", "health_plan_delivery",
     )
 }
+PHASE1_SLICE7_TABLES = {
+    f"public.{name}"
+    for name in (
+        "service_cycle_schedule", "service_milestone", "service_milestone_revision",
+        "service_case_lifecycle_event", "service_closing_assessment", "service_summary",
+        "service_summary_acknowledgement", "service_transfer_request",
+        "service_transfer_scope_revision", "personal_data_export_request",
+        "personal_data_export_artifact", "personal_data_export_download_access",
+        "service_fulfillment_receipt", "service_fulfillment_audit",
+        "service_fulfillment_outbox", "service_fulfillment_delivery",
+    )
+}
 PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
@@ -159,4 +172,5 @@ def test_MemberNo分配账本由现有Alembic导入链注册Metadata():
                 | PHASE1_SLICE4_TABLES
                 | PHASE1_SLICE5_TABLES
                 | PHASE1_SLICE6_TABLES
+                | PHASE1_SLICE7_TABLES
         )
