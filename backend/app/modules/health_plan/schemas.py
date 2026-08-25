@@ -40,6 +40,29 @@ PlanStatus = Literal[
     "ACTIVE",
     "SUPERSEDED",
 ]
+ReviewStatus = Literal[
+    "PENDING",
+    "CLAIMED",
+    "APPROVED",
+    "NEEDS_CORRECTION",
+    "REJECTED",
+]
+UserDecision = Literal["ACCEPT", "NEEDS_EXPLANATION", "DECLINE"]
+
+
+def review_reason_codes_match(decision: str, reason_codes: tuple[str, ...]) -> bool:
+    if not reason_codes or len(reason_codes) != len(set(reason_codes)):
+        return False
+    allowed = {
+        "APPROVED": frozenset({"CONTENT_APPROVED"}),
+        "NEEDS_CORRECTION": frozenset(
+            {"TEMPLATE_REAPPLY", "DATA_CONTEXT_RECHECK"}
+        ),
+        "REJECTED": frozenset(
+            {"MEDICAL_SAFETY_CONFLICT", "TEMPLATE_SCOPE_UNSUITABLE"}
+        ),
+    }
+    return decision in allowed and set(reason_codes).issubset(allowed[decision])
 
 
 class StrictModel(BaseModel):
@@ -130,6 +153,12 @@ class ReviewDecisionRequest(StrictModel):
     reason_codes: tuple[StructuredCode, ...] = Field(min_length=1, max_length=16)
     expected_version: ExpectedVersion
 
+    @model_validator(mode="after")
+    def validate_reason_codes(self):
+        if not review_reason_codes_match(self.decision, self.reason_codes):
+            raise ValueError("REVIEW_REASON_CODES_MISMATCH")
+        return self
+
 
 class ClaimRequest(StrictModel):
     expected_version: ExpectedVersion
@@ -141,7 +170,7 @@ class PlanExplanationRequest(StrictModel):
 
 
 class UserDecisionRequest(StrictModel):
-    decision: Literal["ACCEPT", "NEEDS_EXPLANATION", "DECLINE"]
+    decision: UserDecision
     expected_version: ExpectedVersion
 
 
@@ -164,13 +193,13 @@ class PlanSummaryDTO(StrictModel):
 
 
 class ReviewSummaryDTO(StrictModel):
-    status: Literal["PENDING", "CLAIMED", "APPROVED", "NEEDS_CORRECTION", "REJECTED"]
+    status: ReviewStatus
     decision_codes: tuple[str, ...] = ()
     decided_at: AwareDatetime | None = None
 
 
 class UserDecisionSummaryDTO(StrictModel):
-    decision: Literal["ACCEPT", "NEEDS_EXPLANATION", "DECLINE"] | None = None
+    decision: UserDecision | None = None
     decided_at: AwareDatetime | None = None
 
 
@@ -199,20 +228,51 @@ class PlanPageDTO(StrictModel):
     next_cursor: str | None = None
 
 
-class PlanReviewDTO(StrictModel):
+class PlanReviewListItemDTO(StrictModel):
     review_id: UuidV7
     request_id: UuidV7
     plan_id: UuidV7
     service_case_id: UuidV7
-    status: Literal["PENDING", "CLAIMED", "APPROVED", "NEEDS_CORRECTION", "REJECTED"]
+    status: ReviewStatus
     plan_version_no: int = Field(ge=1)
+    overall_risk_level: Literal["NOT_ASSESSED", "WITHIN_RANGE", "ATTENTION", "HIGH_RISK"]
     claimed_at: AwareDatetime | None = None
     decided_at: AwareDatetime | None = None
     version: ExpectedVersion
 
 
+class ReviewPlanSummaryDTO(StrictModel):
+    plan_status: PlanStatus
+    template_code: str
+    template_version: int = Field(ge=1)
+    module_summaries: tuple[str, ...]
+    goals: tuple[str, ...]
+    stages: tuple[str, ...]
+    milestones: tuple[str, ...]
+    sop_items: tuple[str, ...]
+    contraindication_codes: tuple[str, ...]
+    user_message_codes: tuple[str, ...]
+    therapist_action_codes: tuple[str, ...]
+
+
+class ReviewHistoryEntryDTO(StrictModel):
+    action: Literal["PLAN_GENERATED", "REVIEW_CLAIMED", "REVIEW_DECIDED"]
+    plan_version_no: int = Field(ge=1)
+    occurred_at: AwareDatetime
+
+
+class PlanReviewDetailDTO(PlanReviewListItemDTO):
+    customer_summary_codes: tuple[StructuredCode, ...]
+    assessment_summary_codes: tuple[StructuredCode, ...]
+    plan_summary: ReviewPlanSummaryDTO
+    version_diff_codes: tuple[StructuredCode, ...]
+    history: tuple[ReviewHistoryEntryDTO, ...]
+    reason_codes: tuple[StructuredCode, ...]
+    user_decision: UserDecision | None = None
+
+
 class PlanReviewPageDTO(StrictModel):
-    items: tuple[PlanReviewDTO, ...]
+    items: tuple[PlanReviewListItemDTO, ...]
     next_cursor: str | None = None
 
 
