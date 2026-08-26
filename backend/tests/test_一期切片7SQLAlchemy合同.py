@@ -13,6 +13,8 @@ EXPECTED_TABLES = {
     "service_summary_acknowledgement",
     "service_transfer_request",
     "service_transfer_scope_revision",
+    "service_transfer_continuation_handoff",
+    "proxy_major_authorization",
     "personal_data_export_request",
     "personal_data_export_artifact",
     "personal_data_export_download_access",

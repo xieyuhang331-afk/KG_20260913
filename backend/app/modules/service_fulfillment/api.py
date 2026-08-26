@@ -31,6 +31,8 @@ from .schemas import (
     CaseTransitionRequest,
     ClosingAssessmentCreateRequest,
     ClosingAssessmentDTO,
+    ContinuationCaseLinkRequest,
+    ContinuationHandoffDTO,
     DataExportCancelRequest,
     DataExportCreateRequest,
     DataExportDTO,
@@ -39,6 +41,9 @@ from .schemas import (
     MilestoneDTO,
     MilestonePageDTO,
     OneTimeDownloadDTO,
+    ProxyMajorAuthorizationCreateRequest,
+    ProxyMajorAuthorizationDTO,
+    ProxyMajorAuthorizationRevokeRequest,
     SafetyTerminateRequest,
     ServiceFulfillmentDTO,
     ServiceFulfillmentPageDTO,
@@ -67,8 +72,10 @@ _STATUS = {
     "RESOURCE_NOT_FOUND": 404,
     "MILESTONE_NOT_FOUND": 404,
     "TRANSFER_NOT_FOUND": 404,
+    "HANDOFF_NOT_FOUND": 404,
     "EXPORT_NOT_FOUND": 404,
     "VERSION_CONFLICT": 409,
+    "STALE_VERSION": 409,
     "IDEMPOTENCY_CONFLICT": 409,
     "MILESTONE_WINDOW_CLOSED": 409,
     "CASE_STATE_CONFLICT": 409,
@@ -212,6 +219,8 @@ async def _transition(session, *, operation: str, target_id: UUID, actor: Curren
     service = _service(repository)
     if kind == "transfer":
         row = await service.transfer_transition(operation=operation, transfer_id=target_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id, idempotency_key=key, request=request)
+    elif kind == "major_authorization":
+        row = await service.major_authorization_transition(operation=operation, target_id=target_id, actor_user_id=actor.id, actor_role=actor.role, idempotency_key=key, request=request)
     elif kind == "export":
         row = await service.export_transition(operation=operation, export_or_member_id=target_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id, idempotency_key=key, request=request)
     else:
@@ -352,10 +361,38 @@ def _transfer_action(path: str, operation: str, roles: set[str], router: APIRout
 
 _transfer_action("/service-transfers/{transfer_id}/cancel", "CANCEL_TRANSFER", {"member"}, family_router, TransferDecisionRequest)
 _transfer_action("/service-transfers/{transfer_id}/confirm-scope", "CONFIRM_TRANSFER_SCOPE", {"member"}, family_router, TransferScopeConfirmRequest)
+_transfer_action("/service-transfers/{transfer_id}/start-review", "START_REVIEW_TRANSFER", {"org_admin"}, institution_router, TransferDecisionRequest)
 _transfer_action("/service-transfers/{transfer_id}/accept", "ACCEPT_TRANSFER", {"org_admin"}, institution_router, TransferDecisionRequest)
 _transfer_action("/service-transfers/{transfer_id}/reject", "REJECT_TRANSFER", {"org_admin"}, institution_router, TransferDecisionRequest)
 _transfer_action("/service-transfers/{transfer_id}/source-close", "SOURCE_CLOSE_TRANSFER", {"org_admin"}, institution_router, TransferSourceCloseRequest)
 _transfer_action("/service-transfers/{transfer_id}/coordinate-close", "COORDINATE_TRANSFER_CLOSE", {"super_admin", "sys_admin"}, platform_router, TransferDecisionRequest)
+
+
+@institution_router.get("/service-transfers/{transfer_id}/continuation-handoff", response_model=ContinuationHandoffDTO)
+async def get_continuation_handoff(transfer_id: UuidV7, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
+    _require(actor, {"org_admin"})
+    return _dto(ContinuationHandoffDTO, await _read_one(session, "HANDOFF", transfer_id, actor))
+
+
+@institution_router.post("/service-transfers/{transfer_id}/continuation-case", response_model=ContinuationHandoffDTO)
+async def link_continuation_case(transfer_id: UuidV7, payload: ContinuationCaseLinkRequest, key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_transfer_writer_session)):
+    _require(actor, {"org_admin"})
+    row = await _transition(session, operation="LINK_CONTINUATION_CASE", target_id=transfer_id, actor=actor, key=key, request=payload.model_dump(), kind="transfer")
+    return _dto(ContinuationHandoffDTO, row)
+
+
+@platform_router.post("/proxy-major-authorizations", response_model=ProxyMajorAuthorizationDTO, status_code=201)
+async def authorize_proxy_major(payload: ProxyMajorAuthorizationCreateRequest, key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_transfer_writer_session)):
+    _require(actor, {"super_admin", "sys_admin"})
+    row = await _transition(session, operation="AUTHORIZE_PROXY_MAJOR", target_id=payload.proxy_grant_id, actor=actor, key=key, request=payload.model_dump(), kind="major_authorization")
+    return _dto(ProxyMajorAuthorizationDTO, row)
+
+
+@platform_router.post("/proxy-major-authorizations/{authorization_id}/revoke", response_model=ProxyMajorAuthorizationDTO)
+async def revoke_proxy_major(authorization_id: UuidV7, payload: ProxyMajorAuthorizationRevokeRequest, key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_transfer_writer_session)):
+    _require(actor, {"super_admin", "sys_admin"})
+    row = await _transition(session, operation="REVOKE_PROXY_MAJOR", target_id=authorization_id, actor=actor, key=key, request=payload.model_dump(), kind="major_authorization")
+    return _dto(ProxyMajorAuthorizationDTO, row)
 
 
 @institution_router.get("/service-transfers", response_model=TransferPageDTO)

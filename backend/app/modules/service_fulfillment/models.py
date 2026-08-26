@@ -150,6 +150,57 @@ class ServiceTransferScopeRevisionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ServiceTransferContinuationHandoffModel(Base):
+    __tablename__ = "service_transfer_continuation_handoff"
+    __table_args__ = (
+        UniqueConstraint("transfer_id", name="uq_service_transfer_continuation_handoff_transfer"),
+        CheckConstraint(
+            "status IN ('PENDING_TARGET_ENROLLMENT','ENROLLMENT_CREATED','ASSIGNMENT_PENDING','CONTINUATION_CASE_LINKED') AND version>=1",
+            name="ck_service_transfer_continuation_handoff_status",
+        ),
+        {"schema": "public"},
+    )
+    handoff_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), primary_key=True)
+    transfer_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    source_service_case_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    source_tenant_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    target_tenant_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    subject_member_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    authorized_scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    scope_digest: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    linked_enrollment_id: Mapped[UUID | None] = mapped_column(UUIDType(as_uuid=True))
+    linked_service_case_id: Mapped[UUID | None] = mapped_column(UUIDType(as_uuid=True))
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class ProxyMajorAuthorizationModel(Base):
+    __tablename__ = "proxy_major_authorization"
+    __table_args__ = (
+        UniqueConstraint("authorization_id", "version", name="uq_proxy_major_authorization_version"),
+        CheckConstraint(
+            "version>=1 AND ((version=1 AND revoked_at IS NULL) OR (version>1 AND revoked_at IS NOT NULL))",
+            name="ck_proxy_major_authorization_append_only",
+        ),
+        {"schema": "public"},
+    )
+    authorization_revision_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), primary_key=True)
+    authorization_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    proxy_grant_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    principal_member_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    proxy_member_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    authorization_document_version_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    witness_decision_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), nullable=False)
+    permission_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    granted_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class PersonalDataExportRequestModel(Base):
     __tablename__ = "personal_data_export_request"
     __table_args__ = (

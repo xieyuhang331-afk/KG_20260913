@@ -106,11 +106,12 @@ class ServiceFulfillmentService:
         actor_tenant_id: int | None,
         idempotency_key: str,
         request: Mapping[str, object],
+        request_digest: str | None = None,
     ) -> dict:
         authority = await self._authorized(
             operation, target_id, actor_user_id, actor_role, actor_tenant_id
         )
-        request_digest = digest_hex(request)
+        request_digest = request_digest or digest_hex(request)
         replay = await self.repository.replay(
             actor_user_id, operation, idempotency_key, request_digest
         )
@@ -121,6 +122,11 @@ class ServiceFulfillmentService:
             mutation_request["milestone_ids"] = {
                 code.value: self.id_factory() for code in MilestoneCode
             }
+        if operation == "COORDINATE_TRANSFER_CLOSE":
+            mutation_request["handoff_id"] = self.id_factory()
+            mutation_request["handoff_scope_digest"] = digest_hex(
+                authority["transfer_requested_scope"]
+            )
         now = self.clock.now()
         response_id = self.id_factory()
         response = self._expected_response(
@@ -245,6 +251,7 @@ class ServiceFulfillmentService:
         if operation in {
             "CANCEL_TRANSFER",
             "CONFIRM_TRANSFER_SCOPE",
+            "START_REVIEW_TRANSFER",
             "ACCEPT_TRANSFER",
             "REJECT_TRANSFER",
             "SOURCE_CLOSE_TRANSFER",
@@ -253,6 +260,7 @@ class ServiceFulfillmentService:
             requested_status = {
                 "CANCEL_TRANSFER": "CANCELLED_BY_USER",
                 "CONFIRM_TRANSFER_SCOPE": "USER_SCOPE_CONFIRMED",
+                "START_REVIEW_TRANSFER": "NEW_INSTITUTION_REVIEWING",
                 "ACCEPT_TRANSFER": "ACCEPTED",
                 "REJECT_TRANSFER": "REJECTED_BY_NEW_INSTITUTION",
                 "SOURCE_CLOSE_TRANSFER": "OLD_INSTITUTION_CLOSING",
@@ -280,6 +288,52 @@ class ServiceFulfillmentService:
                 if operation == "COORDINATE_TRANSFER_CLOSE"
                 else authority.get("transfer_transferred_at"),
                 "version": int(authority["transfer_version"]) + 1,
+            }
+        if operation == "LINK_CONTINUATION_CASE":
+            return {
+                "handoff_id": authority["handoff_id"],
+                "transfer_id": target_id,
+                "source_service_case_id": authority["service_case_id"],
+                "source_tenant_id": authority["tenant_public_id"],
+                "target_tenant_id": authority["transfer_target_tenant_id"],
+                "subject_member_id": authority["subject_member_id"],
+                "authorized_scope": authority["transfer_requested_scope"],
+                "status": "CONTINUATION_CASE_LINKED",
+                "created_at": authority["handoff_created_at"],
+                "linked_enrollment_id": request["new_enrollment_id"],
+                "linked_service_case_id": request["new_service_case_id"],
+                "linked_at": occurred_at,
+                "version": int(authority["handoff_version"]) + 1,
+            }
+        if operation == "AUTHORIZE_PROXY_MAJOR":
+            return {
+                "authorization_id": operation_id,
+                "proxy_grant_id": target_id,
+                "principal_member_id": authority["principal_member_id"],
+                "proxy_member_id": authority["proxy_member_id"],
+                "authorization_document_version_id": request["authorization_document_version_id"],
+                "witness_decision_id": request["witness_decision_id"],
+                "permission_codes": request["permission_codes"],
+                "granted_by": authority["actor_user_id"],
+                "valid_from": occurred_at,
+                "valid_until": request.get("valid_until"),
+                "revoked_at": None,
+                "version": 1,
+            }
+        if operation == "REVOKE_PROXY_MAJOR":
+            return {
+                "authorization_id": target_id,
+                "proxy_grant_id": authority["proxy_grant_id"],
+                "principal_member_id": authority["principal_member_id"],
+                "proxy_member_id": authority["proxy_member_id"],
+                "authorization_document_version_id": authority["authorization_document_version_id"],
+                "witness_decision_id": authority["witness_decision_id"],
+                "permission_codes": authority["permission_codes"],
+                "granted_by": authority["granted_by"],
+                "valid_from": authority["valid_from"],
+                "valid_until": authority.get("valid_until"),
+                "revoked_at": occurred_at,
+                "version": int(authority["authorization_version"]) + 1,
             }
         if operation == "CREATE_EXPORT":
             return {
@@ -532,6 +586,12 @@ class ServiceFulfillmentService:
         idempotency_key: str,
         request: Mapping[str, object],
     ) -> dict:
+        request_digest = digest_hex(request)
+        replay = await self.repository.replay(
+            actor_user_id, operation, idempotency_key, request_digest
+        )
+        if replay is not None:
+            return replay
         authority = await self._authorized(
             operation,
             transfer_id,
@@ -546,6 +606,7 @@ class ServiceFulfillmentService:
             requested = {
                 "CANCEL_TRANSFER": TransferStatus.CANCELLED_BY_USER,
                 "CONFIRM_TRANSFER_SCOPE": TransferStatus.USER_SCOPE_CONFIRMED,
+                "START_REVIEW_TRANSFER": TransferStatus.NEW_INSTITUTION_REVIEWING,
                 "ACCEPT_TRANSFER": TransferStatus.ACCEPTED,
                 "REJECT_TRANSFER": TransferStatus.REJECTED_BY_NEW_INSTITUTION,
                 "SOURCE_CLOSE_TRANSFER": TransferStatus.OLD_INSTITUTION_CLOSING,
@@ -561,12 +622,63 @@ class ServiceFulfillmentService:
                 request.get("exact_scope", ())
             ) != tuple(authority.get("transfer_requested_scope", ())):
                 raise ServiceFulfillmentError("TRANSFER_STATE_CONFLICT")
+            if operation == "ACCEPT_TRANSFER":
+                if not authority.get("target_service_ready"):
+                    raise ServiceFulfillmentError("CURRENTNESS_FORBIDDEN")
+                if request.get("service_label") not in tuple(
+                    authority.get("target_service_tags", ())
+                ):
+                    raise ServiceFulfillmentError("TRANSFER_STATE_CONFLICT")
+            if operation == "LINK_CONTINUATION_CASE":
+                case_id = request.get("new_service_case_id")
+                if not isinstance(case_id, UUID):
+                    raise ServiceFulfillmentError("INVALID_REQUEST")
+                new_case = await self._authorized(
+                    "VALIDATE_CONTINUATION_CASE",
+                    case_id,
+                    actor_user_id,
+                    actor_role,
+                    actor_tenant_id,
+                )
+                if (
+                    str(new_case.get("tenant_public_id"))
+                    != str(authority.get("transfer_target_tenant_id"))
+                    or str(new_case.get("subject_member_id"))
+                    != str(authority.get("subject_member_id"))
+                    or not new_case.get("service_ready")
+                    or not new_case.get("assignment_current")
+                    or not new_case.get("therapist_current")
+                    or not new_case.get("consent_current")
+                ):
+                    raise ServiceFulfillmentError("CURRENTNESS_FORBIDDEN")
+                request = {**request, "new_enrollment_id": new_case["new_enrollment_id"]}
         return await self._mutation(
             operation=operation,
             target_id=transfer_id,
             actor_user_id=actor_user_id,
             actor_role=actor_role,
             actor_tenant_id=actor_tenant_id,
+            idempotency_key=idempotency_key,
+            request=request,
+            request_digest=request_digest,
+        )
+
+    async def major_authorization_transition(
+        self,
+        *,
+        operation: str,
+        target_id: UUID,
+        actor_user_id: int,
+        actor_role: str,
+        idempotency_key: str,
+        request: Mapping[str, object],
+    ) -> dict:
+        return await self._mutation(
+            operation=operation,
+            target_id=target_id,
+            actor_user_id=actor_user_id,
+            actor_role=actor_role,
+            actor_tenant_id=None,
             idempotency_key=idempotency_key,
             request=request,
         )

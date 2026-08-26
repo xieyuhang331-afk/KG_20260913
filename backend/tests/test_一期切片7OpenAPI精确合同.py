@@ -28,8 +28,11 @@ EXPECTED = {
     ("get", "/api/v1/institutions/service-transfers"),
     ("get", "/api/v1/institutions/service-transfers/{transfer_id}"),
     ("post", "/api/v1/institutions/service-transfers/{transfer_id}/accept"),
+    ("post", "/api/v1/institutions/service-transfers/{transfer_id}/start-review"),
     ("post", "/api/v1/institutions/service-transfers/{transfer_id}/reject"),
     ("post", "/api/v1/institutions/service-transfers/{transfer_id}/source-close"),
+    ("get", "/api/v1/institutions/service-transfers/{transfer_id}/continuation-handoff"),
+    ("post", "/api/v1/institutions/service-transfers/{transfer_id}/continuation-case"),
     ("get", "/api/v1/family/service-cases/{case_id}/fulfillment"),
     ("get", "/api/v1/family/service-cases/{case_id}/milestones"),
     ("get", "/api/v1/family/service-cases/{case_id}/summaries/current"),
@@ -51,6 +54,8 @@ EXPECTED = {
     ("get", "/api/v1/platform/data-exports"),
     ("get", "/api/v1/platform/data-exports/{export_id}"),
     ("post", "/api/v1/platform/service-cases/{case_id}/safety-terminate"),
+    ("post", "/api/v1/platform/proxy-major-authorizations"),
+    ("post", "/api/v1/platform/proxy-major-authorizations/{authorization_id}/revoke"),
 }
 
 

@@ -55,6 +55,18 @@ DataScope = Literal[
     "MILESTONE",
     "SERVICE_SUMMARY",
 ]
+MajorProxyPermission = Literal[
+    "PLAN_DECISION",
+    "SERVICE_WITHDRAW",
+    "SERVICE_TRANSFER",
+    "PERSONAL_DATA_EXPORT",
+]
+ContinuationHandoffStatus = Literal[
+    "PENDING_TARGET_ENROLLMENT",
+    "ENROLLMENT_CREATED",
+    "ASSIGNMENT_PENDING",
+    "CONTINUATION_CASE_LINKED",
+]
 
 
 class StrictModel(BaseModel):
@@ -259,6 +271,61 @@ class TransferDTO(StrictModel):
 class TransferPageDTO(StrictModel):
     items: tuple[TransferDTO, ...]
     next_cursor: str | None = None
+
+
+class ContinuationCaseLinkRequest(StrictModel):
+    new_service_case_id: UuidV7
+    expected_version: ExpectedVersion
+
+
+class ContinuationHandoffDTO(StrictModel):
+    handoff_id: UuidV7
+    transfer_id: UuidV7
+    source_service_case_id: UuidV7
+    source_tenant_id: UuidV7
+    target_tenant_id: UuidV7
+    subject_member_id: UuidV7
+    authorized_scope: tuple[DataScope, ...]
+    status: ContinuationHandoffStatus
+    created_at: AwareDatetime
+    linked_enrollment_id: UuidV7 | None = None
+    linked_service_case_id: UuidV7 | None = None
+    linked_at: AwareDatetime | None = None
+    version: ExpectedVersion
+
+
+class ProxyMajorAuthorizationCreateRequest(StrictModel):
+    proxy_grant_id: UuidV7
+    authorization_document_version_id: UuidV7
+    witness_decision_id: UuidV7
+    permission_codes: tuple[MajorProxyPermission, ...] = Field(min_length=1, max_length=4)
+    valid_until: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def unique_permissions(self):
+        if len(set(self.permission_codes)) != len(self.permission_codes):
+            raise ValueError("DUPLICATE_PERMISSION_CODE")
+        return self
+
+
+class ProxyMajorAuthorizationRevokeRequest(StrictModel):
+    expected_version: ExpectedVersion
+    reason_code: StructuredCode
+
+
+class ProxyMajorAuthorizationDTO(StrictModel):
+    authorization_id: UuidV7
+    proxy_grant_id: UuidV7
+    principal_member_id: UuidV7
+    proxy_member_id: UuidV7
+    authorization_document_version_id: UuidV7
+    witness_decision_id: UuidV7
+    permission_codes: tuple[MajorProxyPermission, ...]
+    granted_by: int
+    valid_from: AwareDatetime
+    valid_until: AwareDatetime | None = None
+    revoked_at: AwareDatetime | None = None
+    version: ExpectedVersion
 
 
 class DataExportCreateRequest(StrictModel):
