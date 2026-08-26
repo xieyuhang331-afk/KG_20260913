@@ -18,7 +18,11 @@ from app.modules.service_fulfillment.domain import (
     build_personal_data_export_archive,
 )
 from app.modules.service_fulfillment.repository import ServiceFulfillmentRepository
-from app.modules.service_fulfillment.service import ServiceFulfillmentService
+from app.modules.service_fulfillment.service import (
+    CommitOutcome,
+    ServiceFulfillmentService,
+    commit_with_confirmation,
+)
 from app.modules.user_health.service import Slice4Secrets
 from app.tasks.celery_app import SLICE7_SERVICE_FULFILLMENT_QUEUE, celery_app
 
@@ -54,11 +58,24 @@ def _run(operation):
 async def _mark_overdue() -> int:
     factory = await get_slice7_session_factory("export_worker")
     async with factory() as session:
+        repository = ServiceFulfillmentRepository(session)
         service = ServiceFulfillmentService(
-            ServiceFulfillmentRepository(session), SystemBusinessClock(), Uuid7Generator().generate
+            repository, SystemBusinessClock(), Uuid7Generator().generate
         )
         result = await service.mark_overdue(str(Uuid7Generator().generate()))
-        await session.commit()
+        confirmation = repository.mutation_confirmation
+        if confirmation is None:
+            await session.commit()
+            return 0
+
+        async def confirm_missed() -> CommitOutcome:
+            async with factory() as confirmation_session:
+                row = await ServiceFulfillmentRepository(
+                    confirmation_session
+                ).confirm_mutation_outcome(confirmation)
+            return CommitOutcome(str(row["outcome"]))
+
+        await commit_with_confirmation(session, confirm=confirm_missed)
         return len(result)
 
 
@@ -139,22 +156,29 @@ async def _generate_export(export_id: UUID) -> str:
             expires_at=expires_at,
         )
         repository = ServiceFulfillmentRepository(session)
-        await repository.bind_export_artifact(
-            {
-                "artifact_id": Uuid7Generator().generate(),
-                "export_id": export_id,
-                "private_file_id": export_id,
-                "manifest_digest": archive.manifest_digest,
-                "artifact_digest": archive.artifact_digest,
-                "artifact_size": len(archive.data),
-                "worker_id": worker_id,
-                "audit_id": Uuid7Generator().generate(),
-                "event_id": Uuid7Generator().generate(),
-                "created_at": now,
-                "expires_at": expires_at,
-            }
-        )
-        await session.commit()
+        ready_payload = {
+            "artifact_id": Uuid7Generator().generate(),
+            "export_id": export_id,
+            "private_file_id": export_id,
+            "manifest_digest": archive.manifest_digest,
+            "artifact_digest": archive.artifact_digest,
+            "artifact_size": len(archive.data),
+            "worker_id": worker_id,
+            "audit_id": Uuid7Generator().generate(),
+            "event_id": Uuid7Generator().generate(),
+            "created_at": now,
+            "expires_at": expires_at,
+        }
+        await repository.bind_export_artifact(ready_payload)
+
+        async def confirm_ready() -> CommitOutcome:
+            async with factory() as confirmation_session:
+                confirmed = await ServiceFulfillmentRepository(
+                    confirmation_session
+                ).confirm_export_ready(ready_payload)
+            return CommitOutcome.COMMITTED if confirmed else CommitOutcome.UNKNOWN
+
+        await commit_with_confirmation(session, confirm=confirm_ready)
         return "READY"
 
 

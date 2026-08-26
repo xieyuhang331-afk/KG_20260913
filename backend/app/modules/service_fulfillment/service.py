@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 import hashlib
+import hmac
 import json
-from typing import Callable, Mapping
+import os
+from typing import Awaitable, Callable, Mapping
 from uuid import UUID
 
 from .domain import (
@@ -24,10 +29,177 @@ class ServiceFulfillmentError(RuntimeError):
     pass
 
 
+class CommitOutcome(str, Enum):
+    COMMITTED = "COMMITTED"
+    NOT_COMMITTED = "NOT_COMMITTED"
+    UNKNOWN = "UNKNOWN"
+
+
+_PAGE_CURSOR_DOMAIN = b"slice7-service-fulfillment-page-cursor:v1:\x00"
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _page_cursor_key() -> bytes:
+    value = os.getenv("KG_JWT_SECRET_KEY")
+    if value is None or not value.strip():
+        raise ServiceFulfillmentError("DEPENDENCY_UNAVAILABLE")
+    return value.encode("utf-8")
+
+
+def _page_filters(value: Mapping[str, str | None] | None) -> dict[str, str | None]:
+    filters = dict(value or {})
+    if not set(filters).issubset({"risk", "status"}) or any(
+        item is not None and not isinstance(item, str) for item in filters.values()
+    ):
+        raise ServiceFulfillmentError("INVALID_REQUEST")
+    return {key: filters[key] for key in sorted(filters)}
+
+
+def encode_page_cursor(
+    cursor_id: UUID,
+    *,
+    snapshot_ceiling: UUID,
+    resource: str,
+    scope_id: UUID | None,
+    actor_user_id: int,
+    actor_role: str,
+    actor_tenant_id: int | None,
+    filters: Mapping[str, str | None] | None = None,
+) -> str:
+    raw = json.dumps(
+        {
+            "actor_role": actor_role,
+            "actor_tenant_id": actor_tenant_id,
+            "actor_user_id": actor_user_id,
+            "cursor_id": str(cursor_id),
+            "filters": _page_filters(filters),
+            "resource": resource,
+            "snapshot_ceiling": str(snapshot_ceiling),
+            "scope_id": None if scope_id is None else str(scope_id),
+            "v": 1,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    signature = hmac.new(
+        _page_cursor_key(),
+        _PAGE_CURSOR_DOMAIN + raw,
+        hashlib.sha256,
+    ).digest()
+    return f"{_base64url(raw)}.{_base64url(signature)}"
+
+
+def decode_page_cursor(
+    cursor: str | None,
+    *,
+    resource: str,
+    scope_id: UUID | None,
+    actor_user_id: int,
+    actor_role: str,
+    actor_tenant_id: int | None,
+    filters: Mapping[str, str | None] | None = None,
+) -> tuple[UUID | None, UUID | None]:
+    if cursor is None:
+        return None, None
+    try:
+        encoded_payload, encoded_signature = cursor.split(".")
+        raw = base64.b64decode(
+            (encoded_payload + "=" * (-len(encoded_payload) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        signature = base64.b64decode(
+            (encoded_signature + "=" * (-len(encoded_signature) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        if _base64url(raw) != encoded_payload or _base64url(signature) != encoded_signature:
+            raise ValueError
+        expected = hmac.new(
+            _page_cursor_key(),
+            _PAGE_CURSOR_DOMAIN + raw,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload = json.loads(raw)
+        if set(payload) != {
+            "actor_role",
+            "actor_tenant_id",
+            "actor_user_id",
+            "cursor_id",
+            "filters",
+            "resource",
+            "snapshot_ceiling",
+            "scope_id",
+            "v",
+        } or payload["v"] != 1:
+            raise ValueError
+        expected_scope = None if scope_id is None else str(scope_id)
+        if (
+            payload["resource"] != resource
+            or payload["scope_id"] != expected_scope
+            or payload["actor_user_id"] != actor_user_id
+            or payload["actor_role"] != actor_role
+            or payload["actor_tenant_id"] != actor_tenant_id
+            or payload["filters"] != _page_filters(filters)
+        ):
+            raise ValueError
+        cursor_id = UUID(payload["cursor_id"])
+        snapshot_ceiling = UUID(payload["snapshot_ceiling"])
+        if (
+            cursor_id.version != 7
+            or snapshot_ceiling.version != 7
+            or cursor_id > snapshot_ceiling
+        ):
+            raise ValueError
+        return cursor_id, snapshot_ceiling
+    except (
+        AttributeError,
+        binascii.Error,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ):
+        raise ServiceFulfillmentError("INVALID_REQUEST") from None
+
+
+async def commit_with_confirmation(
+    session,
+    *,
+    confirm: Callable[[], Awaitable[CommitOutcome]],
+) -> CommitOutcome:
+    try:
+        await session.commit()
+        return CommitOutcome.COMMITTED
+    except BaseException as error:
+        if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+            raise
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        try:
+            outcome = await confirm()
+        except Exception:
+            outcome = CommitOutcome.UNKNOWN
+        if outcome is CommitOutcome.COMMITTED:
+            return outcome
+        if outcome is CommitOutcome.NOT_COMMITTED:
+            raise RuntimeError("COMMIT_NOT_COMMITTED") from None
+        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+
+
 def _json_value(value: object) -> object:
     if is_dataclass(value):
         return _json_value(asdict(value))
-    if type(value) is UUID:
+    if isinstance(value, UUID):
         return str(value)
     if type(value) in (datetime, date):
         return value.isoformat()
@@ -107,9 +279,17 @@ class ServiceFulfillmentService:
         idempotency_key: str,
         request: Mapping[str, object],
         request_digest: str | None = None,
+        authority_operation: str | None = None,
+        authority_target_id: UUID | None = None,
     ) -> dict:
+        resolved_authority_operation = authority_operation or operation
+        resolved_authority_target_id = authority_target_id or target_id
         authority = await self._authorized(
-            operation, target_id, actor_user_id, actor_role, actor_tenant_id
+            resolved_authority_operation,
+            resolved_authority_target_id,
+            actor_user_id,
+            actor_role,
+            actor_tenant_id,
         )
         request_digest = request_digest or digest_hex(request)
         replay = await self.repository.replay(
@@ -128,7 +308,7 @@ class ServiceFulfillmentService:
                 authority["transfer_requested_scope"]
             )
         now = self.clock.now()
-        response_id = self.id_factory()
+        response_id = target_id if operation == "CREATE_EXPORT" else self.id_factory()
         response = self._expected_response(
             operation=operation,
             target_id=target_id,
@@ -158,6 +338,10 @@ class ServiceFulfillmentService:
             "lifecycle_event_id": self.id_factory(),
             "response": response,
         }
+        if authority_operation is not None:
+            payload["authority_operation"] = authority_operation
+        if authority_target_id is not None:
+            payload["authority_target_id"] = authority_target_id
         payload["expected_response_digest"] = digest_hex(response)
         return await self.repository.mutate(operation, payload)
 
@@ -687,16 +871,36 @@ class ServiceFulfillmentService:
         self,
         *,
         operation: str,
-        export_or_member_id: UUID,
+        export_or_member_id: UUID | None,
         actor_user_id: int,
         actor_role: str,
         actor_tenant_id: int | None,
         idempotency_key: str,
         request: Mapping[str, object],
     ) -> dict:
+        target_id = (
+            self.id_factory()
+            if operation == "CREATE_EXPORT"
+            else export_or_member_id
+        )
+        if target_id is None:
+            raise ServiceFulfillmentError("NOT_FOUND")
+        requested_subject = request.get("subject_member_id")
+        if requested_subject is not None and not isinstance(requested_subject, UUID):
+            raise ServiceFulfillmentError("INVALID_REQUEST")
+        authority_operation = (
+            "CREATE_EXPORT_FOR_SUBJECT"
+            if operation == "CREATE_EXPORT" and requested_subject is not None
+            else operation
+        )
+        authority_target_id = (
+            requested_subject
+            if operation == "CREATE_EXPORT" and requested_subject is not None
+            else target_id
+        )
         authority = await self._authorized(
-            operation,
-            export_or_member_id,
+            authority_operation,
+            authority_target_id,
             actor_user_id,
             actor_role,
             actor_tenant_id,
@@ -713,12 +917,18 @@ class ServiceFulfillmentService:
                 raise ServiceFulfillmentError("EXPORT_NOT_READY")
         return await self._mutation(
             operation=operation,
-            target_id=export_or_member_id,
+            target_id=target_id,
             actor_user_id=actor_user_id,
             actor_role=actor_role,
             actor_tenant_id=actor_tenant_id,
             idempotency_key=idempotency_key,
             request=request,
+            authority_operation=(
+                authority_operation if authority_operation != operation else None
+            ),
+            authority_target_id=(
+                authority_target_id if authority_target_id != target_id else None
+            ),
         )
 
     async def mark_overdue(self, worker_id: str, limit: int = 100) -> list[dict]:

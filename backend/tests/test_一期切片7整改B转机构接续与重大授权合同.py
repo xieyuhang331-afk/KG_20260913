@@ -108,6 +108,22 @@ def test_整改B_数据库按操作冻结source_target_currentness和重大权�
         "result->>'case_status' IN",
     ):
         assert token in source
+
+
+def test_整改D_代理导出从创建到下载均实时消费精确重大权限() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "CREATE_EXPORT_FOR_SUBJECT" in source
+    assert "authority_operation" in source
+    assert "authority_target_id" in source
+    export_authority = source[
+        source.index("CREATE_EXPORT_FOR_SUBJECT") : source.index(
+            "PERFORM 1 FROM public", source.index("CREATE_EXPORT_FOR_SUBJECT")
+        )
+    ]
+    assert "PERSONAL_DATA_EXPORT" in export_authority
+    assert "slice7_proxy_major_current_v1" in export_authority
+    for operation in ("CANCEL_EXPORT", "EXPORT_DOWNLOAD_ACCESS", "READ_EXPORT"):
+        assert operation in export_authority
     assert "target_ia.service_tags" not in source
     assert "target_ia.draft_payload->'service_tags'" in source
     assert "INSERT INTO public.proxy_major_authorization" in source

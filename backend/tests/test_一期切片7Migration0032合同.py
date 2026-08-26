@@ -17,6 +17,8 @@ TABLES = {
     "service_summary_acknowledgement",
     "service_transfer_request",
     "service_transfer_scope_revision",
+    "service_transfer_continuation_handoff",
+    "proxy_major_authorization",
     "personal_data_export_request",
     "personal_data_export_artifact",
     "personal_data_export_download_access",
@@ -87,7 +89,9 @@ def test_0032业务权威回滚和历史保护() -> None:
         "slice7_export_private_file_register_v1",
         "slice7_export_private_file_snapshot_v1",
         "slice7_export_artifact_bind_v1",
+        "slice7_export_ready_confirm_v1",
         "slice7_export_download_consume_v1",
+        "slice7_export_download_confirm_v1",
         "slice7_export_fail_v1",
         "slice7_export_recover_v1",
         "slice7_export_cleanup_claim_v1",
@@ -113,6 +117,81 @@ def test_0032业务权威回滚和历史保护() -> None:
     assert "CASCADE" not in downgrade
     assert "ALTER TABLE public.service_case" not in source
     assert "ALTER TABLE public.health_plan" not in source
+
+
+def test_D_下载凭证过期后可重新授权且历史记录不被删除() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "uq_personal_data_export_access_current" not in source
+    mutation = source[
+        source.index("ELSIF operation_name='EXPORT_DOWNLOAD_ACCESS'") :
+        source.index("ELSE RAISE EXCEPTION 'INVALID_REQUEST'", source.index("ELSIF operation_name='EXPORT_DOWNLOAD_ACCESS'"))
+    ]
+    assert "INSERT INTO public.personal_data_export_download_access" in mutation
+    assert "DELETE FROM public.personal_data_export_download_access" not in mutation
+
+
+def test_整改C_导出READY未知提交使用精确只读后像确认() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    start = source.index('    _function(\n        "slice7_export_ready_confirm_v1"')
+    function = source[start : source.index("    _function(", start + 20)]
+    for token in (
+        "session_user",
+        "personal_data_export_request",
+        "personal_data_export_artifact",
+        "private_file",
+        "service_fulfillment_audit",
+        "service_fulfillment_outbox",
+        "EXPORT_READY",
+        "artifact_id",
+        "private_file_id",
+        "manifest_digest",
+        "artifact_digest",
+        "artifact_size",
+        "audit_id",
+        "event_id",
+        "created_at",
+        "expires_at",
+    ):
+        assert token in function
+    assert "UPDATE " not in function
+    assert "INSERT " not in function
+    assert "DELETE " not in function
+
+
+def test_整改D_通用提交确认必须核验核心证据和操作后像并返回三态() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    start = source.index('    _function(\n        "slice7_mutation_confirm_v1"')
+    function = source[start : source.index("    _function(", start + 20)]
+    for token in (
+        "COMMITTED",
+        "NOT_COMMITTED",
+        "UNKNOWN",
+        "service_fulfillment_receipt",
+        "service_fulfillment_audit",
+        "service_fulfillment_outbox",
+        "service_cycle_schedule",
+        "service_milestone_revision",
+        "service_case_lifecycle_event",
+        "service_closing_assessment",
+        "service_summary",
+        "service_summary_acknowledgement",
+        "service_transfer_request",
+        "service_transfer_continuation_handoff",
+        "proxy_major_authorization",
+        "personal_data_export_request",
+        "personal_data_export_download_access",
+        "request_digest",
+        "postimage_digest",
+        "response_json",
+        "receipt_id",
+        "audit_id",
+        "event_id",
+        "operation_id",
+    ):
+        assert token in function
+    assert "UPDATE " not in function
+    assert "INSERT " not in function
+    assert "DELETE " not in function
 
 
 def test_0032仅向前扩展PrivateFile内部ZIP且降级预检先于DDL() -> None:

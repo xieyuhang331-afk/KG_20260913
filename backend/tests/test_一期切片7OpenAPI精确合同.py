@@ -84,6 +84,43 @@ def test_敏感下载响应只含一次性字段且声明no_store() -> None:
     fields = set(schema["components"]["schemas"]["OneTimeDownloadDTO"]["properties"])
     assert fields == {"access_token", "expires_at", "filename", "content_type"}
     assert {"bucket", "storage_key", "private_file_id", "ciphertext"}.isdisjoint(fields)
+    request_schema = schema["components"]["schemas"]["DownloadAccessRequest"]
+    assert set(request_schema["required"]) == {"reason", "expected_version"}
+
+
+def test_Slice7全部敏感读取声明no_store() -> None:
+    schema = _schema()
+    for method, path in EXPECTED:
+        if method != "get":
+            continue
+        operation = schema["paths"][path][method]
+        assert (
+            operation["responses"]["200"]["headers"]["Cache-Control"]["schema"]["const"]
+            == "no-store"
+        ), path
+
+
+def test_D_列表状态风险筛选进入正式OpenAPI而不是应用层事后过滤() -> None:
+    schema = _schema()
+    expected = {
+        ("/api/v1/therapist/service-cases/{case_id}/milestones", "get"): {
+            "cursor", "limit", "status"
+        },
+        ("/api/v1/institutions/service-cases", "get"): {
+            "cursor", "limit", "status", "risk"
+        },
+        ("/api/v1/institutions/service-transfers", "get"): {
+            "cursor", "limit", "status"
+        },
+        ("/api/v1/platform/data-exports", "get"): {
+            "cursor", "limit", "status"
+        },
+    }
+    for (path, method), names in expected.items():
+        operation = schema["paths"][path][method]
+        assert {
+            item["name"] for item in operation["parameters"] if item["in"] == "query"
+        } == names
 
 
 def test_错误目录保留401_403_404_409_422_503() -> None:

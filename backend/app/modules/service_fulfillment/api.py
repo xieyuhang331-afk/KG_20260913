@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Mapping, TypeVar, cast
+from typing import Annotated, Literal, Mapping, TypeVar, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -16,6 +16,7 @@ from app.core.database import (
     get_slice7_family_reader_session,
     get_slice7_milestone_writer_session,
     get_slice7_oversight_reader_session,
+    get_slice7_session_factory,
     get_slice7_transfer_writer_session,
 )
 from app.core.security import (
@@ -29,6 +30,7 @@ from .ports import ExportArchiveAccessPort
 from .repository import ServiceFulfillmentRepository
 from .schemas import (
     CaseTransitionRequest,
+    CaseStatusValue,
     ClosingAssessmentCreateRequest,
     ClosingAssessmentDTO,
     ContinuationCaseLinkRequest,
@@ -36,10 +38,13 @@ from .schemas import (
     DataExportCancelRequest,
     DataExportCreateRequest,
     DataExportDTO,
+    DataExportPageDTO,
+    ExportStatusValue,
     DownloadAccessRequest,
     MilestoneCompleteRequest,
     MilestoneDTO,
     MilestonePageDTO,
+    MilestoneStatusValue,
     OneTimeDownloadDTO,
     ProxyMajorAuthorizationCreateRequest,
     ProxyMajorAuthorizationDTO,
@@ -54,12 +59,20 @@ from .schemas import (
     TransferDecisionRequest,
     TransferDTO,
     TransferPageDTO,
+    TransferStatusValue,
     TransferScopeConfirmRequest,
     TransferSourceCloseRequest,
     UnableToContactRequest,
     UuidV7,
 )
-from .service import ServiceFulfillmentError, ServiceFulfillmentService
+from .service import (
+    CommitOutcome,
+    ServiceFulfillmentError,
+    ServiceFulfillmentService,
+    commit_with_confirmation,
+    decode_page_cursor,
+    encode_page_cursor,
+)
 
 
 _STATUS = {
@@ -85,16 +98,28 @@ _STATUS = {
     "EXPORT_NOT_READY": 409,
     "INVALID_REQUEST": 422,
     "DEPENDENCY_UNAVAILABLE": 503,
+    "COMMIT_NOT_COMMITTED": 503,
     "COMMIT_OUTCOME_UNKNOWN": 503,
 }
 
 
 async def consume_personal_data_export_download(session, values: Mapping[str, object]) -> bool:
-    consumed = await ServiceFulfillmentRepository(session).consume_export_download(
-        values
-    )
+    repository = ServiceFulfillmentRepository(session)
+    consumed = await repository.consume_export_download(values)
     if consumed:
-        await session.commit()
+        async def confirm() -> CommitOutcome:
+            factory = await get_slice7_session_factory("transfer_writer")
+            async with factory() as fresh:
+                confirmed = await ServiceFulfillmentRepository(
+                    fresh
+                ).confirm_export_download(values)
+                return (
+                    CommitOutcome.COMMITTED
+                    if confirmed
+                    else CommitOutcome.UNKNOWN
+                )
+
+        await commit_with_confirmation(session, confirm=confirm)
     else:
         await session.rollback()
     return consumed
@@ -119,9 +144,9 @@ class Slice7Route(APIRoute):
 
         async def handler(request: Request):
             try:
-                return await original(request)
+                response = await original(request)
             except RequestValidationError:
-                return JSONResponse(status_code=422, content={"code": "INVALID_REQUEST", "message": "request rejected"})
+                response = JSONResponse(status_code=422, content={"code": "INVALID_REQUEST", "message": "request rejected"})
             except HTTPException as exc:
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else None
@@ -129,10 +154,13 @@ class Slice7Route(APIRoute):
                     code = "UNAUTHENTICATED"
                 if code not in _STATUS:
                     code = "INVALID_REQUEST" if exc.status_code < 500 else "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
+                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
             except Exception as exc:
                 code = _safe_code(exc)
-                return JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
+                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
+            if request.method == "GET":
+                response.headers["Cache-Control"] = "no-store"
+            return response
 
         return handler
 
@@ -165,13 +193,19 @@ def strip_slice7_validation_responses(schema: dict[str, object]) -> dict[str, ob
     for path_item in schema.get("paths", {}).values():
         if not isinstance(path_item, dict):
             continue
-        for operation in path_item.values():
+        for method, operation in path_item.items():
             if (
                 isinstance(operation, dict)
                 and "responses" in operation
                 and slice7_tags.intersection(operation.get("tags", ()))
             ):
                 operation["x-symbolic-error-codes"] = tuple(_STATUS)
+                if method == "get":
+                    success = operation["responses"].get("200")
+                    if isinstance(success, dict):
+                        success.setdefault("headers", {})["Cache-Control"] = {
+                            "schema": {"type": "string", "const": "no-store"}
+                        }
     return schema
 
 
@@ -203,6 +237,29 @@ def _service(repository: ServiceFulfillmentRepository) -> ServiceFulfillmentServ
     return ServiceFulfillmentService(repository, SystemBusinessClock(), Uuid7Generator().generate)
 
 
+async def _commit_mutation(
+    session,
+    repository: ServiceFulfillmentRepository,
+    runtime_kind: str,
+) -> None:
+    if repository.mutation_replayed:
+        await session.commit()
+        return
+    confirmation = repository.mutation_confirmation
+    if confirmation is None:
+        raise ServiceFulfillmentError("COMMIT_OUTCOME_UNKNOWN")
+
+    async def confirm() -> CommitOutcome:
+        factory = await get_slice7_session_factory(runtime_kind)
+        async with factory() as fresh:
+            row = await ServiceFulfillmentRepository(fresh).confirm_mutation_outcome(
+                confirmation
+            )
+            return CommitOutcome(str(row["outcome"]))
+
+    await commit_with_confirmation(session, confirm=confirm)
+
+
 async def _read_one(session, resource: str, target_id: UUID, actor: CurrentUser) -> dict:
     row = await ServiceFulfillmentRepository(session).read_one(resource, target_id, actor.id, actor.role)
     if row is None:
@@ -210,11 +267,76 @@ async def _read_one(session, resource: str, target_id: UUID, actor: CurrentUser)
     return row
 
 
-async def _read_many(session, resource: str, scope: UUID | None, actor: CurrentUser, cursor: UUID | None, limit: int) -> list[dict]:
-    return await ServiceFulfillmentRepository(session).read_many(resource, scope, actor.id, actor.role, cursor, limit)
+_PAGE_ID_FIELDS = {
+    "EXPORT": "export_id",
+    "FULFILLMENT": "service_case_id",
+    "MILESTONE": "milestone_id",
+    "TRANSFER": "transfer_id",
+}
 
 
-async def _transition(session, *, operation: str, target_id: UUID, actor: CurrentUser, key: str, request: Mapping[str, object], kind: str) -> dict:
+async def _read_many(
+    session,
+    resource: str,
+    scope: UUID | None,
+    actor: CurrentUser,
+    cursor: str | None,
+    limit: int,
+    *,
+    status: str | None = None,
+    risk: str | None = None,
+) -> tuple[list[dict], str | None]:
+    filters = {"risk": risk, "status": status}
+    cursor_id, snapshot_ceiling = decode_page_cursor(
+        cursor,
+        resource=resource,
+        scope_id=scope,
+        actor_user_id=actor.id,
+        actor_role=actor.role,
+        actor_tenant_id=actor.tenant_id,
+        filters=filters,
+    )
+    repository = ServiceFulfillmentRepository(session)
+    rows, resolved_ceiling = await repository.read_many(
+        resource,
+        scope,
+        actor.id,
+        actor.role,
+        cursor_id,
+        snapshot_ceiling,
+        limit,
+        status,
+        risk,
+    )
+    next_cursor = None
+    if len(rows) == limit:
+        last_id = UUID(str(rows[-1][_PAGE_ID_FIELDS[resource]]))
+        probe, probe_ceiling = await repository.read_many(
+            resource,
+            scope,
+            actor.id,
+            actor.role,
+            last_id,
+            resolved_ceiling,
+            1,
+            status,
+            risk,
+        )
+        if probe and resolved_ceiling is not None and probe_ceiling == resolved_ceiling:
+            next_cursor = encode_page_cursor(
+                last_id,
+                snapshot_ceiling=resolved_ceiling,
+                resource=resource,
+                scope_id=scope,
+                actor_user_id=actor.id,
+                actor_role=actor.role,
+                actor_tenant_id=actor.tenant_id,
+                filters=filters,
+            )
+    return rows, next_cursor
+
+
+async def _transition(session, *, operation: str, target_id: UUID | None, actor: CurrentUser, key: str, request: Mapping[str, object], kind: str) -> dict:
     repository = ServiceFulfillmentRepository(session)
     service = _service(repository)
     if kind == "transfer":
@@ -225,7 +347,11 @@ async def _transition(session, *, operation: str, target_id: UUID, actor: Curren
         row = await service.export_transition(operation=operation, export_or_member_id=target_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id, idempotency_key=key, request=request)
     else:
         row = await service.case_transition(operation=operation, service_case_id=target_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id, idempotency_key=key, request=request)
-    await session.commit()
+    await _commit_mutation(
+        session,
+        repository,
+        "case_writer" if kind == "case" else "transfer_writer",
+    )
     return row
 
 
@@ -236,10 +362,10 @@ async def therapist_fulfillment(case_id: UuidV7, actor: CurrentUser = Depends(ge
 
 
 @therapist_router.get("/service-cases/{case_id}/milestones", response_model=MilestonePageDTO)
-async def therapist_milestones(case_id: UuidV7, cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_milestone_writer_session)):
+async def therapist_milestones(case_id: UuidV7, cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: MilestoneStatusValue | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_milestone_writer_session)):
     _require(actor, {"therapist"})
-    rows = await _read_many(session, "MILESTONE", case_id, actor, cursor_id, limit)
-    return MilestonePageDTO(items=tuple(_dto(MilestoneDTO, row) for row in rows))
+    rows, next_cursor = await _read_many(session, "MILESTONE", case_id, actor, cursor, limit, status=status)
+    return MilestonePageDTO(items=tuple(_dto(MilestoneDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @therapist_router.get("/milestones/{milestone_id}", response_model=MilestoneDTO)
@@ -251,8 +377,9 @@ async def therapist_milestone(milestone_id: UuidV7, actor: CurrentUser = Depends
 @therapist_router.post("/milestones/{milestone_id}/complete", response_model=MilestoneDTO)
 async def complete_milestone(milestone_id: UuidV7, payload: MilestoneCompleteRequest, key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_milestone_writer_session)):
     _require(actor, {"therapist"})
-    row = await _service(ServiceFulfillmentRepository(session)).complete_milestone(milestone_id=milestone_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id or 0, idempotency_key=key, expected_version=payload.expected_version, record_summary=payload.record_summary, evidence_refs=payload.evidence_refs)
-    await session.commit()
+    repository = ServiceFulfillmentRepository(session)
+    row = await _service(repository).complete_milestone(milestone_id=milestone_id, actor_user_id=actor.id, actor_role=actor.role, actor_tenant_id=actor.tenant_id or 0, idempotency_key=key, expected_version=payload.expected_version, record_summary=payload.record_summary, evidence_refs=payload.evidence_refs)
+    await _commit_mutation(session, repository, "milestone_writer")
     return _dto(MilestoneDTO, row)
 
 
@@ -305,10 +432,10 @@ async def institution_fulfillment(case_id: UuidV7, actor: CurrentUser = Depends(
 
 
 @institution_router.get("/service-cases", response_model=ServiceFulfillmentPageDTO)
-async def institution_cases(cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_case_writer_session)):
+async def institution_cases(cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: CaseStatusValue | None = Query(None), risk: Literal["AT_RISK"] | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_case_writer_session)):
     _require(actor, {"org_admin", "org_operator"})
-    rows = await _read_many(session, "FULFILLMENT", None, actor, cursor_id, limit)
-    return ServiceFulfillmentPageDTO(items=tuple(_dto(ServiceFulfillmentDTO, row) for row in rows))
+    rows, next_cursor = await _read_many(session, "FULFILLMENT", None, actor, cursor, limit, status=status, risk=risk)
+    return ServiceFulfillmentPageDTO(items=tuple(_dto(ServiceFulfillmentDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @family_router.get("/service-cases/{case_id}/fulfillment", response_model=ServiceFulfillmentDTO)
@@ -318,10 +445,10 @@ async def family_fulfillment(case_id: UuidV7, actor: CurrentUser = Depends(get_c
 
 
 @family_router.get("/service-cases/{case_id}/milestones", response_model=MilestonePageDTO)
-async def family_milestones(case_id: UuidV7, cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_family_reader_session)):
+async def family_milestones(case_id: UuidV7, cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: MilestoneStatusValue | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_family_reader_session)):
     _require(actor, {"member"})
-    rows = await _read_many(session, "MILESTONE", case_id, actor, cursor_id, limit)
-    return MilestonePageDTO(items=tuple(_dto(MilestoneDTO, row) for row in rows))
+    rows, next_cursor = await _read_many(session, "MILESTONE", case_id, actor, cursor, limit, status=status)
+    return MilestonePageDTO(items=tuple(_dto(MilestoneDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @family_router.get("/service-cases/{case_id}/summaries/current", response_model=ServiceSummaryDTO)
@@ -397,10 +524,10 @@ async def revoke_proxy_major(authorization_id: UuidV7, payload: ProxyMajorAuthor
 
 @institution_router.get("/service-transfers", response_model=TransferPageDTO)
 @platform_router.get("/service-transfers", response_model=TransferPageDTO)
-async def list_transfers(cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
+async def list_transfers(cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: TransferStatusValue | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
     _require(actor, {"org_admin", "org_operator", "super_admin", "sys_admin"})
-    rows = await _read_many(session, "TRANSFER", None, actor, cursor_id, limit)
-    return TransferPageDTO(items=tuple(_dto(TransferDTO, row) for row in rows))
+    rows, next_cursor = await _read_many(session, "TRANSFER", None, actor, cursor, limit, status=status)
+    return TransferPageDTO(items=tuple(_dto(TransferDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @institution_router.get("/service-transfers/{transfer_id}", response_model=TransferDTO)
@@ -414,8 +541,7 @@ async def get_transfer(transfer_id: UuidV7, actor: CurrentUser = Depends(get_cur
 async def create_export(payload: DataExportCreateRequest, key: IdempotencyKey, step_up: StepUpToken, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_transfer_writer_session)):
     _require(actor, {"member"})
     _require_current_step_up(step_up, actor)
-    member_id = Uuid7Generator().generate()
-    return _dto(DataExportDTO, await _transition(session, operation="CREATE_EXPORT", target_id=member_id, actor=actor, key=key, request=payload.model_dump(), kind="export"))
+    return _dto(DataExportDTO, await _transition(session, operation="CREATE_EXPORT", target_id=None, actor=actor, key=key, request=payload.model_dump(), kind="export"))
 
 
 @family_router.get("/data-exports/{export_id}", response_model=DataExportDTO)
@@ -428,7 +554,8 @@ async def family_export(export_id: UuidV7, actor: CurrentUser = Depends(get_curr
 async def export_download_access(export_id: UuidV7, payload: DownloadAccessRequest, key: IdempotencyKey, step_up: StepUpToken, request: Request, response: Response, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_transfer_writer_session), file_session=Depends(get_institution_onboarding_reader_session)):
     _require(actor, {"member"})
     _require_current_step_up(step_up, actor)
-    row = await _service(ServiceFulfillmentRepository(session)).export_transition(
+    repository = ServiceFulfillmentRepository(session)
+    row = await _service(repository).export_transition(
         operation="EXPORT_DOWNLOAD_ACCESS",
         export_or_member_id=export_id,
         actor_user_id=actor.id,
@@ -454,7 +581,7 @@ async def export_download_access(export_id: UuidV7, payload: DownloadAccessReque
         expires_at=int(expires_at.timestamp()),
         token_id=str(row["access_id"]),
     )
-    await session.commit()
+    await _commit_mutation(session, repository, "transfer_writer")
     response.headers["Cache-Control"] = "no-store"
     return OneTimeDownloadDTO(
         access_token=token,
@@ -471,10 +598,10 @@ async def cancel_export(export_id: UuidV7, payload: DataExportCancelRequest, key
 
 
 @platform_router.get("/service-fulfillment/cases", response_model=ServiceFulfillmentPageDTO)
-async def platform_cases(cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
+async def platform_cases(cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: CaseStatusValue | None = Query(None), risk: Literal["AT_RISK"] | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
     _require(actor, {"super_admin", "sys_admin"})
-    rows = await _read_many(session, "FULFILLMENT", None, actor, cursor_id, limit)
-    return ServiceFulfillmentPageDTO(items=tuple(_dto(ServiceFulfillmentDTO, row) for row in rows))
+    rows, next_cursor = await _read_many(session, "FULFILLMENT", None, actor, cursor, limit, status=status, risk=risk)
+    return ServiceFulfillmentPageDTO(items=tuple(_dto(ServiceFulfillmentDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @platform_router.get("/service-fulfillment/cases/{case_id}", response_model=ServiceFulfillmentDTO)
@@ -483,11 +610,11 @@ async def platform_case(case_id: UuidV7, actor: CurrentUser = Depends(get_curren
     return _dto(ServiceFulfillmentDTO, await _read_one(session, "FULFILLMENT", case_id, actor))
 
 
-@platform_router.get("/data-exports", response_model=tuple[DataExportDTO, ...])
-async def platform_exports(cursor_id: UuidV7 | None = None, limit: int = Query(50, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
+@platform_router.get("/data-exports", response_model=DataExportPageDTO)
+async def platform_exports(cursor: str | None = Query(None, max_length=1024), limit: int = Query(50, ge=1, le=100), status: ExportStatusValue | None = Query(None), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_slice7_oversight_reader_session)):
     _require(actor, {"super_admin", "sys_admin"})
-    rows = await _read_many(session, "EXPORT", None, actor, cursor_id, limit)
-    return tuple(_dto(DataExportDTO, row) for row in rows)
+    rows, next_cursor = await _read_many(session, "EXPORT", None, actor, cursor, limit, status=status)
+    return DataExportPageDTO(items=tuple(_dto(DataExportDTO, row) for row in rows), next_cursor=next_cursor)
 
 
 @platform_router.get("/data-exports/{export_id}", response_model=DataExportDTO)

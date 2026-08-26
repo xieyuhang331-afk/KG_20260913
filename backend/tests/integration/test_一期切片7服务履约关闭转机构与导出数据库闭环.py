@@ -11,13 +11,18 @@ from zipfile import ZipFile
 import pytest
 from alembic import command
 from fastapi import HTTPException
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.security import create_access_token
 from app.core.uuid_generator import Uuid7Generator
 from app.modules.service_fulfillment.domain import SystemBusinessClock
 from app.modules.service_fulfillment.repository import ServiceFulfillmentRepository
-from app.modules.service_fulfillment.service import ServiceFulfillmentService
+from app.modules.service_fulfillment.service import (
+    ServiceFulfillmentService,
+    decode_page_cursor,
+    encode_page_cursor,
+)
 from app.modules.private_file.repository import PrivateFileRepository
 from app.modules.private_file.service import (
     authorize_generated_export_access,
@@ -40,6 +45,8 @@ TABLES = {
     "service_summary_acknowledgement",
     "service_transfer_request",
     "service_transfer_scope_revision",
+    "service_transfer_continuation_handoff",
+    "proxy_major_authorization",
     "personal_data_export_request",
     "personal_data_export_artifact",
     "personal_data_export_download_access",
@@ -92,7 +99,9 @@ def test_0031到0032到0031到0032生命周期保持单一Head(pg_database) -> N
 def test_0032单一Head且对象和六身份ACL闭合(pg_database) -> None:
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
     actual = set(pg_database.fetch_column(
-        "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE ANY(ARRAY['service_%','personal_data_export_%'])"
+        "SELECT tablename FROM pg_tables WHERE schemaname='public' "
+        "AND (tablename LIKE ANY(ARRAY['service_%','personal_data_export_%']) "
+        "OR tablename='proxy_major_authorization')"
     ))
     assert TABLES <= actual
     roles = _slice7_roles()
@@ -123,7 +132,7 @@ def test_必要Runtime仅通过固定受限接口工作(pg_database) -> None:
         os.environ["KG_TEST_SLICE7_TRANSFER_WRITER_ROLE"]: "slice7_mutation_replay_v1(bigint,varchar,varchar,bytea)",
         os.environ["KG_TEST_SLICE7_EXPORT_WORKER_ROLE"]: "slice7_worker_claim_v1(varchar,varchar,bigint)",
         os.environ["KG_TEST_SLICE7_FAMILY_READER_ROLE"]: "slice7_read_one_v1(varchar,uuid,bigint,varchar)",
-        os.environ["KG_TEST_SLICE7_OVERSIGHT_READER_ROLE"]: "slice7_read_many_v1(varchar,uuid,bigint,varchar,uuid,bigint)",
+        os.environ["KG_TEST_SLICE7_OVERSIGHT_READER_ROLE"]: "slice7_read_many_v1(varchar,uuid,bigint,varchar,uuid,uuid,bigint,varchar,varchar)",
     }
     for role, function in expected.items():
         assert pg_database.fetch_value(
@@ -139,6 +148,7 @@ def test_必要Runtime仅通过固定受限接口工作(pg_database) -> None:
         "slice7_export_private_file_register_v1(jsonb)",
         "slice7_export_private_file_snapshot_v1(uuid,uuid)",
         "slice7_export_artifact_bind_v1(jsonb)",
+        "slice7_export_ready_confirm_v1(jsonb)",
         "slice7_export_fail_v1(jsonb)",
         "slice7_export_recover_v1(jsonb)",
         "slice7_export_cleanup_claim_v1(timestamptz,bigint)",
@@ -152,14 +162,18 @@ def test_必要Runtime仅通过固定受限接口工作(pg_database) -> None:
             assert not pg_database.fetch_value(
                 f"SELECT has_function_privilege('{role}','public.{function}','EXECUTE')"
             )
-    download_function = "slice7_export_download_consume_v1(jsonb)"
-    assert pg_database.fetch_value(
-        f"SELECT has_function_privilege('{transfer_role}','public.{download_function}','EXECUTE')"
-    )
-    for role in roles - {transfer_role} | {"public"}:
-        assert not pg_database.fetch_value(
-            f"SELECT has_function_privilege('{role}','public.{download_function}','EXECUTE')"
+    download_functions = {
+        "slice7_export_download_consume_v1(jsonb)",
+        "slice7_export_download_confirm_v1(jsonb)",
+    }
+    for download_function in download_functions:
+        assert pg_database.fetch_value(
+            f"SELECT has_function_privilege('{transfer_role}','public.{download_function}','EXECUTE')"
         )
+        for role in roles - {transfer_role} | {"public"}:
+            assert not pg_database.fetch_value(
+                f"SELECT has_function_privilege('{role}','public.{download_function}','EXECUTE')"
+            )
 
 
 def _seed_active_plan(
@@ -238,6 +252,96 @@ def _seed_active_plan(
 @pytest.fixture(scope="module")
 def slice7_seeded(pg_database, slice6_institution_writer_database) -> dict[str, object]:
     return _seed_active_plan(pg_database, slice6_institution_writer_database)
+
+
+def test_D_四类列表原生UUID上界与空集合语义在正式Reader下闭合(
+    pg_database,
+    slice7_seeded,
+) -> None:
+    oversight_actor_id = 98679
+    pg_database.execute(
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
+        f"VALUES ({oversight_actor_id},'00000000000','test-only','super_admin','active',NULL)"
+    )
+
+    async def exercise() -> None:
+        family_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        oversight_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        try:
+            async with AsyncSession(family_engine, expire_on_commit=False) as session:
+                milestones, milestone_ceiling = await ServiceFulfillmentRepository(
+                    session
+                ).read_many(
+                    "MILESTONE",
+                    UUID(str(slice7_seeded["case_id"])),
+                    int(slice7_seeded["family_actor_id"]),
+                    "member",
+                    None,
+                    None,
+                    2,
+                    None,
+                    None,
+                )
+            assert milestones and milestone_ceiling is not None
+            milestone_cursor = encode_page_cursor(
+                UUID(str(milestones[-1]["milestone_id"])),
+                snapshot_ceiling=milestone_ceiling,
+                resource="MILESTONE",
+                scope_id=UUID(str(slice7_seeded["case_id"])),
+                actor_user_id=int(slice7_seeded["family_actor_id"]),
+                actor_role="member",
+                actor_tenant_id=None,
+                filters={"risk": None, "status": None},
+            )
+            assert decode_page_cursor(
+                milestone_cursor,
+                resource="MILESTONE",
+                scope_id=UUID(str(slice7_seeded["case_id"])),
+                actor_user_id=int(slice7_seeded["family_actor_id"]),
+                actor_role="member",
+                actor_tenant_id=None,
+                filters={"risk": None, "status": None},
+            ) == (UUID(str(milestones[-1]["milestone_id"])), milestone_ceiling)
+
+            async with AsyncSession(oversight_engine, expire_on_commit=False) as session:
+                repository = ServiceFulfillmentRepository(session)
+                fulfillments, fulfillment_ceiling = await repository.read_many(
+                    "FULFILLMENT",
+                    None,
+                    oversight_actor_id,
+                    "super_admin",
+                    None,
+                    None,
+                    2,
+                    None,
+                    None,
+                )
+                assert fulfillments and fulfillment_ceiling is not None
+                for resource in ("TRANSFER", "EXPORT"):
+                    rows, ceiling = await repository.read_many(
+                        resource,
+                        None,
+                        oversight_actor_id,
+                        "super_admin",
+                        None,
+                        None,
+                        2,
+                        None,
+                        None,
+                    )
+                    assert rows == []
+                    assert ceiling is None
+        finally:
+            await family_engine.dispose()
+            await oversight_engine.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
@@ -540,6 +644,36 @@ def test_D37_D40_Worker崩溃后租约恢复且不重复事件(
 
     export_id = asyncio.run(request_and_claim())
     recovery_cutoff = datetime.now(timezone.utc) + timedelta(minutes=10)
+    pg_database.execute(
+        f'UPDATE public."user" SET status=\'suspended\' '
+        f'WHERE id={int(seeded["family_actor_id"])}'
+    )
+
+    async def assert_snapshot_blocked() -> None:
+        export_engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_EXPORT_WORKER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        try:
+            async with AsyncSession(export_engine, expire_on_commit=False) as session:
+                with pytest.raises(DBAPIError, match="EXPORT_LEASE_NOT_CURRENT"):
+                    await ServiceFulfillmentRepository(session).export_snapshot(export_id)
+        finally:
+            await export_engine.dispose()
+
+    asyncio.run(assert_snapshot_blocked())
+    assert asyncio.run(_recover(recovery_cutoff)) == 0
+    assert pg_database.fetch_value(
+        f"SELECT status FROM public.personal_data_export_request WHERE export_id='{export_id}'"
+    ) == "GENERATING"
+    assert pg_database.fetch_value(
+        f"SELECT count(*) FROM public.service_fulfillment_audit "
+        f"WHERE target_id='{export_id}' AND action='EXPORT_RECOVERY_REQUESTED'"
+    ) == 0
+    pg_database.execute(
+        f'UPDATE public."user" SET status=\'active\' '
+        f'WHERE id={int(seeded["family_actor_id"])}'
+    )
     assert asyncio.run(_recover(recovery_cutoff)) == 1
     assert pg_database.fetch_value(
         f"SELECT status FROM public.personal_data_export_request WHERE export_id='{export_id}'"
@@ -604,8 +738,17 @@ def test_D31_D40_内部Worker生成ZIP并一次性下载且无基础表扩权(
             assert await _generate_export(export_id) == "READY"
 
             async with AsyncSession(transfer_engine, expire_on_commit=False) as session:
+                repository = ServiceFulfillmentRepository(session)
+                authority = await repository.authority(
+                    "READ_EXPORT",
+                    export_id,
+                    int(seeded["family_actor_id"]),
+                    "member",
+                    None,
+                )
+                assert authority is not None
                 service = ServiceFulfillmentService(
-                    ServiceFulfillmentRepository(session),
+                    repository,
                     SystemBusinessClock(),
                     Uuid7Generator().generate,
                 )
@@ -616,7 +759,11 @@ def test_D31_D40_内部Worker生成ZIP并一次性下载且无基础表扩权(
                     actor_role="member",
                     actor_tenant_id=None,
                     idempotency_key="slice7-db-export-access-0001",
-                    request={"reason": "PERSONAL_ARCHIVE", "step_up_verified": True},
+                    request={
+                        "reason": "PERSONAL_ARCHIVE",
+                        "expected_version": int(authority["export_version"]),
+                        "step_up_verified": True,
+                    },
                 )
                 async with AsyncSession(file_engine, expire_on_commit=False) as file_session:
                     token = await authorize_generated_export_access(
@@ -678,6 +825,40 @@ def test_D31_D40_内部Worker生成ZIP并一次性下载且无基础表扩权(
         assert archive.namelist() == ["manifest.json", "data/assessment.json"]
 
     export_id = requested["export_id"]
+    ready_evidence = pg_database.fetch_rows(
+        "SELECT e.export_id,a.artifact_id,a.private_file_id,encode(a.manifest_digest,'hex') AS manifest_digest,"
+        "encode(a.artifact_digest,'hex') AS artifact_digest,f.actual_size AS artifact_size,"
+        "au.audit_id,o.event_id,e.ready_at AS created_at,e.expires_at "
+        "FROM public.personal_data_export_request e "
+        "JOIN public.personal_data_export_artifact a ON a.export_id=e.export_id "
+        "JOIN public.private_file f ON f.file_id=a.private_file_id "
+        "JOIN public.service_fulfillment_audit au ON au.target_id=e.export_id "
+        "AND au.action='EXPORT_READY' "
+        "JOIN public.service_fulfillment_outbox o ON o.aggregate_ref=e.export_id "
+        "AND o.event_type='EXPORT_READY' "
+        f"WHERE e.export_id='{export_id}'"
+    )
+    assert len(ready_evidence) == 1
+
+    async def confirm_ready(evidence: dict[str, object]) -> tuple[bool, bool]:
+        engine = create_async_engine(
+            os.environ["KG_TEST_SLICE7_EXPORT_WORKER_DATABASE_URL"],
+            pool_pre_ping=True,
+        )
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                repository = ServiceFulfillmentRepository(session)
+                confirmed = await repository.confirm_export_ready(evidence)
+                altered = await repository.confirm_export_ready(
+                    {**evidence, "artifact_size": int(evidence["artifact_size"]) + 1}
+                )
+                return confirmed, altered
+        finally:
+            await engine.dispose()
+
+    confirmed, altered = asyncio.run(confirm_ready(dict(ready_evidence[0])))
+    assert confirmed is True
+    assert altered is False
     assert pg_database.fetch_value(
         f"SELECT status FROM public.personal_data_export_request WHERE export_id='{export_id}'"
     ) == "DOWNLOADED"
@@ -766,10 +947,25 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
     assert pg_database.fetch_value(
         "SELECT count(*) FROM public.service_fulfillment_receipt "
         f"WHERE actor_scope='{actor_id}' AND operation='CREATE_EXPORT' "
-        "AND idempotency_key='slice7-http-export-create-0001'"
+        "AND idempotency_key='slice7-http-export-create-0001' "
+        f"AND target_id='{export_id}'"
+    ) == 1
+    assert pg_database.fetch_value(
+        "SELECT count(*) FROM public.service_fulfillment_outbox "
+        f"WHERE event_type='CREATE_EXPORT' AND aggregate_ref='{export_id}' "
+        f"AND payload_json->>'target_id'='{export_id}'"
+    ) == 1
+    assert pg_database.fetch_value(
+        "SELECT count(*) FROM public.service_fulfillment_audit "
+        f"WHERE action='CREATE_EXPORT' AND target_id='{export_id}'"
     ) == 1
 
     assert asyncio.run(_generate_export(UUID(export_id))) == "READY"
+    ready = real_db_client.get(
+        f"{path}/{export_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert ready.status_code == 200, ready.json()
     access = real_db_client.post(
         f"{path}/{export_id}/download-access",
         headers={
@@ -777,12 +973,31 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
             "X-Step-Up-Token": token,
             "Idempotency-Key": "slice7-http-export-access-0001",
         },
-        json={"reason": "PERSONAL_ARCHIVE"},
+        json={
+            "reason": "PERSONAL_ARCHIVE",
+            "expected_version": ready.json()["version"],
+        },
     )
     assert access.status_code == 200, access.json()
     assert access.headers["Cache-Control"] == "no-store"
     assert access.json()["content_type"] == "application/zip"
     content_path = f"/api/v1/private-files/{export_id}/content"
+    pg_database.execute(
+        f'UPDATE public."user" SET status=\'suspended\' WHERE id={actor_id}'
+    )
+    revoked = real_db_client.get(
+        content_path,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"token": access.json()["access_token"]},
+    )
+    assert revoked.status_code == 403
+    assert pg_database.fetch_value(
+        "SELECT count(*) FROM public.personal_data_export_download_access "
+        f"WHERE export_id='{export_id}' AND consumed_at IS NOT NULL"
+    ) == 0
+    pg_database.execute(
+        f'UPDATE public."user" SET status=\'active\' WHERE id={actor_id}'
+    )
     download = real_db_client.get(
         content_path,
         headers={"Authorization": f"Bearer {token}"},
@@ -804,6 +1019,87 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
         "SELECT count(*) FROM public.personal_data_export_download_access "
         f"WHERE export_id='{export_id}' AND consumed_at IS NOT NULL"
     ) == 1
+
+
+def test_D_真实HTTP签名游标稳定分页并拒绝篡改和Scope重绑定(
+    real_db_client,
+    slice7_seeded,
+) -> None:
+    actor_id = int(slice7_seeded["family_actor_id"])
+    token = create_access_token({"sub": str(actor_id), "role": "member"})
+    headers = {"Authorization": f"Bearer {token}"}
+    case_id = str(slice7_seeded["case_id"])
+    path = f"/api/v1/family/service-cases/{case_id}/milestones"
+
+    first = real_db_client.get(path, headers=headers, params={"limit": 2})
+    assert first.status_code == 200, first.json()
+    assert first.headers["Cache-Control"] == "no-store"
+    assert len(first.json()["items"]) == 2
+    first_cursor = first.json()["next_cursor"]
+    assert first_cursor and case_id not in first_cursor
+
+    second = real_db_client.get(
+        path,
+        headers=headers,
+        params={"limit": 2, "cursor": first_cursor},
+    )
+    assert second.status_code == 200, second.json()
+    assert len(second.json()["items"]) == 2
+    assert {
+        row["milestone_id"] for row in first.json()["items"]
+    }.isdisjoint({row["milestone_id"] for row in second.json()["items"]})
+
+    third = real_db_client.get(
+        path,
+        headers=headers,
+        params={"limit": 2, "cursor": second.json()["next_cursor"]},
+    )
+    assert third.status_code == 200, third.json()
+    assert len(third.json()["items"]) == 1
+    assert third.json()["next_cursor"] is None
+    all_items = (
+        first.json()["items"] + second.json()["items"] + third.json()["items"]
+    )
+
+    tampered = first_cursor[:-1] + ("A" if first_cursor[-1] != "A" else "B")
+    rejected = real_db_client.get(
+        path,
+        headers=headers,
+        params={"limit": 2, "cursor": tampered},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "INVALID_REQUEST"
+    rebound = real_db_client.get(
+        "/api/v1/family/service-cases/0198f1c0-0000-7000-8000-0000000000ee/milestones",
+        headers=headers,
+        params={"limit": 2, "cursor": first_cursor},
+    )
+    assert rebound.status_code == 422
+    assert rebound.json()["code"] == "INVALID_REQUEST"
+
+    filter_status = max(
+        {item["status"] for item in all_items},
+        key=lambda value: sum(item["status"] == value for item in all_items),
+    )
+    assert sum(item["status"] == filter_status for item in all_items) >= 3
+    filtered = real_db_client.get(
+        path,
+        headers=headers,
+        params={"limit": 2, "status": filter_status},
+    )
+    assert filtered.status_code == 200, filtered.json()
+    assert len(filtered.json()["items"]) == 2
+    assert {item["status"] for item in filtered.json()["items"]} == {filter_status}
+    filtered_cursor = filtered.json()["next_cursor"]
+    assert filtered_cursor is not None
+    rebound_status = "DUE" if filter_status != "DUE" else "PENDING"
+    filter_rebound = real_db_client.get(
+        path,
+        headers=headers,
+        params={"limit": 2, "status": rebound_status, "cursor": filtered_cursor},
+    )
+    assert filter_rebound.status_code == 422
+    assert filter_rebound.json()["code"] == "INVALID_REQUEST"
 
 
 def test_D31_D40_导出超限明确失败且无私有文件或部分写入(

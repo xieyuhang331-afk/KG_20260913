@@ -13,11 +13,19 @@ from .service import _json_value, digest_hex
 
 
 _UUID = UUIDType(as_uuid=True)
+_PAGE_ID_FIELDS = {
+    "EXPORT": "export_id",
+    "FULFILLMENT": "service_case_id",
+    "MILESTONE": "milestone_id",
+    "TRANSFER": "transfer_id",
+}
 
 
 class ServiceFulfillmentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self.mutation_confirmation: dict[str, object] | None = None
+        self.mutation_replayed = False
 
     async def authority(
         self,
@@ -52,14 +60,43 @@ class ServiceFulfillmentRepository:
         statement = text(
             "SELECT public.slice7_mutation_replay_v1(:actor,:operation,:key,decode(:digest,'hex')) AS value"
         ).bindparams(bindparam("actor", type_=BigInteger()))
-        return (await self.session.execute(statement, {
+        replay = (await self.session.execute(statement, {
             "actor": actor_user_id,
             "operation": operation,
             "key": idempotency_key,
             "digest": request_digest,
         })).scalar_one_or_none()
+        if replay is not None:
+            self.mutation_replayed = True
+        return replay
 
     async def mutate(self, operation: str, payload: Mapping[str, object]) -> dict:
+        confirmation_fields = (
+            "actor_scope",
+            "actor_user_id",
+            "actor_role",
+            "target_id",
+            "operation_id",
+            "idempotency_key",
+            "request_digest",
+            "expected_response_digest",
+            "response",
+            "occurred_at",
+            "audit_id",
+            "event_id",
+            "receipt_id",
+            "lifecycle_event_id",
+        )
+        self.mutation_confirmation = {
+            key: payload[key] for key in confirmation_fields
+        }
+        for key in ("expected_version", "handoff_id", "handoff_scope_digest"):
+            if key in payload:
+                self.mutation_confirmation[key] = payload[key]
+        self.mutation_confirmation["operation"] = operation
+        self.mutation_confirmation["postimage_digest"] = payload[
+            "expected_response_digest"
+        ]
         value = json.dumps(
             {**_json_value(dict(payload)), "operation": operation},
             ensure_ascii=True,
@@ -107,13 +144,17 @@ class ServiceFulfillmentRepository:
         actor_user_id: int,
         actor_role: str,
         cursor_id: UUID | None,
+        snapshot_ceiling: UUID | None,
         limit: int,
-    ) -> list[dict]:
+        status_filter: str | None,
+        risk_filter: str | None,
+    ) -> tuple[list[dict], UUID | None]:
         statement = text(
-            "SELECT public.slice7_read_many_v1(:resource,:scope,:actor,:role,:cursor,:limit) AS value"
+            "SELECT public.slice7_read_many_v1(:resource,:scope,:actor,:role,:cursor,:ceiling,:limit,:status,:risk) AS value"
         ).bindparams(
             bindparam("scope", type_=_UUID),
             bindparam("cursor", type_=_UUID),
+            bindparam("ceiling", type_=_UUID),
             bindparam("actor", type_=BigInteger()),
             bindparam("limit", type_=BigInteger()),
         )
@@ -123,9 +164,41 @@ class ServiceFulfillmentRepository:
             "actor": actor_user_id,
             "role": actor_role,
             "cursor": cursor_id,
+            "ceiling": snapshot_ceiling,
             "limit": limit,
+            "status": status_filter,
+            "risk": risk_filter,
         })).scalar_one()
-        return [dict(row) for row in value]
+        if not isinstance(value, dict) or set(value) != {"items", "ceiling"}:
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID")
+        items = value["items"]
+        ceiling = value["ceiling"]
+        if not isinstance(items, list) or not all(isinstance(row, dict) for row in items):
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID")
+        resolved_ceiling = None if ceiling is None else UUID(str(ceiling))
+        if resolved_ceiling is not None and resolved_ceiling.version != 7:
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID")
+        if snapshot_ceiling is not None and resolved_ceiling != snapshot_ceiling:
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID")
+        try:
+            identifiers = [UUID(str(row[_PAGE_ID_FIELDS[resource]])) for row in items]
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID") from None
+        if (
+            any(identifier.version != 7 for identifier in identifiers)
+            or identifiers != sorted(identifiers)
+            or len(set(identifiers)) != len(identifiers)
+            or (
+                identifiers
+                and (
+                    resolved_ceiling is None
+                    or identifiers[-1] > resolved_ceiling
+                    or (cursor_id is not None and identifiers[0] <= cursor_id)
+                )
+            )
+        ):
+            raise RuntimeError("SLICE7_PAGE_RESULT_INVALID")
+        return [dict(row) for row in items], resolved_ceiling
 
     async def claim_work(self, kind: str, worker_id: str, limit: int) -> list[dict]:
         statement = text(
@@ -193,6 +266,25 @@ class ServiceFulfillmentRepository:
             ).scalar_one()
         )
 
+    async def confirm_export_ready(self, payload: Mapping[str, object]) -> bool:
+        value = json.dumps(
+            _json_value(dict(payload)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return bool(
+            (
+                await self.session.execute(
+                    text(
+                        "SELECT public.slice7_export_ready_confirm_v1("
+                        "CAST(:value AS jsonb))"
+                    ),
+                    {"value": value},
+                )
+            ).scalar_one()
+        )
+
     async def consume_export_download(self, payload: Mapping[str, object]) -> bool:
         value = json.dumps(
             _json_value(dict(payload)),
@@ -205,6 +297,25 @@ class ServiceFulfillmentRepository:
                 await self.session.execute(
                     text(
                         "SELECT public.slice7_export_download_consume_v1("
+                        "CAST(:value AS jsonb))"
+                    ),
+                    {"value": value},
+                )
+            ).scalar_one()
+        )
+
+    async def confirm_export_download(self, payload: Mapping[str, object]) -> bool:
+        value = json.dumps(
+            _json_value(dict(payload)),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return bool(
+            (
+                await self.session.execute(
+                    text(
+                        "SELECT public.slice7_export_download_confirm_v1("
                         "CAST(:value AS jsonb))"
                     ),
                     {"value": value},

@@ -329,6 +329,7 @@ class ProxyMajorAuthorizationDTO(StrictModel):
 
 
 class DataExportCreateRequest(StrictModel):
+    subject_member_id: UuidV7 | None = None
     requested_scope: tuple[DataScope, ...] = Field(min_length=1, max_length=7)
     reason: StructuredCode
 
@@ -351,12 +352,18 @@ class DataExportDTO(StrictModel):
     version: ExpectedVersion
 
 
+class DataExportPageDTO(StrictModel):
+    items: tuple[DataExportDTO, ...]
+    next_cursor: str | None = None
+
+
 class DataExportCancelRequest(StrictModel):
     expected_version: ExpectedVersion
 
 
 class DownloadAccessRequest(StrictModel):
     reason: StructuredCode
+    expected_version: ExpectedVersion
 
 
 class OneTimeDownloadDTO(StrictModel):
