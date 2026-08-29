@@ -5,6 +5,7 @@ import importlib
 import os
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 from uuid import UUID
 from zipfile import ZipFile
 from zoneinfo import ZoneInfo
@@ -34,6 +35,14 @@ from tests.integration.conftest import _build_alembic_config, _get_test_database
 
 
 pytestmark = pytest.mark.integration
+
+
+WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / ".github"
+    / "workflows"
+    / "p2-foundation-ci.yml"
+)
 
 
 TABLES = {
@@ -1190,3 +1199,18 @@ def test_0032非空降级在任何破坏性DDL前fail_closed(pg_database) -> Non
     assert pg_database.fetch_value(
         "SELECT to_regprocedure('public.slice7_export_private_file_register_v1(jsonb)')"
     ) is not None
+
+
+def test_Slice7真实RabbitMQ合同在CI中使用隔离Worker与共享私有目录() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    rabbit_contract = "tests/integration/test_一期切片7Outbox与RabbitMQ闭环.py"
+
+    assert f"--ignore={rabbit_contract}" in workflow
+    assert workflow.count(rabbit_contract) == 2
+    assert "KG_TEST_SLICE7_REAL_RABBIT=1" in workflow
+    assert "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" in workflow
+    assert "-Q slice7-service-fulfillment-workflow" in workflow
+    assert '--destination "$worker_hostname"' in workflow
+    assert "pytest-slice7-rabbit-report.xml" in workflow
+    assert "Stop independent Slice 7 Celery worker" in workflow
+    assert "Verify Slice 7 worker and private storage cleanup" in workflow

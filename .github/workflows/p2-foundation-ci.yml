@@ -900,7 +900,135 @@ jobs:
         run: >-
           python -m pytest tests/integration
           --ignore=tests/integration/test_身份注册持久发件箱数据库合同.py
+          --ignore=tests/integration/test_一期切片7Outbox与RabbitMQ闭环.py
           -q --junitxml=pytest-integration-report.xml
+
+      - name: Verify Slice 1 Celery worker cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if pgrep -f -- 'celery.*--hostname=slice1-ci@' >/dev/null; then
+            echo 'Slice 1 Celery worker remained after the regular integration phase.'
+            exit 1
+          fi
+
+      - name: Prepare isolated Slice 7 private storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$RUNNER_TEMP/kg-slice7-private-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$storage_root" in
+            "$RUNNER_TEMP"/kg-slice7-private-*) ;;
+            *) echo 'Refusing an invalid Slice 7 private storage path.'; exit 1 ;;
+          esac
+          if [[ -e "$storage_root" ]]; then
+            echo 'Slice 7 private storage path was not clean before setup.'
+            exit 1
+          fi
+          install -d -m 700 "$storage_root"
+          worker_hostname="slice7-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@$(hostname)"
+          echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
+          echo 'KG_TEST_SLICE7_REAL_RABBIT=1' >>"$GITHUB_ENV"
+          echo "KG_SLICE7_CI_WORKER_HOSTNAME=$worker_hostname" >>"$GITHUB_ENV"
+
+      - name: Start independent Slice 7 Celery worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_pid_file="$RUNNER_TEMP/kg-slice7-worker.pid"
+          worker_log="$RUNNER_TEMP/kg-slice7-worker.log"
+          rm -f "$worker_pid_file" "$worker_log"
+          nohup python -m celery -A app.tasks.celery_app:celery_app worker \
+            -Q slice7-service-fulfillment-workflow \
+            --hostname="$KG_SLICE7_CI_WORKER_HOSTNAME" \
+            --pool=solo --concurrency=1 --loglevel=WARNING \
+            --without-gossip --without-mingle --without-heartbeat \
+            >"$worker_log" 2>&1 &
+          worker_pid="$!"
+          echo "$worker_pid" >"$worker_pid_file"
+          worker_hostname="$KG_SLICE7_CI_WORKER_HOSTNAME"
+          worker_ready="false"
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$worker_pid" 2>/dev/null; then
+              echo 'Independent Slice 7 Celery worker exited before readiness.'
+              exit 1
+            fi
+            if python -m celery -A app.tasks.celery_app:celery_app inspect ping \
+              --timeout 1 \
+              --destination "$worker_hostname" \
+              >"$RUNNER_TEMP/kg-slice7-ping.log" 2>&1 \
+              && grep -F -- "$worker_hostname" "$RUNNER_TEMP/kg-slice7-ping.log" >/dev/null \
+              && grep -F -- 'pong' "$RUNNER_TEMP/kg-slice7-ping.log" >/dev/null; then
+              worker_ready="true"
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$worker_ready" != "true" ]] || ! kill -0 "$worker_pid" 2>/dev/null; then
+            echo 'Independent Slice 7 Celery worker is unavailable.'
+            exit 1
+          fi
+
+      - name: Run Slice 7 RabbitMQ and independent worker contract
+        run: >-
+          python -m pytest
+          tests/integration/test_一期切片7Outbox与RabbitMQ闭环.py
+          -q --junitxml=pytest-slice7-rabbit-report.xml
+
+      - name: Stop independent Slice 7 Celery worker
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_pid_file="$RUNNER_TEMP/kg-slice7-worker.pid"
+          if [[ -f "$worker_pid_file" ]]; then
+            worker_pid="$(cat "$worker_pid_file")"
+            if [[ "$worker_pid" =~ ^[0-9]+$ ]] && kill -0 "$worker_pid" 2>/dev/null; then
+              kill "$worker_pid"
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$worker_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              if kill -0 "$worker_pid" 2>/dev/null; then
+                kill -KILL "$worker_pid"
+              fi
+              wait "$worker_pid" 2>/dev/null || true
+            fi
+          fi
+          rm -f "$worker_pid_file" \
+            "$RUNNER_TEMP/kg-slice7-worker.log" \
+            "$RUNNER_TEMP/kg-slice7-ping.log"
+          storage_root="${KG_PRIVATE_FILE_STORAGE_ROOT:-}"
+          case "$storage_root" in
+            "$RUNNER_TEMP"/kg-slice7-private-*) rm -rf -- "$storage_root" ;;
+            '') ;;
+            *) echo 'Refusing an invalid Slice 7 private storage cleanup path.'; exit 1 ;;
+          esac
+
+      - name: Verify Slice 7 worker and private storage cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_pid_file="$RUNNER_TEMP/kg-slice7-worker.pid"
+          if [[ -f "$worker_pid_file" ]]; then
+            echo 'Slice 7 worker PID file remains after cleanup.'
+            exit 1
+          fi
+          if pgrep -f -- "celery.*--hostname=${KG_SLICE7_CI_WORKER_HOSTNAME:-missing}" >/dev/null; then
+            echo 'Slice 7 Celery worker remains after cleanup.'
+            exit 1
+          fi
+          if [[ -n "${KG_PRIVATE_FILE_STORAGE_ROOT:-}" && -e "$KG_PRIVATE_FILE_STORAGE_ROOT" ]]; then
+            echo 'Slice 7 private storage remains after cleanup.'
+            exit 1
+          fi
+          if [[ -e "$RUNNER_TEMP/kg-slice7-worker.log" || -e "$RUNNER_TEMP/kg-slice7-ping.log" ]]; then
+            echo 'Slice 7 worker logs remain after cleanup.'
+            exit 1
+          fi
 
       - name: Start independent Slice 5 Celery worker
         shell: bash
@@ -1150,6 +1278,7 @@ jobs:
           name: backend-integration-pytest-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             backend/pytest-integration-report.xml
+            backend/pytest-slice7-rabbit-report.xml
             backend/pytest-slice5-rabbit-report.xml
             backend/pytest-registration-worker-report.xml
             backend/pytest-outbox-steady-state-report.xml
