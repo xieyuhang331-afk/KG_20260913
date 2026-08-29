@@ -11,6 +11,8 @@ import { MemberEnrollmentPage } from "./pages/MemberEnrollmentPage";
 import { MemberEnrollmentDetailPage } from "./pages/MemberEnrollmentDetailPage";
 import { HealthRecordPage } from "./pages/HealthRecordPage";
 import { HealthPlanPage } from "./pages/HealthPlanPage";
+import { ServiceFulfillmentPage } from "./pages/ServiceFulfillmentPage";
+import { ServiceTransferPage } from "./pages/ServiceTransferPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -38,5 +40,9 @@ export const institutionRoutes: { protectedChildren: RouteObject[] } = {
     { path: "plan-generations/:requestId", element: <HealthPlanPage mode="generation" /> },
     { path: "service-cases/:caseId/plans", element: <HealthPlanPage mode="list" /> },
     { path: "plans/:planId", element: <HealthPlanPage mode="detail" /> },
+    { path: "service-cases", element: <ServiceFulfillmentPage /> },
+    { path: "service-cases/:caseId/fulfillment", element: <ServiceFulfillmentPage /> },
+    { path: "service-transfers", element: <ServiceTransferPage /> },
+    { path: "service-transfers/:transferId", element: <ServiceTransferPage /> },
   ],
 };

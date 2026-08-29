@@ -15,6 +15,9 @@ import { ConsentDocumentPage } from "./pages/ConsentDocumentPage";
 import { HealthPlanTemplatePage } from "./pages/HealthPlanTemplatePage";
 import { HealthPlanReviewPage } from "./pages/HealthPlanReviewPage";
 import { useAuthStore } from "@/shared/auth/authStore";
+import { ServiceFulfillmentOversightPage } from "./pages/ServiceFulfillmentOversightPage";
+import { ServiceTransferOversightPage } from "./pages/ServiceTransferOversightPage";
+import { DataExportOversightPage } from "./pages/DataExportOversightPage";
 
 function PlatformIndexRedirect() {
   const { currentUser } = useAuthStore();
@@ -74,6 +77,17 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
       children: [
         { path: "health-plan-reviews", element: <HealthPlanReviewPage /> },
         { path: "health-plan-reviews/:reviewId", element: <HealthPlanReviewPage /> },
+      ],
+    },
+    {
+      element: <ProtectedRoute roles={[USER_ROLES.superAdmin, USER_ROLES.sysAdmin]} />,
+      children: [
+        { path: "service-fulfillment", element: <ServiceFulfillmentOversightPage /> },
+        { path: "service-fulfillment/:caseId", element: <ServiceFulfillmentOversightPage /> },
+        { path: "service-transfers", element: <ServiceTransferOversightPage /> },
+        { path: "service-transfers/:transferId", element: <ServiceTransferOversightPage /> },
+        { path: "data-exports", element: <DataExportOversightPage /> },
+        { path: "data-exports/:exportId", element: <DataExportOversightPage /> },
       ],
     },
   ],

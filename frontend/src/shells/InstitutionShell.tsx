@@ -3,12 +3,16 @@ import {
 	Building2,
 	ClipboardList,
 	HeartPulse,
+	Activity,
+	ArrowRightLeft,
 	MailPlus,
 	Store,
 	UsersRound,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { institutionNavigation } from "@/domains/institution/navigation";
+import { useAuthStore } from "@/shared/auth/authStore";
+import { USER_ROLES } from "@/shared/constants/roles";
 import { BrandLogo } from "@/shared/ui/BrandLogo";
 
 const navigationIcons = {
@@ -19,15 +23,21 @@ const navigationIcons = {
 	服务就绪: <HeartPulse aria-hidden="true" size={17} />,
 	客户服务邀约: <MailPlus aria-hidden="true" size={17} />,
 	服务客户列表: <UsersRound aria-hidden="true" size={17} />,
+	服务履约: <Activity aria-hidden="true" size={17} />,
+	转机构接续: <ArrowRightLeft aria-hidden="true" size={17} />,
 } as const;
 
 const navigationGroups = [
 	{ label: "机构管理", items: ["受控入驻", "我的申请", "组织资料"] },
 	{ label: "服务团队", items: ["健管师团队", "服务就绪"] },
-	{ label: "客户服务", items: ["客户服务邀约", "服务客户列表"] },
+	{
+		label: "客户服务",
+		items: ["客户服务邀约", "服务客户列表", "服务履约", "转机构接续"],
+	},
 ];
 
 export function InstitutionShell() {
+	const { currentUser } = useAuthStore();
 	const location = useLocation();
 	const activeItem = institutionNavigation.find(
 		(item) =>
@@ -121,7 +131,9 @@ export function InstitutionShell() {
 										机构运营
 									</span>
 									<span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700">
-										机构管理员
+										{currentUser?.role === USER_ROLES.orgOperator
+											? "机构运营人员"
+											: "机构管理员"}
 									</span>
 								</div>
 							</div>

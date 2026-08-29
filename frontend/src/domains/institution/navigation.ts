@@ -6,4 +6,6 @@ export const institutionNavigation = [
   { label: "服务就绪", path: "/institution/service-readiness" },
   { label: "客户服务邀约", path: "/institution/member-invitations" },
   { label: "服务客户列表", path: "/institution/member-enrollments" },
+  { label: "服务履约", path: "/institution/service-cases" },
+  { label: "转机构接续", path: "/institution/service-transfers" },
 ];
