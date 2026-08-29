@@ -30,6 +30,21 @@ export const platformNavigation: PlatformNavigationItem[] = [
     path: "/platform/health-plan-templates",
     roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
   },
+  {
+    label: "履约监督",
+    path: "/platform/service-fulfillment",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
+  },
+  {
+    label: "转机构监督",
+    path: "/platform/service-transfers",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
+  },
+  {
+    label: "导出监督",
+    path: "/platform/data-exports",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
+  },
 ];
 
 export const expertNavigation: PlatformNavigationItem[] = [
