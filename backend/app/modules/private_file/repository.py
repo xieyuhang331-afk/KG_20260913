@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Mapping
 
 from sqlalchemy import case, select, text
 
@@ -69,6 +71,57 @@ class PrivateFileRepository:
             },
         )
         return bool(result.scalar_one())
+
+    async def consume_export_download_access(
+        self, payload: Mapping[str, object]
+    ) -> bool:
+        value = json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=lambda item: item.isoformat(),
+        )
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice7_export_download_consume_v1("
+                "CAST(:value AS jsonb))"
+            ),
+            {"value": value},
+        )
+        return bool(result.scalar_one())
+
+    async def register_generated_export_archive(
+        self, payload: Mapping[str, object]
+    ) -> dict:
+        value = json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=lambda item: item.isoformat(),
+        )
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice7_export_private_file_register_v1("
+                "CAST(:value AS jsonb)) AS value"
+            ),
+            {"value": value},
+        )
+        return dict(result.scalar_one())
+
+    async def generated_export_archive_snapshot(
+        self, *, export_id: str, file_id: str
+    ) -> dict | None:
+        result = await self.session.execute(
+            text(
+                "SELECT public.slice7_export_private_file_snapshot_v1("
+                "CAST(:export_id AS uuid),CAST(:file_id AS uuid)) AS value"
+            ),
+            {"export_id": export_id, "file_id": file_id},
+        )
+        value = result.scalar_one_or_none()
+        return None if value is None else dict(value)
 
     async def qualification_relation(self, file_id: str):
         result = await self.session.execute(

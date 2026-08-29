@@ -699,6 +699,7 @@ class MemberEnrollmentService:
             if member_no is None:
                 raise MemberEnrollmentConflict("MEMBER_NO_ALLOCATION_CONFLICT")
             proxy_member_id = actor_member_id
+        await self.repo.lock_active_enrollment_boundary(subject_member_id)
         if await self.repo.active_enrollments_for_subject(subject_member_id):
             raise MemberEnrollmentConflict("ACTIVE_ENROLLMENT_EXISTS")
         now = self.now()
@@ -1124,23 +1125,32 @@ class MemberEnrollmentService:
             updated_at=now, version=enrollment["version"] + 1,
         )
         if request.decision == "APPROVED":
-            await self.repo.claim_identity_subject(
+            revision = await self.repo.current_identity_revision(
+                verification_id, request.revision_id
+            )
+            reuse_outcome, _resolved_claim_id = (
+                await self.repo.claim_or_reuse_identity_subject(
                 claim_id=self.uuids.generate(), user_ref=None,
-                member_id=source_member_id, identity_fingerprint=(
-                    await self.repo.current_identity_revision(verification_id, request.revision_id)
-                )["identity_fingerprint"],
-                fingerprint_key_id=(
-                    await self.repo.current_identity_revision(
-                        verification_id, request.revision_id
-                    )
-                )["fingerprint_key_id"],
+                member_id=source_member_id,
+                identity_fingerprint=revision["identity_fingerprint"],
+                fingerprint_key_id=revision["fingerprint_key_id"],
                 source_kind="SLICE3", p1_submission_id=None,
                 p1_decision_ref=None, slice3_revision_id=request.revision_id,
                 slice3_decision_id=decision_id, source_facts_version=value.version,
                 source_evidence_digest=evidence_digest, adult_eligible=None,
                 represented_elder_eligible=request.represented_elder_eligible,
                 claimed_at=now,
+                )
             )
+            if reuse_outcome in {
+                "IDENTITY_REUSE_MEMBER_MISMATCH",
+                "IDENTITY_REUSE_FINGERPRINT_MISMATCH",
+            }:
+                raise MemberEnrollmentConflict("DUPLICATE_IDENTITY")
+            if reuse_outcome == "IDENTITY_REUSE_SOURCE_NOT_CURRENT":
+                raise MemberEnrollmentConflict("IDENTITY_REVISION_STALE")
+            if reuse_outcome not in {"CREATED", "REUSED"}:
+                raise MemberEnrollmentConflict("STATE_CONFLICT")
             if enrollment_mode == "PROXY_ELDER":
                 grant = await self.repo.proxy_grant_by_enrollment_for_update(
                     row["enrollment_id"]

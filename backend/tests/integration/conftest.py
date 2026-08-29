@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260826_0031"
+REQUIRED_HEAD_REVISION = "20260827_0032"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -223,6 +223,30 @@ def _get_slice6_family_reader_database_url() -> str:
     return _get_role_database_url("KG_TEST_SLICE6_FAMILY_READER_DATABASE_URL")
 
 
+def _get_slice7_milestone_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_MILESTONE_WRITER_DATABASE_URL")
+
+
+def _get_slice7_case_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_CASE_WRITER_DATABASE_URL")
+
+
+def _get_slice7_transfer_writer_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_TRANSFER_WRITER_DATABASE_URL")
+
+
+def _get_slice7_export_worker_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_EXPORT_WORKER_DATABASE_URL")
+
+
+def _get_slice7_family_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL")
+
+
+def _get_slice7_oversight_reader_database_url() -> str:
+    return _get_role_database_url("KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL")
+
+
 def _propagate_module_d_role_preflight_environment() -> None:
     aliases = {
         "KG_DATABASE_USER": "KG_TEST_APPLICATION_ROLE",
@@ -325,6 +349,18 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_SLICE6_CLINICAL_READER_DATABASE_URL": "KG_TEST_SLICE6_CLINICAL_READER_DATABASE_URL",
         "KG_SLICE6_FAMILY_READER_ROLE": "KG_TEST_SLICE6_FAMILY_READER_ROLE",
         "KG_SLICE6_FAMILY_READER_DATABASE_URL": "KG_TEST_SLICE6_FAMILY_READER_DATABASE_URL",
+        "KG_SLICE7_MILESTONE_WRITER_ROLE": "KG_TEST_SLICE7_MILESTONE_WRITER_ROLE",
+        "KG_SLICE7_MILESTONE_WRITER_DATABASE_URL": "KG_TEST_SLICE7_MILESTONE_WRITER_DATABASE_URL",
+        "KG_SLICE7_CASE_WRITER_ROLE": "KG_TEST_SLICE7_CASE_WRITER_ROLE",
+        "KG_SLICE7_CASE_WRITER_DATABASE_URL": "KG_TEST_SLICE7_CASE_WRITER_DATABASE_URL",
+        "KG_SLICE7_TRANSFER_WRITER_ROLE": "KG_TEST_SLICE7_TRANSFER_WRITER_ROLE",
+        "KG_SLICE7_TRANSFER_WRITER_DATABASE_URL": "KG_TEST_SLICE7_TRANSFER_WRITER_DATABASE_URL",
+        "KG_SLICE7_EXPORT_WORKER_ROLE": "KG_TEST_SLICE7_EXPORT_WORKER_ROLE",
+        "KG_SLICE7_EXPORT_WORKER_DATABASE_URL": "KG_TEST_SLICE7_EXPORT_WORKER_DATABASE_URL",
+        "KG_SLICE7_FAMILY_READER_ROLE": "KG_TEST_SLICE7_FAMILY_READER_ROLE",
+        "KG_SLICE7_FAMILY_READER_DATABASE_URL": "KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL",
+        "KG_SLICE7_OVERSIGHT_READER_ROLE": "KG_TEST_SLICE7_OVERSIGHT_READER_ROLE",
+        "KG_SLICE7_OVERSIGHT_READER_DATABASE_URL": "KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -814,6 +850,12 @@ def pg_database():
         slice6_worker_role = _validated_role_name("KG_TEST_SLICE6_WORKFLOW_WORKER_ROLE")
         slice6_clinical_role = _validated_role_name("KG_TEST_SLICE6_CLINICAL_READER_ROLE")
         slice6_family_role = _validated_role_name("KG_TEST_SLICE6_FAMILY_READER_ROLE")
+        slice7_milestone_role = _validated_role_name("KG_TEST_SLICE7_MILESTONE_WRITER_ROLE")
+        slice7_case_role = _validated_role_name("KG_TEST_SLICE7_CASE_WRITER_ROLE")
+        slice7_transfer_role = _validated_role_name("KG_TEST_SLICE7_TRANSFER_WRITER_ROLE")
+        slice7_export_role = _validated_role_name("KG_TEST_SLICE7_EXPORT_WORKER_ROLE")
+        slice7_family_role = _validated_role_name("KG_TEST_SLICE7_FAMILY_READER_ROLE")
+        slice7_oversight_role = _validated_role_name("KG_TEST_SLICE7_OVERSIGHT_READER_ROLE")
         roles = (
             application_role,
             migration_role,
@@ -867,6 +909,12 @@ def pg_database():
             slice6_worker_role,
             slice6_clinical_role,
             slice6_family_role,
+            slice7_milestone_role,
+            slice7_case_role,
+            slice7_transfer_role,
+            slice7_export_role,
+            slice7_family_role,
+            slice7_oversight_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -1156,6 +1204,42 @@ def slice6_clinical_reader_database(pg_database):
 def slice6_family_reader_database(pg_database):
     del pg_database
     return PgDatabase(_get_slice6_family_reader_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_milestone_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_milestone_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_case_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_case_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_transfer_writer_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_transfer_writer_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_export_worker_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_export_worker_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_family_reader_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_family_reader_database_url())
+
+
+@pytest.fixture(scope="module")
+def slice7_oversight_reader_database(pg_database):
+    del pg_database
+    return PgDatabase(_get_slice7_oversight_reader_database_url())
 
 
 @pytest.fixture

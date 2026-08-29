@@ -229,6 +229,15 @@ class MemberEnrollmentRepository:
         lock_key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big", signed=True)
         await self.session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
+    async def lock_active_enrollment_boundary(self, subject_member_id: UUID) -> None:
+        payload = f"slice3-active-enrollment-boundary\x1f{subject_member_id}".encode()
+        lock_key = int.from_bytes(
+            hashlib.sha256(payload).digest()[:8], "big", signed=True
+        )
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key}
+        )
+
     async def lock_identity_review_boundary(self, verification_id: UUID) -> None:
         payload = f"slice3-identity-review-boundary\x1f{verification_id}".encode()
         lock_key = int.from_bytes(
@@ -946,6 +955,58 @@ class MemberEnrollmentRepository:
             ).where(MemberIdentityReviewDecisionModel.decision_id == decision_id)
         )
         return result.mappings().one_or_none()
+
+    async def claim_or_reuse_identity_subject(self, **values) -> tuple[str, UUID | None]:
+        result = await self.session.execute(
+            text(
+                "SELECT outcome,resolved_claim_id,resolved_claim FROM "
+                "identity.slice7_identity_claim_reuse_v2("
+                ":claim_id,:member_id,:identity_fingerprint,:fingerprint_key_id,"
+                ":slice3_revision_id,:slice3_decision_id,:source_facts_version,"
+                ":source_evidence_digest,:represented_elder_eligible,:claimed_at)"
+            ),
+            values,
+        )
+        row = result.mappings().one()
+        outcome = str(row["outcome"])
+        resolved_claim_id = row["resolved_claim_id"]
+        if outcome == "CREATE_ALLOWED":
+            await self.claim_identity_subject(**values)
+            return "CREATED", values["claim_id"]
+        if outcome == "REUSED":
+            resolved_claim = row["resolved_claim"]
+            expected_fields = {
+                column.name for column in IdentitySubjectClaimRegistryModel.__table__.columns
+            }
+            if not isinstance(resolved_claim, dict) or set(resolved_claim) != expected_fields:
+                raise RuntimeError("Slice 7 identity claim preimage is invalid")
+            existing_revision_id = resolved_claim.get("slice3_revision_id")
+            if existing_revision_id is None:
+                raise RuntimeError("Slice 7 identity claim preimage is invalid")
+            await self._record_expected_collection(
+                IdentitySubjectClaimRegistryModel,
+                scope_field="slice3_revision_id",
+                scope_value=UUID(str(existing_revision_id)),
+                key_field="claim_id",
+            )
+            plan = self._plan()
+            key = self._json_value({"claim_id": resolved_claim_id})
+            claim_value = self._json_value(resolved_claim)
+            if plan is not None:
+                plan.setdefault("pre_rows", []).append(
+                    {
+                        "table": "identity_subject_claim_registry",
+                        "key": key,
+                        "value": claim_value,
+                    }
+                )
+            self._record_expected_named_row(
+                "identity_subject_claim_registry",
+                resolved_claim,
+                key={"claim_id": resolved_claim_id},
+            )
+            return outcome, resolved_claim_id
+        return outcome, None
 
     async def claim_identity_subject(self, **values) -> None:
         await self._record_expected_collection(

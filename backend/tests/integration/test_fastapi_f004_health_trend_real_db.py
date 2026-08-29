@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.modules.health_analysis.aggregation import STANDARD_INDICATORS
@@ -108,7 +110,7 @@ def _get_health_trend(
 
 
 def _assert_database_ready(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260826_0031"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
     assert pg_database.fetch_value(
         """
         SELECT hypertable_name
@@ -123,13 +125,29 @@ def test_f004_real_db_health_trend_happy_path(real_db_client, pg_database):
     _assert_database_ready(pg_database)
     user = _register(real_db_client, "13800139901")
     _create_health_profile(real_db_client, user["id"])
+    anchor = datetime.now(timezone.utc).replace(microsecond=0)
+    first_systolic_at = anchor - timedelta(days=2)
+    diastolic_at = first_systolic_at + timedelta(minutes=1)
+    second_systolic_at = anchor - timedelta(days=1)
     _write_indicators(
         real_db_client,
         user["id"],
         [
-            _indicator(indicator_type="systolic_bp", value="118.00", recorded_at="2026-07-28T08:00:00Z"),
-            _indicator(indicator_type="diastolic_bp", value="78.00", recorded_at="2026-07-28T08:01:00Z"),
-            _indicator(indicator_type="systolic_bp", value="121.00", recorded_at="2026-07-29T08:00:00Z"),
+            _indicator(
+                indicator_type="systolic_bp",
+                value="118.00",
+                recorded_at=first_systolic_at.isoformat(),
+            ),
+            _indicator(
+                indicator_type="diastolic_bp",
+                value="78.00",
+                recorded_at=diastolic_at.isoformat(),
+            ),
+            _indicator(
+                indicator_type="systolic_bp",
+                value="121.00",
+                recorded_at=second_systolic_at.isoformat(),
+            ),
         ],
     )
 
