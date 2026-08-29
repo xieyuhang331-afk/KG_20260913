@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from uuid import UUID
 from zipfile import ZipFile
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.security import create_access_token
 from app.core.uuid_generator import Uuid7Generator
-from app.modules.service_fulfillment.domain import SystemBusinessClock
+from app.modules.service_fulfillment.domain import SyntheticBusinessClock, SystemBusinessClock
 from app.modules.service_fulfillment.repository import ServiceFulfillmentRepository
 from app.modules.service_fulfillment.service import (
     ServiceFulfillmentService,
@@ -377,12 +378,15 @@ def test_D03_D05_真实Runtime原子创建五节点并幂等完成D0(
             assert activated is not None
             assert replayed is not None
             async with AsyncSession(milestone_engine, expire_on_commit=False) as session:
+                d0 = next(item for item in activated["milestones"] if item["code"] == "D0")
+                d0_start = datetime.fromisoformat(
+                    f"{d0['window_start']}T12:00:00"
+                ).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
                 service = ServiceFulfillmentService(
                     ServiceFulfillmentRepository(session),
-                    SystemBusinessClock(),
+                    SyntheticBusinessClock(d0_start),
                     Uuid7Generator().generate,
                 )
-                d0 = next(item for item in activated["milestones"] if item["code"] == "D0")
                 completed = await service.complete_milestone(
                     milestone_id=UUID(str(d0["milestone_id"])),
                     actor_user_id=int(seeded["therapist_actor_id"]),
