@@ -45,6 +45,11 @@ export const platformNavigation: PlatformNavigationItem[] = [
     path: "/platform/data-exports",
     roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
   },
+  {
+    label: "高风险监督",
+    path: "/platform/high-risk-tasks",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
+  },
 ];
 
 export const expertNavigation: PlatformNavigationItem[] = [

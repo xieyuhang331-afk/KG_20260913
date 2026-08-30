@@ -30,6 +30,10 @@ import {
 	secondaryButtonClassName,
 } from "../受控入驻界面";
 import { getSafeApiError, isUuidV7 } from "@/shared/api/slice3";
+import {
+	listInstitutionAssessments,
+	type AssessmentSummaryDTO,
+} from "@/shared/api/slice5";
 import { PlanEligibilityPanel } from "./HealthPlanPage";
 
 interface HealthRecordBundle {
@@ -37,6 +41,7 @@ interface HealthRecordBundle {
 	indicators: HealthIndicatorFact[];
 	reports: CursorPage<DetectionReportMetadata>;
 	readiness: AssessmentReadiness;
+	assessments: AssessmentSummaryDTO[];
 }
 
 export function HealthRecordPage() {
@@ -59,13 +64,21 @@ export function HealthRecordPage() {
 			}
 			setLoading(true);
 			try {
-				const [record, reports, latest, readiness] = await Promise.all([
-					getInstitutionHealthRecord(caseId, signal),
-					listInstitutionDetectionReports(caseId, { limit: 20 }, signal),
-					getInstitutionLatestHealthIndicators(caseId, signal),
-					getAssessmentReadiness(caseId, signal),
-				]);
-				setBundle({ record, reports, indicators: latest.items, readiness });
+				const [record, reports, latest, readiness, assessments] =
+					await Promise.all([
+						getInstitutionHealthRecord(caseId, signal),
+						listInstitutionDetectionReports(caseId, { limit: 20 }, signal),
+						getInstitutionLatestHealthIndicators(caseId, signal),
+						getAssessmentReadiness(caseId, signal),
+						listInstitutionAssessments(caseId, { limit: 20 }, signal),
+					]);
+				setBundle({
+					record,
+					reports,
+					indicators: latest.items,
+					readiness,
+					assessments: assessments.items,
+				});
 				setCursorHistory([null]);
 				setCursorIndex(0);
 				setFeedback("");
@@ -190,6 +203,7 @@ export function HealthRecordPage() {
 							</p>
 						</div>
 					</section>
+					<AssessmentSummaryPanel assessments={bundle.assessments} />
 					<PlanEligibilityPanel autoLoad={false} caseId={caseId} />
 					<section className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)]">
 						<div className="space-y-5">
@@ -237,6 +251,60 @@ export function HealthRecordPage() {
 				</>
 			) : null}
 		</main>
+	);
+}
+
+function AssessmentSummaryPanel({
+	assessments,
+}: {
+	assessments: AssessmentSummaryDTO[];
+}) {
+	return (
+		<article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
+			<div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+				<div>
+					<h2 className="font-semibold text-slate-950">健康评估摘要</h2>
+					<p className="mt-1 text-xs text-slate-500">
+						仅展示服务端生成的评估状态与风险分级，不展示原始健康数值或内部人员信息。
+					</p>
+				</div>
+				<span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+					本批次 {assessments.length} 项
+				</span>
+			</div>
+			{assessments.length ? (
+				<div className="divide-y divide-slate-100">
+					{assessments.map((assessment) => (
+						<div
+							className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_150px_170px] sm:items-center"
+							key={assessment.assessment_id}
+						>
+							<div>
+								<p className="font-semibold text-slate-950">
+									第 {assessment.sequence_no} 次评估
+								</p>
+								<p className="mt-1 text-xs text-slate-500">
+									规则版本 {assessment.rule_version} ·{" "}
+									{assessmentStatusLabel(assessment.status)}
+								</p>
+							</div>
+							<span className="w-fit rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+								{riskLevelLabel(assessment.overall_risk)}
+							</span>
+							<p className="text-sm text-slate-600">
+								{assessment.completed_at
+									? `完成于 ${formatTime(assessment.completed_at)}`
+									: `开始于 ${formatTime(assessment.initiated_at)}`}
+							</p>
+						</div>
+					))}
+				</div>
+			) : (
+				<p className="px-5 py-10 text-center text-sm text-slate-500">
+					当前服务案例暂无健康评估摘要。
+				</p>
+			)}
+		</article>
 	);
 }
 
@@ -646,6 +714,28 @@ function reportStatusLabel(status: string) {
 			} as Record<string, string>
 		)[status] ?? "已记录"
 	);
+}
+
+function assessmentStatusLabel(status: AssessmentSummaryDTO["status"]) {
+	return (
+		(
+			{
+				DRAFT_SNAPSHOT: "输入快照已形成",
+				RUNNING: "评估处理中",
+				COMPLETED: "评估已完成",
+				FAILED: "评估未完成",
+				UNDER_REVIEW: "结果复核中",
+				SUPERSEDED: "已有更新评估",
+			} as Record<AssessmentSummaryDTO["status"], string>
+		)[status] ?? "状态待核对"
+	);
+}
+
+function riskLevelLabel(risk: AssessmentSummaryDTO["overall_risk"]) {
+	if (risk === "HIGH_RISK") return "高风险";
+	if (risk === "ATTENTION") return "需重点关注";
+	if (risk === "WITHIN_RANGE") return "当前范围内";
+	return "尚未形成风险分级";
 }
 
 function unitLabel(unit: string) {

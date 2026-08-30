@@ -18,6 +18,7 @@ import { useAuthStore } from "@/shared/auth/authStore";
 import { ServiceFulfillmentOversightPage } from "./pages/ServiceFulfillmentOversightPage";
 import { ServiceTransferOversightPage } from "./pages/ServiceTransferOversightPage";
 import { DataExportOversightPage } from "./pages/DataExportOversightPage";
+import { HighRiskOversightPage } from "./pages/HighRiskOversightPage";
 
 function PlatformIndexRedirect() {
   const { currentUser } = useAuthStore();
@@ -88,6 +89,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
         { path: "service-transfers/:transferId", element: <ServiceTransferOversightPage /> },
         { path: "data-exports", element: <DataExportOversightPage /> },
         { path: "data-exports/:exportId", element: <DataExportOversightPage /> },
+        { path: "high-risk-tasks", element: <HighRiskOversightPage /> },
+        { path: "high-risk-tasks/:taskId", element: <HighRiskOversightPage /> },
       ],
     },
   ],
