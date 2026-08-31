@@ -31,6 +31,11 @@ export const platformNavigation: PlatformNavigationItem[] = [
     roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
   },
   {
+    label: "医学规则治理",
+    path: "/platform/assessment-rule-sets",
+    roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
+  },
+  {
     label: "履约监督",
     path: "/platform/service-fulfillment",
     roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
@@ -43,6 +48,11 @@ export const platformNavigation: PlatformNavigationItem[] = [
   {
     label: "导出监督",
     path: "/platform/data-exports",
+    roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
+  },
+  {
+    label: "高风险监督",
+    path: "/platform/high-risk-tasks",
     roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],
   },
 ];

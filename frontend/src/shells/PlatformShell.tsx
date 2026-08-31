@@ -14,6 +14,8 @@ import {
 	Activity,
 	ArrowRightLeft,
 	FileArchive,
+	ShieldAlert,
+	BookOpenCheck,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { allPlatformNavigation } from "@/domains/platform/navigation";
@@ -30,11 +32,13 @@ const navigationIcons: Record<string, ReactNode> = {
 	用户实名审核: <BadgeCheck aria-hidden="true" size={17} />,
 	同意文档: <FileCheck2 aria-hidden="true" size={17} />,
 	方案模板治理: <FileLock2 aria-hidden="true" size={17} />,
+	医学规则治理: <BookOpenCheck aria-hidden="true" size={17} />,
 	健康方案审核: <Stethoscope aria-hidden="true" size={17} />,
 	组织治理: <Building2 aria-hidden="true" size={17} />,
 	履约监督: <Activity aria-hidden="true" size={17} />,
 	转机构监督: <ArrowRightLeft aria-hidden="true" size={17} />,
 	导出监督: <FileArchive aria-hidden="true" size={17} />,
+	高风险监督: <ShieldAlert aria-hidden="true" size={17} />,
 };
 
 const roleLabels: Record<string, string> = {
@@ -53,8 +57,14 @@ const navigationGroups = [
 	},
 	{ label: "人员服务", items: ["健管师资质审核", "健管师状态"] },
 	{ label: "用户合规", items: ["用户实名审核", "同意文档"] },
-	{ label: "方案治理", items: ["方案模板治理", "健康方案审核"] },
-	{ label: "服务监督", items: ["履约监督", "转机构监督", "导出监督"] },
+	{
+		label: "方案治理",
+		items: ["方案模板治理", "医学规则治理", "健康方案审核"],
+	},
+	{
+		label: "服务监督",
+		items: ["履约监督", "转机构监督", "导出监督", "高风险监督"],
+	},
 ];
 
 export function PlatformShell() {

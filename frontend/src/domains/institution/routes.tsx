@@ -13,6 +13,7 @@ import { HealthRecordPage } from "./pages/HealthRecordPage";
 import { HealthPlanPage } from "./pages/HealthPlanPage";
 import { ServiceFulfillmentPage } from "./pages/ServiceFulfillmentPage";
 import { ServiceTransferPage } from "./pages/ServiceTransferPage";
+import { HighRiskTaskPage } from "./pages/HighRiskTaskPage";
 
 export const institutionRoutes: { protectedChildren: RouteObject[] } = {
   protectedChildren: [
@@ -44,5 +45,7 @@ export const institutionRoutes: { protectedChildren: RouteObject[] } = {
     { path: "service-cases/:caseId/fulfillment", element: <ServiceFulfillmentPage /> },
     { path: "service-transfers", element: <ServiceTransferPage /> },
     { path: "service-transfers/:transferId", element: <ServiceTransferPage /> },
+    { path: "high-risk-tasks", element: <HighRiskTaskPage /> },
+    { path: "high-risk-tasks/:taskId", element: <HighRiskTaskPage /> },
   ],
 };

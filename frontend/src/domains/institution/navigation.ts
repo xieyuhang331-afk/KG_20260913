@@ -8,4 +8,5 @@ export const institutionNavigation = [
   { label: "服务客户列表", path: "/institution/member-enrollments" },
   { label: "服务履约", path: "/institution/service-cases" },
   { label: "转机构接续", path: "/institution/service-transfers" },
+  { label: "高风险任务", path: "/institution/high-risk-tasks" },
 ];

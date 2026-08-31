@@ -5,6 +5,7 @@ import {
 	HeartPulse,
 	Activity,
 	ArrowRightLeft,
+	ShieldAlert,
 	MailPlus,
 	Store,
 	UsersRound,
@@ -25,6 +26,7 @@ const navigationIcons = {
 	服务客户列表: <UsersRound aria-hidden="true" size={17} />,
 	服务履约: <Activity aria-hidden="true" size={17} />,
 	转机构接续: <ArrowRightLeft aria-hidden="true" size={17} />,
+	高风险任务: <ShieldAlert aria-hidden="true" size={17} />,
 } as const;
 
 const navigationGroups = [
@@ -32,7 +34,13 @@ const navigationGroups = [
 	{ label: "服务团队", items: ["健管师团队", "服务就绪"] },
 	{
 		label: "客户服务",
-		items: ["客户服务邀约", "服务客户列表", "服务履约", "转机构接续"],
+		items: [
+			"客户服务邀约",
+			"服务客户列表",
+			"服务履约",
+			"转机构接续",
+			"高风险任务",
+		],
 	},
 ];
 

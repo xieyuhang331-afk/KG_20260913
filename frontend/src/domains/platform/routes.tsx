@@ -18,6 +18,8 @@ import { useAuthStore } from "@/shared/auth/authStore";
 import { ServiceFulfillmentOversightPage } from "./pages/ServiceFulfillmentOversightPage";
 import { ServiceTransferOversightPage } from "./pages/ServiceTransferOversightPage";
 import { DataExportOversightPage } from "./pages/DataExportOversightPage";
+import { HighRiskOversightPage } from "./pages/HighRiskOversightPage";
+import { MedicalRuleGovernancePage } from "./pages/MedicalRuleGovernancePage";
 
 function PlatformIndexRedirect() {
   const { currentUser } = useAuthStore();
@@ -70,6 +72,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
       children: [
         { path: "health-plan-templates", element: <HealthPlanTemplatePage /> },
         { path: "health-plan-templates/:templateVersionId", element: <HealthPlanTemplatePage /> },
+        { path: "assessment-rule-sets", element: <MedicalRuleGovernancePage /> },
+        { path: "assessment-rule-sets/:versionId", element: <MedicalRuleGovernancePage /> },
       ],
     },
     {
@@ -88,6 +92,8 @@ export const platformRoutes: { protectedChildren: RouteObject[] } = {
         { path: "service-transfers/:transferId", element: <ServiceTransferOversightPage /> },
         { path: "data-exports", element: <DataExportOversightPage /> },
         { path: "data-exports/:exportId", element: <DataExportOversightPage /> },
+        { path: "high-risk-tasks", element: <HighRiskOversightPage /> },
+        { path: "high-risk-tasks/:taskId", element: <HighRiskOversightPage /> },
       ],
     },
   ],

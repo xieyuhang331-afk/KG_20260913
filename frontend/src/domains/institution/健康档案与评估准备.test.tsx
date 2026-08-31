@@ -167,6 +167,8 @@ describe("机构健康档案与评估准备", () => {
 				return Promise.resolve(success(latestIndicators()));
 			if (url.endsWith("/assessment-readiness"))
 				return Promise.resolve(success(readiness("ASSESSMENT_READY")));
+			if (url.includes("/assessments"))
+				return Promise.resolve(success({ items: [], next_cursor: null }));
 			throw new Error(`UNEXPECTED_TEST_PATH:${url}`);
 		});
 		vi.stubGlobal("fetch", fetchMock);
@@ -195,6 +197,8 @@ describe("机构健康档案与评估准备", () => {
 				return Promise.resolve(success(latestIndicators()));
 			if (url.endsWith("/assessment-readiness"))
 				return Promise.resolve(success(readiness("ASSESSMENT_READY")));
+			if (url.includes("/assessments"))
+				return Promise.resolve(success({ items: [], next_cursor: null }));
 			throw new Error(`UNEXPECTED_TEST_PATH:${url}`);
 		});
 		vi.stubGlobal("fetch", fetchMock);
@@ -246,6 +250,8 @@ function mockHealthPage(
 			return Promise.resolve(
 				success(overrides.readiness ?? readiness("ASSESSMENT_READY")),
 			);
+		if (url.includes("/assessments"))
+			return Promise.resolve(success({ items: [], next_cursor: null }));
 		throw new Error(`UNEXPECTED_TEST_PATH:${url}`);
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -379,8 +385,7 @@ function enrollmentDetail() {
 		mode: "SELF",
 		status: "CASE_CREATED",
 		service_scope_tags: ["OBESITY"],
-		current_identity_verification_id:
-			"0198c4a1-1111-7abc-8000-000000000505",
+		current_identity_verification_id: "0198c4a1-1111-7abc-8000-000000000505",
 		current_assignment_id: "0198c4a1-1111-7abc-8000-000000000504",
 		service_case_id: caseId,
 		accepted_at: "2026-08-21T08:00:00+08:00",
