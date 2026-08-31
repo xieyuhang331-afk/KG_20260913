@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import secrets
 from uuid import UUID, uuid4
@@ -42,20 +44,17 @@ ENROLLMENT_DETAIL_FIELDS = {"identity", "proxy", "consents", "assignment"}
 
 
 def _seed_current_member_and_institution(
-    pg_database, *, variant: int = 0
+    pg_database, real_db_client, *, variant: int = 0
 ) -> dict[str, object]:
     from app.core.uuid_generator import Uuid7Generator
     from app.modules.auth.service import hash_password
 
     offset = variant * 1000
     tenant_id = 97401 + offset
-    admin_user_id = 97402 + offset
     member_user_id = 97403 + offset
     org_id = 97404 + offset
     member_id = Uuid7Generator().generate()
     tenant_public_id = Uuid7Generator().generate()
-    institution_invitation_id = uuid4()
-    institution_application_id = uuid4()
     self_link_id = uuid4()
     evidence_id = uuid4()
     phone_prefixes = (("139", "137"), ("158", "157"), ("186", "187"))
@@ -65,16 +64,28 @@ def _seed_current_member_and_institution(
     member_no = ("M0123456789ABCDEFGHJK", "M8123456789ABCDEFGHJK", "M7123456789ABCDEFGHJK")[variant]
     admin_password = secrets.token_urlsafe(24)
     member_password = secrets.token_urlsafe(24)
-    admin_hash = hash_password(admin_password).replace("'", "''")
     member_hash = hash_password(member_password).replace("'", "''")
     pg_database.execute(
         "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
         f"VALUES ({org_id},NULL,'Authority county','AUTHORITY-COUNTY-{variant}','county','active',1);"
         "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
-        f"VALUES ({tenant_id},{org_id},'AUTHORITY-TENANT-{variant}','Authority institution','store','test','test','active',now(),now());"
+        f"VALUES ({tenant_id},{org_id},'AUTHORITY-TENANT-{variant}','Authority institution','store','test','test','active',now(),now())"
+    )
+    activated = _activate_org_admin_for_test(
+        pg_database,
+        real_db_client,
+        phone=admin_phone,
+        password=admin_password,
+        org_id=org_id,
+        tenant_id=tenant_id,
+        tenant_public_id=tenant_public_id,
+        institution_name="Authority institution",
+        pilot_batch_code=f"AUTHORITY-{variant}",
+        service_tags=("GLUCOSE_METABOLISM",),
+    )
+    pg_database.execute(
         "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
-        f"VALUES ({admin_user_id},'{admin_phone}','{admin_hash}','org_admin','active',{tenant_id}),"
-        f"({member_user_id},'{member_phone}','{member_hash}','member','active',NULL);"
+        f"VALUES ({member_user_id},'{member_phone}','{member_hash}','member','active',NULL);"
         "INSERT INTO identity.member(member_id,member_no,creation_source,status,version,created_at,updated_at) "
         f"VALUES ('{member_id}','{member_no}','registration','created',1,now(),now());"
         "INSERT INTO identity.user_member_self_link("
@@ -82,17 +93,6 @@ def _seed_current_member_and_institution(
         "establishment_record_ref,created_at) VALUES ("
         f"'{self_link_id}',{member_user_id},'{member_id}','REGISTRATION_VERIFIED','{evidence_id}',"
         f"'REGISTRATION_VERIFIED_BOOTSTRAP','{evidence_id}',now());"
-        "INSERT INTO public.institution_invitation("
-        "invitation_id,institution_name,institution_type,applicant_phone_ciphertext,applicant_phone_digest,"
-        "pilot_batch_code,administrative_region_id,code_digest,status,failed_attempts,expires_at,issued_by,issued_at,activated_at,version) VALUES ("
-        f"'{institution_invitation_id}','Authority institution','HEALTH_STORE',decode('00','hex'),repeat('a',64),"
-        f"'AUTHORITY',{org_id},repeat('b',64),'ACTIVATED',0,now()+interval '1 day',{admin_user_id},now(),now(),1);"
-        "INSERT INTO public.institution_application("
-        "application_id,invitation_id,applicant_user_id,institution_type,status,draft_payload,correction_fields,"
-        "current_revision_no,tenant_internal_id,tenant_public_id,service_ready,created_at,updated_at,submitted_at,reviewed_at,version) VALUES ("
-        f"'{institution_application_id}','{institution_invitation_id}',{admin_user_id},'HEALTH_STORE','APPROVED',"
-        f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
-        f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,"
         "evidence_version,input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("
@@ -102,10 +102,78 @@ def _seed_current_member_and_institution(
     return {
         "admin_phone": admin_phone,
         "admin_password": admin_password,
+        "admin_totp_secret": activated["totp_secret"],
         "member_phone": member_phone,
         "member_password": member_password,
         "member_user_id": member_user_id,
         "member_id": member_id,
+}
+
+
+def _activate_org_admin_for_test(
+    pg_database,
+    real_db_client,
+    *,
+    phone: str,
+    password: str,
+    org_id: int,
+    tenant_id: int,
+    tenant_public_id,
+    institution_name: str,
+    pilot_batch_code: str,
+    service_tags: tuple[str, ...],
+) -> dict[str, object]:
+    from app.modules.institution_onboarding.domain import generate_totp
+    from app.modules.institution_onboarding.service import OnboardingSecrets, utcnow
+
+    invitation_id = uuid4()
+    short_code = f"{secrets.randbelow(1_000_000):06d}"
+    totp_secret = base64.b32encode(secrets.token_bytes(20)).decode("ascii")
+    secrets_box = OnboardingSecrets()
+    now = utcnow()
+    encrypted_phone = secrets_box.encrypt(phone).hex()
+    phone_digest = secrets_box.digest(phone)
+    code_digest = secrets_box.digest(short_code)
+    safe_name = institution_name.replace("'", "''")
+    safe_batch = pilot_batch_code.replace("'", "''")
+    pg_database.execute(
+        "INSERT INTO public.institution_invitation("
+        "invitation_id,institution_name,institution_type,applicant_phone_ciphertext,applicant_phone_digest,"
+        "pilot_batch_code,administrative_region_id,code_digest,status,failed_attempts,expires_at,issued_by,issued_at,activated_at,version) VALUES ("
+        f"'{invitation_id}','{safe_name}','HEALTH_STORE',decode('{encrypted_phone}','hex'),'{phone_digest}',"
+        f"'{safe_batch}',{org_id},'{code_digest}','ISSUED',0,now()+interval '1 day',0,now(),NULL,1)"
+    )
+    activated = real_db_client.post(
+        "/api/v1/institution-onboarding/activate",
+        headers={"Idempotency-Key": f"a1-activate-{invitation_id}"},
+        json={
+            "invitation_id": str(invitation_id),
+            "phone": phone,
+            "short_code": short_code,
+            "password": password,
+            "totp_secret": totp_secret,
+            "totp_code": generate_totp(totp_secret, at=now),
+        },
+    )
+    assert activated.status_code == 200, activated.json().get("detail")
+    activation = activated.json()["data"]
+    draft_payload = json.dumps(
+        {"service_tags": list(service_tags)}, separators=(",", ":")
+    ).replace("'", "''")
+    pg_database.execute(
+        "UPDATE public.\"user\" "
+        f"SET tenant_id={tenant_id} WHERE id={int(activation['user_id'])};"
+        "UPDATE public.institution_application SET "
+        f"status='APPROVED',draft_payload='{draft_payload}'::jsonb,current_revision_no=1,"
+        f"tenant_internal_id={tenant_id},tenant_public_id='{tenant_public_id}',"
+        "updated_at=now(),submitted_at=now(),reviewed_at=now(),version=3 "
+        f"WHERE application_id='{activation['application_id']}'"
+    )
+    return {
+        "user_id": int(activation["user_id"]),
+        "application_id": activation["application_id"],
+        "invitation_id": invitation_id,
+        "totp_secret": totp_secret,
     }
 
 
@@ -142,9 +210,21 @@ def _seed_current_member_only(
     }
 
 
-def _login(real_db_client, phone: str, password: str) -> dict[str, str]:
+def _login(
+    real_db_client,
+    phone: str,
+    password: str,
+    *,
+    totp_secret: str | None = None,
+) -> dict[str, str]:
+    payload = {"phone": phone, "password": password}
+    if totp_secret is not None:
+        from app.modules.institution_onboarding.domain import generate_totp
+        from app.modules.institution_onboarding.service import utcnow
+
+        payload["totp_code"] = generate_totp(totp_secret, at=utcnow())
     response = real_db_client.post(
-        "/api/v1/auth/login", json={"phone": phone, "password": password}
+        "/api/v1/auth/login", json=payload
     )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
@@ -345,11 +425,12 @@ def test_家庭会员接受邀请真实ASGI与Currentness负向零副作用(
     real_db_client,
 ) -> None:
     _enforce_application_self_link_select_denied(pg_database)
-    seeded = _seed_current_member_and_institution(pg_database)
+    seeded = _seed_current_member_and_institution(pg_database, real_db_client)
     admin_authorization = _login(
         real_db_client,
         str(seeded["admin_phone"]),
         str(seeded["admin_password"]),
+        totp_secret=str(seeded["admin_totp_secret"]),
     )
     member_authorization = _login(
         real_db_client,
@@ -641,11 +722,14 @@ def test_会员实名首次提交使用真实Writer并返回安全IdentityStatus
     real_db_client,
     member_enrollment_writer_database,
 ) -> None:
-    seeded = _seed_current_member_and_institution(pg_database, variant=1)
+    seeded = _seed_current_member_and_institution(
+        pg_database, real_db_client, variant=1
+    )
     admin_authorization = _login(
         real_db_client,
         str(seeded["admin_phone"]),
         str(seeded["admin_password"]),
+        totp_secret=str(seeded["admin_totp_secret"]),
     )
     member_authorization = _login(
         real_db_client,
@@ -730,11 +814,14 @@ def test_实名Revision受限读只允许当前范围并支持补正重提(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ) -> None:
-    seeded = _seed_current_member_and_institution(pg_database, variant=2)
+    seeded = _seed_current_member_and_institution(
+        pg_database, real_db_client, variant=2
+    )
     admin_authorization = _login(
         real_db_client,
         str(seeded["admin_phone"]),
         str(seeded["admin_password"]),
+        totp_secret=str(seeded["admin_totp_secret"]),
     )
     member_authorization = _login(
         real_db_client,
