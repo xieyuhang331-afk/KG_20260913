@@ -32,7 +32,7 @@ describe("一期切片5平台高风险监督", () => {
     );
 
     expect(await screen.findByRole("heading", { name: /高风险任务监督详情/ })).toBeInTheDocument();
-    expect(screen.getByText("已分配")).toBeInTheDocument();
+    expect(screen.getByText("健管师甲")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /领取|升级|转介|解除/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/^42$/)).not.toBeInTheDocument();
     expect(screen.queryByText("138/92")).not.toBeInTheDocument();
@@ -62,7 +62,11 @@ function task() {
     service_case_id: "0198d6a1-1111-7abc-8000-000000000823",
     status: "CLAIMED",
     reason_module_codes: ["GLUCOSE_METABOLISM"],
-    assignee: 42,
+    assignee_ref: {
+      public_user_ref: "usr_synthetic_assignee",
+      display_name: "健管师甲",
+      role_label: "THERAPIST",
+    },
     due_at: "2026-08-31T08:00:00Z",
     last_action_at: "2026-08-30T09:00:00Z",
     blocking: { ordinary_plan: true, case_completion: true },

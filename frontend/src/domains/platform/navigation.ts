@@ -31,6 +31,11 @@ export const platformNavigation: PlatformNavigationItem[] = [
     roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
   },
   {
+    label: "医学规则治理",
+    path: "/platform/assessment-rule-sets",
+    roles: [USER_ROLES.expert, USER_ROLES.sysAdmin, USER_ROLES.superAdmin],
+  },
+  {
     label: "履约监督",
     path: "/platform/service-fulfillment",
     roles: [USER_ROLES.superAdmin, USER_ROLES.sysAdmin],

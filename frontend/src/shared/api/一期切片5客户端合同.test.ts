@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   actInstitutionHighRiskTask,
+  createAssessmentRuleSet,
+  governAssessmentRuleSet,
+  listAssessmentRuleSets,
   getSafeSlice5Error,
   listInstitutionAssessments,
   listInstitutionHighRiskTasks,
   listPlatformHighRiskTasks,
+  reviewAssessmentRuleSet,
+  updateAssessmentRuleSetDraft,
 } from "./slice5";
 
 describe("一期切片5客户端合同", () => {
@@ -70,6 +75,66 @@ describe("一期切片5客户端合同", () => {
     );
   });
 
+  it("医学规则列表透传签名cursor且不推导总页数", async () => {
+    const fetchMock = stubSuccess({ items: [], next_cursor: "signed.next.cursor" });
+
+    await listAssessmentRuleSets({ cursor: "signed.current.cursor", limit: 20 });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/platform/assessment-rule-sets?cursor=signed.current.cursor&limit=20",
+    );
+  });
+
+  it("医学规则创建与草稿更新提交闭合Payload、Digest和稳定幂等头", async () => {
+    const fetchMock = stubSuccess(ruleSetDetail());
+    const payload = typedRulePayload();
+    const createInput = {
+      rule_set_code: "CN_ADULT_BASELINE_V1" as const,
+      version_no: 2,
+      typed_rule_payload: payload,
+      medical_content_digest: "a".repeat(64),
+      approval_evidence_ref: "受控双签依据",
+    };
+
+    await createAssessmentRuleSet(createInput, key);
+    await updateAssessmentRuleSetDraft(ruleSetId, { ...createInput, expected_version: 3 }, key);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/platform/assessment-rule-sets");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Idempotency-Key")).toBe(key);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/platform/assessment-rule-sets/${ruleSetId}/draft`);
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty("rule_set_code");
+  });
+
+  it("医学审核与生命周期操作严格发送正式原因码和expected_version", async () => {
+    const fetchMock = stubSuccess(ruleSetDetail());
+
+    await reviewAssessmentRuleSet(
+      ruleSetId,
+      { expected_version: 4, decision: "APPROVE", reason_code: "MEDICAL_CONTENT_APPROVED" },
+      key,
+    );
+    await governAssessmentRuleSet(
+      ruleSetId,
+      "SUSPEND",
+      { expected_version: 5, operation: "SUSPEND", reason_code: "MEDICAL_SAFETY_REVIEW_REQUIRED" },
+      key,
+    );
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      expected_version: 4,
+      decision: "APPROVE",
+      reason_code: "MEDICAL_CONTENT_APPROVED",
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/platform/assessment-rule-sets/${ruleSetId}/suspend`);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      expected_version: 5,
+      operation: "SUSPEND",
+      reason_code: "MEDICAL_SAFETY_REVIEW_REQUIRED",
+    });
+  });
+
   it.each([
     [401, "登录状态已失效"],
     [403, "当前账号无权"],
@@ -88,14 +153,44 @@ describe("一期切片5客户端合同", () => {
 
 const caseId = "0198d6a1-1111-7abc-8000-000000000801";
 const taskId = "0198d6a1-1111-7abc-8000-000000000802";
+const ruleSetId = "0198d6a1-1111-7abc-8000-000000000804";
 const key = "0198d6a1-1111-7abc-8000-000000000803";
 
+function typedRulePayload() {
+  return {
+    schema_version: "SLICE5_MEDICAL_RULE_PAYLOAD_V1" as const,
+    rule_set_code: "CN_ADULT_BASELINE_V1" as const,
+    modules: [],
+  };
+}
+
+function ruleSetDetail() {
+  return {
+    rule_set_version_id: ruleSetId,
+    version_no: 1,
+    status: "DRAFT",
+    module_metadata: [],
+    author_ref: { public_user_ref: "usr_synthetic_author", display_name: "医学专家甲", role_label: "EXPERT" },
+    reviewer_ref: null,
+    approval_state: "PENDING",
+    effective_from: null,
+    suspended_at: null,
+    retired_at: null,
+    version: 1,
+    rule_set_code: "CN_ADULT_BASELINE_V1",
+    typed_rule_payload: typedRulePayload(),
+    approval_evidence_ref: "受控双签依据",
+  };
+}
+
 function stubSuccess(data: unknown) {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ data }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }),
+  const fetchMock = vi.fn().mockImplementation(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
   );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;

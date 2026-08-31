@@ -117,7 +117,7 @@ function HighRiskTaskList({ mode }: { mode: WorkspaceMode }) {
                   <p className="mt-1 text-xs text-slate-500">{blockingLabel(item)}</p>
                 </div>
                 <StatusBadge status={item.status} />
-                <p className="text-sm text-slate-700">{item.assignee === null ? "待分配" : "已分配"}</p>
+                <p className="text-sm text-slate-700">{assigneeLabel(item)}</p>
                 <p className="text-sm text-slate-700">{formatTime(item.due_at)}</p>
                 <Link className="text-sm font-semibold text-primary-600" to={`${basePath}/${item.task_id}`}>
                   查看详情
@@ -250,7 +250,7 @@ function HighRiskTaskDetail({ mode, taskId }: { mode: WorkspaceMode; taskId: str
           </div>
           <dl className="mt-5 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2">
             <Summary label="风险模块" value={detail.reason_module_codes.map(moduleLabel).join("、")} />
-            <Summary label="处置分配" value={detail.assignee === null ? "待分配" : "已分配"} />
+            <Summary label="处置分配" value={assigneeLabel(detail)} />
             <Summary label="处理期限" value={formatTime(detail.due_at)} />
             <Summary label="最近处理" value={detail.last_action_at ? formatTime(detail.last_action_at) : "尚未处理"} />
             <Summary label="方案阻断" value={detail.blocking.ordinary_plan ? "暂缓普通方案" : "未阻断"} />
@@ -433,6 +433,10 @@ function blockingLabel(item: HighRiskTaskDTO) {
   if (item.blocking.ordinary_plan) return "阻断普通方案";
   if (item.blocking.case_completion) return "阻断服务关闭";
   return "当前无流程阻断";
+}
+
+function assigneeLabel(item: HighRiskTaskDTO) {
+  return item.assignee_ref?.display_name || (item.assignee_ref ? "已分配" : "待分配");
 }
 
 export function taskStatusLabel(status: string) {

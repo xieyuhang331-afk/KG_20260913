@@ -65,12 +65,12 @@ describe("一期切片5机构评估摘要与高风险任务", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("数据已更新");
   });
 
-  it("分配状态只显示已分配或待分配而不暴露内部人员ID", async () => {
+  it("分配状态显示安全公开名称而不暴露内部人员ID", async () => {
     setCurrentUser({ id: 9, role: USER_ROLES.orgAdmin, tenant_id: 2 });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(success(task("CLAIMED", 2, 42))));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(success(task("CLAIMED", 2, "健管师甲"))));
     renderRoute(`/institution/high-risk-tasks/${taskId}`, "/institution/high-risk-tasks/:taskId", <HighRiskTaskPage />);
 
-    expect(await screen.findByText("已分配")).toBeInTheDocument();
+    expect(await screen.findByText("健管师甲")).toBeInTheDocument();
     expect(screen.queryByText(/^42$/)).not.toBeInTheDocument();
   });
 
@@ -211,14 +211,16 @@ function mockHealthRecordBundle() {
   );
 }
 
-function task(status: string, version: number, assignee: number | null = null) {
+function task(status: string, version: number, assigneeName: string | null = null) {
   return {
     task_id: taskId,
     assessment_id: "0198d6a1-1111-7abc-8000-000000000813",
     service_case_id: caseId,
     status,
     reason_module_codes: ["BLOOD_PRESSURE_CARDIOVASCULAR"],
-    assignee,
+    assignee_ref: assigneeName
+      ? { public_user_ref: "usr_synthetic_assignee", display_name: assigneeName, role_label: "THERAPIST" }
+      : null,
     due_at: "2026-08-31T08:00:00Z",
     last_action_at: null,
     blocking: { ordinary_plan: true, case_completion: true },
