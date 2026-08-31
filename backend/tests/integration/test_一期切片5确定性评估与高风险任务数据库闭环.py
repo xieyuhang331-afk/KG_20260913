@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -9,6 +10,7 @@ import pytest
 from alembic import command
 
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
+from app.modules.health_assessment.schemas import approved_medical_rule_payload_v1
 
 
 pytestmark = pytest.mark.integration
@@ -29,6 +31,8 @@ FUNCTION_GRANTS = {
     },
     "KG_TEST_SLICE5_RULE_GOVERNANCE_WRITER_ROLE": {
         "public.slice5_rule_governance_v1(character varying,jsonb)",
+        "public.slice5_rule_governance_v2(character varying,jsonb)",
+        "public.slice5_rule_governance_confirm_v1(jsonb)",
     },
     "KG_TEST_SLICE5_WORKFLOW_WORKER_ROLE": {
         "public.slice5_assessment_worker_v1(character varying,jsonb)",
@@ -104,11 +108,81 @@ def _call_governance(database, operation: str, payload: dict):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def _call_governance_v2(database, operation: str, payload: dict):
+    value = asyncio.run(
+        database._fetch_value(
+            "SELECT public.slice5_rule_governance_v2($1,$2::jsonb)",
+            operation,
+            json.dumps(payload, separators=(",", ":")),
+        )
+    )
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _call_rule_confirmation(database, payload: dict):
+    value = asyncio.run(
+        database._fetch_value(
+            "SELECT public.slice5_rule_governance_confirm_v1($1::jsonb)",
+            json.dumps(payload, separators=(",", ":")),
+        )
+    )
+    return json.loads(value) if isinstance(value, str) else value
+
+
 def _call_json(database, sql: str, payload: dict):
     value = asyncio.run(
         database._fetch_value(sql, json.dumps(payload, separators=(",", ":")))
     )
     return json.loads(value) if isinstance(value, str) else value
+
+
+_CREATE_CONFIRMATION_CASES = (
+    ("committed", "COMMITTED"),
+    ("committed_null_approval", "COMMITTED"),
+    ("rule_code", "UNKNOWN"),
+    ("version_no", "UNKNOWN"),
+    ("author_user_id", "UNKNOWN"),
+    ("typed_rule_payload", "UNKNOWN"),
+    ("content_digest", "UNKNOWN"),
+    ("rule_digest_key_id", "UNKNOWN"),
+    ("approval_evidence_ref", "UNKNOWN"),
+    ("reviewer_user_id", "UNKNOWN"),
+    ("effective_from", "UNKNOWN"),
+    ("suspended_at", "UNKNOWN"),
+    ("retired_at", "UNKNOWN"),
+    ("rule_created_at", "UNKNOWN"),
+    ("status", "UNKNOWN"),
+    ("version", "UNKNOWN"),
+    ("audit_action", "UNKNOWN"),
+    ("audit_actor_user_id", "UNKNOWN"),
+    ("audit_actor_role", "UNKNOWN"),
+    ("audit_target_type", "UNKNOWN"),
+    ("audit_target_id", "UNKNOWN"),
+    ("audit_evidence_digest", "UNKNOWN"),
+    ("audit_created_at", "UNKNOWN"),
+    ("outbox_event_type", "UNKNOWN"),
+    ("outbox_aggregate_type", "UNKNOWN"),
+    ("outbox_aggregate_ref", "UNKNOWN"),
+    ("outbox_payload", "UNKNOWN"),
+    ("outbox_created_at", "UNKNOWN"),
+    ("outbox_mutable_delivery_state", "COMMITTED"),
+    ("receipt_id", "UNKNOWN"),
+    ("receipt_actor_scope", "UNKNOWN"),
+    ("receipt_operation", "UNKNOWN"),
+    ("receipt_target_id", "UNKNOWN"),
+    ("receipt_idempotency_key", "UNKNOWN"),
+    ("receipt_request_digest", "UNKNOWN"),
+    ("receipt_response", "UNKNOWN"),
+    ("receipt_digest_key_id", "UNKNOWN"),
+    ("receipt_postimage_digest", "UNKNOWN"),
+    ("receipt_created_at", "UNKNOWN"),
+    ("partial_only_rule", "UNKNOWN"),
+    ("partial_missing_receipt", "UNKNOWN"),
+    ("partial_missing_audit", "UNKNOWN"),
+    ("partial_missing_outbox", "UNKNOWN"),
+    ("partial_missing_rule", "UNKNOWN"),
+    ("not_committed", "NOT_COMMITTED"),
+)
 
 
 def _task_action_payload(index: int, *, task_id: str, actor: int, version: int, action: str, status: str):
@@ -137,7 +211,7 @@ def _task_action_payload(index: int, *, task_id: str, actor: int, version: int, 
 
 
 def test_PG01_PG11_0030单一Head六身份函数与基础表ACL精确闭合(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260830_0033"
     runtime_roles = {name: os.environ[name] for name in FUNCTION_GRANTS}
     assert len(set(runtime_roles.values())) == 6
 
@@ -244,13 +318,19 @@ def test_PG11_Reader只读取安全View且无规则payload或原始健康值(pg_
         assert pg_database.fetch_value(
             f"SELECT has_table_privilege('{role}','public.slice5_high_risk_task_read_v1','SELECT')"
         )
+        assert pg_database.fetch_value(
+            f"SELECT has_table_privilege('{role}','public.slice5_high_risk_task_read_v2','SELECT')"
+        )
         assert not pg_database.fetch_value(
             f"SELECT has_table_privilege('{role}','public.slice5_rule_set_governance_read_v1','SELECT')"
+        )
+        assert not pg_database.fetch_value(
+            f"SELECT has_table_privilege('{role}','public.slice5_rule_set_governance_read_v2','SELECT')"
         )
     exposed = set(
         pg_database.fetch_column(
             "SELECT column_name FROM information_schema.columns WHERE table_schema='public' "
-            "AND table_name IN ('slice5_assessment_read_v1','slice5_high_risk_task_read_v1')"
+            "AND table_name IN ('slice5_assessment_read_v1','slice5_high_risk_task_read_v1','slice5_high_risk_task_read_v2')"
         )
     )
     assert not exposed.intersection(
@@ -301,7 +381,7 @@ def test_PG12_0028_0029_0030线性生命周期保持单一Head和权限对称(pg
         "'public.slice5_family_subject_authority_v1(bigint,uuid)','EXECUTE')"
     )
     command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260830_0033"
 
 
 def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
@@ -319,7 +399,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
         config = _build_alembic_config(_get_test_database_url())
         with pytest.raises(RuntimeError, match="Slice 5 downgrade requires empty module tables"):
             command.downgrade(config, "20260824_0029")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260830_0033"
         assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") == "health_assessment"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure("
@@ -331,7 +411,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
             'DELETE FROM public."user" WHERE id=91999'
         )
         command.upgrade(config, "head")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260827_0032"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260830_0033"
 
 
 def test_D11_D12_规则治理作者审核人分离且mutation伴随事实完整(
@@ -394,6 +474,625 @@ def test_D11_D12_规则治理作者审核人分离且mutation伴随事实完整(
         pg_database.execute(f"DELETE FROM public.slice5_audit WHERE target_id='{target}'")
         pg_database.execute(f"DELETE FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}'")
         pg_database.execute("DELETE FROM public.\"user\" WHERE id IN (92001,92002,92003)")
+
+
+def test_H01_H08_草稿V2更新幂等状态保护和安全投影(
+    pg_database, slice5_rule_governance_writer_database
+):
+    target = _uuid7(405)
+    payload_v1 = approved_medical_rule_payload_v1().model_dump(mode="json")
+    content_digest = hashlib.sha256(
+        json.dumps(payload_v1, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    rule_role = os.environ["KG_TEST_SLICE5_RULE_GOVERNANCE_WRITER_ROLE"]
+    pg_database.execute(
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,created_at,updated_at) VALUES "
+        "(92011,'19900092011','synthetic','expert','active',now(),now()),"
+        "(92012,'19900092012','synthetic','expert','active',now(),now())"
+    )
+    try:
+        create = _governance_payload(
+            11,
+            actor=92011,
+            role="expert",
+            target=target,
+            version_no=11,
+            typed_rule_payload=payload_v1,
+            content_digest=content_digest,
+            approval_evidence_ref="synthetic-medical-double-sign",
+        )
+        assert _call_governance_v2(
+            slice5_rule_governance_writer_database, "CREATE", create
+        )["status"] == "DRAFT"
+
+        update = _governance_payload(
+            12,
+            actor=92011,
+            role="expert",
+            target=target,
+            version=1,
+            typed_rule_payload=payload_v1,
+            content_digest=content_digest,
+            approval_evidence_ref="synthetic-medical-double-sign-v2",
+        )
+        update["response"] = {
+            "rule_set_version_id": target,
+            "status": "DRAFT",
+            "version": 2,
+        }
+        assert _call_governance_v2(
+            slice5_rule_governance_writer_database, "UPDATE_DRAFT", update
+        )["version"] == 2
+        assert _call_governance_v2(
+            slice5_rule_governance_writer_database, "UPDATE_DRAFT", update
+        )["version"] == 2
+        assert pg_database.fetch_value(
+            f"SELECT version=2 AND approval_evidence_ref='synthetic-medical-double-sign-v2' "
+            f"FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}'"
+        )
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_audit WHERE target_id='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_outbox WHERE aggregate_ref='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_idempotency WHERE target_id='{target}'"
+        ) == 2
+
+        conflict = dict(update)
+        conflict["request_digest"] = "fe" * 32
+        with pytest.raises(Exception, match="IDEMPOTENCY_CONFLICT"):
+            _call_governance_v2(
+                slice5_rule_governance_writer_database, "UPDATE_DRAFT", conflict
+            )
+
+        invalid = _governance_payload(
+            13,
+            actor=92011,
+            role="expert",
+            target=target,
+            version=2,
+            typed_rule_payload={"schema_version": "INVALID", "modules": []},
+            content_digest=content_digest,
+            approval_evidence_ref="synthetic",
+        )
+        with pytest.raises(Exception, match="SLICE5_INVALID_PAYLOAD"):
+            _call_governance_v2(
+                slice5_rule_governance_writer_database, "UPDATE_DRAFT", invalid
+            )
+        assert pg_database.fetch_value(
+            f"SELECT version FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}'"
+        ) == 2
+
+        pg_database.execute(
+            f"UPDATE public.assessment_rule_set_version SET status='PUBLISHED' WHERE rule_set_version_id='{target}'"
+        )
+        blocked = dict(update)
+        blocked.update(
+            expected_version=2,
+            idempotency_key="slice5-rule-14",
+            request_digest="14" * 32,
+            audit_id=_uuid7(114),
+            event_id=_uuid7(214),
+            receipt_id=_uuid7(314),
+        )
+        with pytest.raises(Exception, match="RULE_STATE_CONFLICT"):
+            _call_governance_v2(
+                slice5_rule_governance_writer_database, "UPDATE_DRAFT", blocked
+            )
+
+        wrong_reason = _governance_payload(
+            15, actor=92012, role="expert", target=target, version=2,
+            reason_code="RULE_CONTENT_CORRECTION_REQUIRED",
+        )
+        with pytest.raises(Exception, match="RULE_REASON_INVALID"):
+            _call_governance_v2(
+                slice5_rule_governance_writer_database, "REVIEW_APPROVE", wrong_reason
+            )
+
+        assert pg_database.fetch_value(
+            f"SELECT has_table_privilege('{rule_role}',"
+            "'public.slice5_rule_set_governance_read_v2','SELECT')"
+        )
+        assert not pg_database.fetch_value(
+            f"SELECT has_table_privilege('{rule_role}','public.\"user\"','SELECT')"
+        )
+        columns = set(
+            pg_database.fetch_column(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='public' "
+                "AND table_name IN ('slice5_rule_set_governance_read_v2','slice5_high_risk_task_read_v2')"
+            )
+        )
+        assert "real_name" not in columns
+        assert {"author_role", "reviewer_role", "assignee_role", "assignee_display_name"} <= columns
+    finally:
+        pg_database.execute(f"DELETE FROM public.slice5_idempotency WHERE target_id='{target}'")
+        pg_database.execute(f"DELETE FROM public.slice5_outbox WHERE aggregate_ref='{target}'")
+        pg_database.execute(f"DELETE FROM public.slice5_audit WHERE target_id='{target}'")
+        pg_database.execute(f"DELETE FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}'")
+        pg_database.execute("DELETE FROM public.\"user\" WHERE id IN (92011,92012)")
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_outcome"),
+    _CREATE_CONFIRMATION_CASES,
+    ids=[value[0] for value in _CREATE_CONFIRMATION_CASES],
+)
+def test_R01_R18_CREATE完整后像确认矩阵(
+    pg_database,
+    slice5_rule_governance_writer_database,
+    case: str,
+    expected_outcome: str,
+):
+    ordinal = next(
+        index for index, value in enumerate(_CREATE_CONFIRMATION_CASES) if value[0] == case
+    )
+    actor_user_id = 92901
+    target = _uuid7(1000 + ordinal)
+    typed_rule_payload = approved_medical_rule_payload_v1().model_dump(mode="json")
+    content_digest = hashlib.sha256(
+        json.dumps(
+            typed_rule_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    approval_evidence_ref = (
+        None if case == "committed_null_approval" else "synthetic-medical-double-sign"
+    )
+    create = _governance_payload(
+        40 + ordinal,
+        actor=actor_user_id,
+        role="expert",
+        target=target,
+        version_no=94000 + ordinal,
+        typed_rule_payload=typed_rule_payload,
+        content_digest=content_digest,
+        approval_evidence_ref=approval_evidence_ref,
+    )
+    confirmation = {
+        "operation": "CREATE",
+        "rule_set_version_id": target,
+        "rule_set_code": create["rule_set_code"],
+        "version_no": create["version_no"],
+        "author_user_id": actor_user_id,
+        "actor_user_id": actor_user_id,
+        "actor_role": "expert",
+        "expected_version": None,
+        "typed_rule_payload": typed_rule_payload,
+        "content_digest": content_digest,
+        "approval_evidence_ref": approval_evidence_ref,
+        "idempotency_key": create["idempotency_key"],
+        "request_digest": create["request_digest"],
+        "audit_id": create["audit_id"],
+        "event_id": create["event_id"],
+        "receipt_id": create["receipt_id"],
+        "evidence_digest": create["evidence_digest"],
+        "outbox_digest": create["outbox_digest"],
+        "postimage_digest": create["postimage_digest"],
+        "digest_key_id": create["digest_key_id"],
+        "response": create["response"],
+        "created_at": create["created_at"],
+    }
+    pg_database.execute(
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,created_at,updated_at) "
+        "VALUES (92901,'19900092901','synthetic','expert','active',now(),now()),"
+        "(92902,'19900092902','synthetic','expert','active',now(),now())"
+    )
+    try:
+        if case != "not_committed":
+            assert _call_governance_v2(
+                slice5_rule_governance_writer_database, "CREATE", create
+            )["status"] == "DRAFT"
+
+        if case == "rule_code":
+            confirmation["rule_set_code"] = "UNEXPECTED_RULE_SET"
+        elif case == "version_no":
+            confirmation["version_no"] += 1
+        elif case == "author_user_id":
+            confirmation["author_user_id"] += 1
+        elif case == "typed_rule_payload":
+            confirmation["typed_rule_payload"] = {"unexpected": True}
+        elif case == "content_digest":
+            confirmation["content_digest"] = "ff" * 32
+        elif case == "rule_digest_key_id":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET digest_key_id='unexpected-key' "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "approval_evidence_ref":
+            confirmation["approval_evidence_ref"] = None
+        elif case == "reviewer_user_id":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version "
+                f"SET status='IN_REVIEW',reviewer_user_id=92902 "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "effective_from":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET effective_from=created_at "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "suspended_at":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET suspended_at=created_at "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "retired_at":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET retired_at=created_at "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "rule_created_at":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version "
+                f"SET created_at=created_at + interval '1 second' "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "status":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET status='IN_REVIEW' "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "version":
+            pg_database.execute(
+                f"UPDATE public.assessment_rule_set_version SET version=2 "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+        elif case == "audit_action":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET action='RULE_SUBMIT' "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_actor_user_id":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET actor_user_id=92902 "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_actor_role":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET actor_role='sys_admin' "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_target_type":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET target_type='ASSESSMENT' "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_target_id":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET target_id='{_uuid7(1901)}' "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_evidence_digest":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit SET evidence_digest=decode(repeat('ff',32),'hex') "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "audit_created_at":
+            pg_database.execute(
+                f"UPDATE public.slice5_audit "
+                f"SET occurred_at=occurred_at + interval '1 second' "
+                f"WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "outbox_event_type":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET event_type='RULE_SUBMIT' "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "outbox_aggregate_type":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET aggregate_type='ASSESSMENT' "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "outbox_aggregate_ref":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET aggregate_ref='{_uuid7(1902)}' "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "outbox_payload":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET payload_json='{{\"operation\":\"SUBMIT\"}}'::jsonb "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "outbox_created_at":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET created_at=created_at + interval '1 second' "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "outbox_mutable_delivery_state":
+            pg_database.execute(
+                f"UPDATE public.slice5_outbox SET status='DELIVERED',attempts=7,"
+                f"lease_owner=NULL,lease_until=NULL,delivered_at=now() "
+                f"WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "receipt_id":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET receipt_id='{_uuid7(1903)}' "
+                f"WHERE idempotency_key='{create['idempotency_key']}'"
+            )
+        elif case == "receipt_actor_scope":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET actor_scope='92902' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_operation":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET operation='RULE_SUBMIT' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_target_id":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET target_id='{_uuid7(1904)}' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_idempotency_key":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET idempotency_key='different-key' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_request_digest":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET request_digest=decode(repeat('ff',32),'hex') "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_response":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET response_ciphertext=convert_to('{{}}','UTF8') "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_digest_key_id":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET response_key_id='different-key-id' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_postimage_digest":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET postimage_digest=decode(repeat('ff',32),'hex') "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "receipt_created_at":
+            pg_database.execute(
+                f"UPDATE public.slice5_idempotency SET created_at=created_at + interval '1 second' "
+                f"WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "partial_only_rule":
+            pg_database.execute(
+                f"DELETE FROM public.slice5_idempotency WHERE receipt_id='{create['receipt_id']}';"
+                f"DELETE FROM public.slice5_outbox WHERE event_id='{create['event_id']}';"
+                f"DELETE FROM public.slice5_audit WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "partial_missing_receipt":
+            pg_database.execute(
+                f"DELETE FROM public.slice5_idempotency WHERE receipt_id='{create['receipt_id']}'"
+            )
+        elif case == "partial_missing_audit":
+            pg_database.execute(
+                f"DELETE FROM public.slice5_audit WHERE audit_id='{create['audit_id']}'"
+            )
+        elif case == "partial_missing_outbox":
+            pg_database.execute(
+                f"DELETE FROM public.slice5_outbox WHERE event_id='{create['event_id']}'"
+            )
+        elif case == "partial_missing_rule":
+            pg_database.execute(
+                f"DELETE FROM public.assessment_rule_set_version "
+                f"WHERE rule_set_version_id='{target}'"
+            )
+
+        assert _call_rule_confirmation(
+            slice5_rule_governance_writer_database, confirmation
+        ) == {"outcome": expected_outcome}
+    finally:
+        pg_database.execute(
+            f"DELETE FROM public.slice5_idempotency WHERE idempotency_key='{create['idempotency_key']}';"
+            f"DELETE FROM public.slice5_outbox WHERE event_id='{create['event_id']}';"
+            f"DELETE FROM public.slice5_audit WHERE audit_id='{create['audit_id']}';"
+            f"DELETE FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}';"
+            'DELETE FROM public."user" WHERE id IN (92901,92902)'
+        )
+
+
+def test_R20_UPDATE_DRAFT完整后像确认回归(
+    pg_database, slice5_rule_governance_writer_database
+):
+    actor_user_id = 92902
+    target = _uuid7(1090)
+    typed_rule_payload = approved_medical_rule_payload_v1().model_dump(mode="json")
+    content_digest = hashlib.sha256(
+        json.dumps(
+            typed_rule_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    create = _governance_payload(
+        80,
+        actor=actor_user_id,
+        role="expert",
+        target=target,
+        version_no=94990,
+        typed_rule_payload=typed_rule_payload,
+        content_digest=content_digest,
+        approval_evidence_ref="synthetic-v1",
+    )
+    update = _governance_payload(
+        81,
+        actor=actor_user_id,
+        role="expert",
+        target=target,
+        version=1,
+        typed_rule_payload=typed_rule_payload,
+        content_digest=content_digest,
+        approval_evidence_ref="synthetic-v2",
+    )
+    update["response"] = {
+        "rule_set_version_id": target,
+        "status": "DRAFT",
+        "version": 2,
+        "typed_rule_payload": typed_rule_payload,
+        "approval_evidence_ref": "synthetic-v2",
+    }
+    confirmation = {
+        "operation": "UPDATE_DRAFT",
+        "rule_set_version_id": target,
+        "actor_user_id": actor_user_id,
+        "actor_role": "expert",
+        "expected_version": 1,
+        "idempotency_key": update["idempotency_key"],
+        "request_digest": update["request_digest"],
+        "audit_id": update["audit_id"],
+        "event_id": update["event_id"],
+        "receipt_id": update["receipt_id"],
+        "evidence_digest": update["evidence_digest"],
+        "outbox_digest": update["outbox_digest"],
+        "postimage_digest": update["postimage_digest"],
+        "digest_key_id": update["digest_key_id"],
+        "response": update["response"],
+    }
+    pg_database.execute(
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,created_at,updated_at) "
+        "VALUES (92902,'19900092902','synthetic','expert','active',now(),now())"
+    )
+    try:
+        assert _call_governance_v2(
+            slice5_rule_governance_writer_database, "CREATE", create
+        )["status"] == "DRAFT"
+        assert _call_governance_v2(
+            slice5_rule_governance_writer_database, "UPDATE_DRAFT", update
+        )["version"] == 2
+        assert _call_rule_confirmation(
+            slice5_rule_governance_writer_database, confirmation
+        ) == {"outcome": "COMMITTED"}
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_audit WHERE target_id='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_outbox WHERE aggregate_ref='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_idempotency WHERE target_id='{target}'"
+        ) == 2
+    finally:
+        pg_database.execute(
+            f"DELETE FROM public.slice5_idempotency WHERE target_id='{target}';"
+            f"DELETE FROM public.slice5_outbox WHERE aggregate_ref='{target}';"
+            f"DELETE FROM public.slice5_audit WHERE target_id='{target}';"
+            f"DELETE FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}';"
+            'DELETE FROM public."user" WHERE id=92902'
+        )
+
+
+def test_H09_H10_规则创建与草稿更新真实HTTP接线且mutation原子幂等(
+    pg_database, real_db_client
+):
+    from app.core.security import create_access_token
+
+    actor_user_id = 92021
+    payload_v1 = approved_medical_rule_payload_v1().model_dump(mode="json")
+    content_digest = hashlib.sha256(
+        json.dumps(
+            payload_v1, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+    create_headers = {
+        "Authorization": "Bearer "
+        + create_access_token({"sub": str(actor_user_id), "role": "expert"}),
+        "Idempotency-Key": "slice5-rule-http-create-0001",
+    }
+    create_body = {
+        "rule_set_code": "CN_ADULT_BASELINE_V1",
+        "version_no": 92021,
+        "typed_rule_payload": payload_v1,
+        "medical_content_digest": content_digest,
+        "approval_evidence_ref": "synthetic-medical-double-sign-http-v1",
+    }
+    target = None
+    pg_database.execute(
+        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,created_at,updated_at) "
+        "VALUES (92021,'19900092021','synthetic','expert','active',now(),now())"
+    )
+    try:
+        created = real_db_client.post(
+            "/api/v1/platform/assessment-rule-sets",
+            headers=create_headers,
+            json=create_body,
+        )
+        assert created.status_code == 201, created.json()
+        target = created.json()["rule_set_version_id"]
+        assert created.json()["status"] == "DRAFT"
+        assert created.json()["version"] == 1
+
+        create_replay = real_db_client.post(
+            "/api/v1/platform/assessment-rule-sets",
+            headers=create_headers,
+            json=create_body,
+        )
+        assert create_replay.status_code == 201
+        assert create_replay.json() == created.json()
+
+        update_headers = {
+            **create_headers,
+            "Idempotency-Key": "slice5-rule-http-update-0001",
+        }
+        update_body = {
+            "expected_version": 1,
+            "typed_rule_payload": payload_v1,
+            "medical_content_digest": content_digest,
+            "approval_evidence_ref": "synthetic-medical-double-sign-http-v2",
+        }
+        updated = real_db_client.patch(
+            f"/api/v1/platform/assessment-rule-sets/{target}/draft",
+            headers=update_headers,
+            json=update_body,
+        )
+        assert updated.status_code == 200, updated.json()
+        assert updated.json()["version"] == 2
+        assert updated.json()["typed_rule_payload"] == payload_v1
+        assert (
+            updated.json()["approval_evidence_ref"]
+            == "synthetic-medical-double-sign-http-v2"
+        )
+
+        update_replay = real_db_client.patch(
+            f"/api/v1/platform/assessment-rule-sets/{target}/draft",
+            headers=update_headers,
+            json=update_body,
+        )
+        assert update_replay.status_code == 200
+        assert update_replay.json() == updated.json()
+
+        assert pg_database.fetch_value(
+            f"SELECT version=2 AND approval_evidence_ref="
+            f"'synthetic-medical-double-sign-http-v2' "
+            f"FROM public.assessment_rule_set_version WHERE rule_set_version_id='{target}'"
+        )
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_audit WHERE target_id='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_outbox WHERE aggregate_ref='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(*) FROM public.slice5_idempotency WHERE target_id='{target}'"
+        ) == 2
+        assert pg_database.fetch_value(
+            f"SELECT count(DISTINCT receipt_id) FROM public.slice5_idempotency "
+            f"WHERE target_id='{target}'"
+        ) == 2
+    finally:
+        if target is not None:
+            pg_database.execute(
+                f"DELETE FROM public.slice5_idempotency WHERE target_id='{target}';"
+                f"DELETE FROM public.slice5_outbox WHERE aggregate_ref='{target}';"
+                f"DELETE FROM public.slice5_audit WHERE target_id='{target}';"
+                f"DELETE FROM public.assessment_rule_set_version "
+                f"WHERE rule_set_version_id='{target}';"
+            )
+        pg_database.execute('DELETE FROM public."user" WHERE id=92021')
 
 
 def test_D10_D17_D19_D24_数据库计算最高风险并原子创建唯一任务(

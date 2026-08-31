@@ -173,22 +173,39 @@ class HealthAssessmentRepository:
     async def govern_rule_set(self, operation: str, payload: Mapping[str, object]) -> dict:
         row = (
             await self.session.execute(
-                text("SELECT public.slice5_rule_governance_v1(:operation,CAST(:payload AS jsonb)) AS value"),
+                text("SELECT public.slice5_rule_governance_v2(:operation,CAST(:payload AS jsonb)) AS value"),
                 {"operation": operation, "payload": _payload(payload)},
             )
         ).mappings().one()
         return row["value"]
 
+    async def confirm_rule_governance(self, payload: Mapping[str, object]) -> str:
+        row = (
+            await self.session.execute(
+                text(
+                    "SELECT public.slice5_rule_governance_confirm_v1("
+                    "CAST(:payload AS jsonb)) AS value"
+                ),
+                {"payload": _payload(payload)},
+            )
+        ).mappings().one()
+        value = row["value"]
+        if type(value) is not dict or value.get("outcome") not in {
+            "COMMITTED", "NOT_COMMITTED", "UNKNOWN"
+        }:
+            return "UNKNOWN"
+        return value["outcome"]
+
     async def rule_set_detail(self, version_id: UUID) -> dict | None:
         statement = text(
-            "SELECT * FROM public.slice5_rule_set_governance_read_v1 "
+            "SELECT * FROM public.slice5_rule_set_governance_read_v2 "
             "WHERE rule_set_version_id=:version_id"
         ).bindparams(bindparam("version_id", type_=PostgreSQLUUID(as_uuid=True)))
         return (await self.session.execute(statement, {"version_id": version_id})).mappings().first()
 
     async def rule_set_page(self, cursor_id: UUID | None, limit: int) -> list[dict]:
         statement = text(
-            "SELECT * FROM public.slice5_rule_set_governance_read_v1 "
+            "SELECT * FROM public.slice5_rule_set_governance_read_v2 "
             "WHERE (:cursor_id IS NULL OR rule_set_version_id>:cursor_id) "
             "ORDER BY rule_set_version_id LIMIT :limit"
         ).bindparams(bindparam("cursor_id", type_=PostgreSQLUUID(as_uuid=True)))
@@ -257,13 +274,13 @@ class HealthAssessmentRepository:
 
     async def task_detail(self, task_id: UUID) -> dict | None:
         statement = text(
-            "SELECT * FROM public.slice5_high_risk_task_read_v1 WHERE task_id=:task_id"
+            "SELECT * FROM public.slice5_high_risk_task_read_v2 WHERE task_id=:task_id"
         ).bindparams(bindparam("task_id", type_=PostgreSQLUUID(as_uuid=True)))
         return (await self.session.execute(statement, {"task_id": task_id})).mappings().first()
 
     async def task_page(self, scope: Mapping[str, object]) -> list[dict]:
         statement = text(
-            "SELECT * FROM public.slice5_high_risk_task_read_v1 "
+            "SELECT * FROM public.slice5_high_risk_task_read_v2 "
             "WHERE (:tenant_id IS NULL OR tenant_id=:tenant_id) "
             "AND (:service_case_id IS NULL OR service_case_id=:service_case_id) "
             "AND (:status IS NULL OR status=:status) "
