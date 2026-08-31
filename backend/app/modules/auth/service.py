@@ -135,13 +135,39 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     if user.status != "active":
         raise HTTPException(status_code=403, detail="User is not active")
 
-    account = await get_onboarding_account_for_login(user.id) if user.role == "org_admin" else None
-    if account is not None and account.totp_enabled:
+    account = None
+    org_admin_totp_verified = False
+    if user.role == "org_admin":
+        try:
+            account = await get_onboarding_account_for_login(user.id)
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable",
+            ) from None
+        if account is None or not account.totp_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="Login context is not configured",
+            )
+        if payload.totp_code is None:
+            raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
+
         from app.modules.institution_onboarding.domain import verify_totp
         from app.modules.institution_onboarding.service import OnboardingSecrets, utcnow
-        if payload.totp_code is None or not verify_totp(
-            OnboardingSecrets().decrypt(account.totp_secret_ciphertext), payload.totp_code, at=utcnow()
-        ):
+
+        try:
+            org_admin_totp_verified = verify_totp(
+                OnboardingSecrets().decrypt(account.totp_secret_ciphertext),
+                payload.totp_code,
+                at=utcnow(),
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable",
+            ) from None
+        if not org_admin_totp_verified:
             raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
 
     therapist_account = await get_therapist_account_for_login(session, user.id) if user.role == "therapist" else None
@@ -169,7 +195,7 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
         else None
     )
     claims = _build_login_claims(user, dynamic_org_id=dynamic_org_id)
-    if account is not None:
+    if org_admin_totp_verified:
         claims["amr"] = ["pwd", "totp"]
     if therapist_account is not None:
         claims["amr"] = ["pwd", "totp"]
