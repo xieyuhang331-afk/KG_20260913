@@ -38,10 +38,13 @@ from .schemas import (
     HighRiskTaskPageDTO,
     InputEvidenceDTO,
     ModuleResultDTO,
+    MedicalRulePayloadV1DTO,
+    PublicUserRefDTO,
     RuleGovernanceRequest,
     RulePublishRequest,
     RuleReviewRequest,
     RuleSetCreateRequest,
+    RuleSetDraftUpdateRequest,
     RuleSetPageDTO,
     RuleSetVersionDTO,
     RuleSetVersionDetailDTO,
@@ -49,8 +52,11 @@ from .schemas import (
     VersionRequest,
 )
 from .service import (
+    decode_slice5_cursor,
+    encode_slice5_cursor,
     Slice5Secrets,
     govern_rule_set,
+    public_user_reference,
     raise_assessment_dispute,
     start_assessment,
     transition_high_risk_task,
@@ -147,7 +153,10 @@ SLICE5_ROUTE_ERROR_CODES = {
     ("GET", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments"): _route_codes(_FAMILY),
     ("GET", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND"),
     ("POST", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}/disputes"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets"): _route_codes(_PLATFORM, "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/platform/assessment-rule-sets"): _route_codes(
+        _PLATFORM, "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"
+    ),
+    ("PATCH", "/api/v1/platform/assessment-rule-sets/{version_id}/draft"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/platform/assessment-rule-sets"): _route_codes(_PLATFORM),
     ("GET", "/api/v1/platform/assessment-rule-sets/{version_id}"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND"),
     ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/submit"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
@@ -264,13 +273,18 @@ def _detail(row: Mapping[str, object]) -> AssessmentDetailDTO:
 
 def _task(row: Mapping[str, object]) -> HighRiskTaskDTO:
     blocking = row.get("blocking") or {"ordinary_plan": True, "case_completion": True}
+    assignee_id = row.get("assignee_user_id", row.get("assignee"))
     return HighRiskTaskDTO(
         task_id=_uuid(row["task_id"]),
         assessment_id=_uuid(row["assessment_id"]),
         service_case_id=_uuid(row["service_case_id"]),
         status=row["status"],
         reason_module_codes=tuple(row.get("reason_module_codes") or ()),
-        assignee=row.get("assignee"),
+        assignee_ref=_public_actor(
+            assignee_id,
+            row.get("assignee_role"),
+            row.get("assignee_display_name"),
+        ) if assignee_id is not None else None,
         due_at=row["due_at"],
         last_action_at=row.get("last_action_at"),
         blocking=BlockingDTO(**blocking),
@@ -280,15 +294,70 @@ def _task(row: Mapping[str, object]) -> HighRiskTaskDTO:
     )
 
 
+def _public_actor(
+    actor_user_id: object,
+    actor_role: object,
+    therapist_display_name: object = None,
+) -> PublicUserRefDTO:
+    try:
+        user_id = int(actor_user_id)
+    except (TypeError, ValueError):
+        raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+    role = str(actor_role)
+    values = {
+        "expert": ("医学专家", "EXPERT"),
+        "sys_admin": ("平台审核人员", "PLATFORM_GOVERNANCE"),
+        "super_admin": ("平台审核人员", "PLATFORM_GOVERNANCE"),
+        "org_admin": ("机构管理员", "INSTITUTION_ADMIN"),
+        "org_operator": ("机构运营人员", "INSTITUTION_OPERATOR"),
+    }
+    if role == "therapist":
+        if type(therapist_display_name) is not str or not therapist_display_name.strip():
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+        display_name, role_label = therapist_display_name.strip(), "THERAPIST"
+    else:
+        try:
+            display_name, role_label = values[role]
+        except KeyError:
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+    return PublicUserRefDTO(
+        public_user_ref=public_user_reference(user_id),
+        display_name=display_name,
+        role_label=role_label,
+    )
+
+
+def _public_rule_payload(value: object) -> MedicalRulePayloadV1DTO:
+    try:
+        return MedicalRulePayloadV1DTO.model_validate(value)
+    except Exception:
+        if type(value) is not dict:
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+        legacy_keys = {"included_rule_ids", "deferred_rule_ids", "golden_cases"}
+        if set(value) != legacy_keys:
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+        if (
+            tuple(value["included_rule_ids"]) != INCLUDED_RULE_IDS
+            or tuple(value["deferred_rule_ids"]) != DEFERRED_RULE_IDS
+            or len(tuple(value["golden_cases"])) != 21
+        ):
+            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+        from .schemas import approved_medical_rule_payload_v1
+
+        return approved_medical_rule_payload_v1()
+
+
 def _rule(row: Mapping[str, object], *, detail: bool = False):
-    approval = "APPROVED" if row.get("reviewer_user_id") else "PENDING"
+    author_id = row.get("author_user_id", row.get("author"))
+    reviewer_id = row.get("reviewer_user_id", row.get("reviewer"))
+    approval = "APPROVED" if reviewer_id else "PENDING"
     common = {
         "rule_set_version_id": _uuid(row["rule_set_version_id"]),
         "version_no": int(row["version_no"]),
         "status": row["status"],
         "module_metadata": MODULE_CODES,
-        "author": int(row["author_user_id"]),
-        "reviewer": row.get("reviewer_user_id"),
+        "author_ref": _public_actor(author_id, row.get("author_role", "expert")),
+        "reviewer_ref": _public_actor(reviewer_id, row.get("reviewer_role", "expert")) if reviewer_id else None,
         "approval_state": approval,
         "effective_from": row.get("effective_from"),
         "suspended_at": row.get("suspended_at"),
@@ -299,7 +368,7 @@ def _rule(row: Mapping[str, object], *, detail: bool = False):
         return RuleSetVersionDetailDTO(
             **common,
             rule_set_code=row["rule_set_code"],
-            typed_rule_payload=row["typed_rule_payload"],
+            typed_rule_payload=_public_rule_payload(row["typed_rule_payload"]),
             approval_evidence_ref=row.get("approval_evidence_ref"),
         )
     return RuleSetVersionDTO(**common)
@@ -367,16 +436,36 @@ async def start_health_assessment(
     return AssessmentSummaryDTO(**result)
 
 
-async def _case_assessments(case_id: UUID, actor: CurrentUser, clinical, limit: int, cursor: UUID | None) -> AssessmentPageDTO:
+def _cursor_scope(actor: CurrentUser, kind: str, **values: object) -> dict[str, object]:
+    return {
+        "actor_user_id": actor.id,
+        "kind": kind,
+        "role": actor.role,
+        **values,
+    }
+
+
+def _next_cursor(rows: list[dict], limit: int, field: str, scope: Mapping[str, object]) -> str | None:
+    if len(rows) <= limit:
+        return None
+    return encode_slice5_cursor(_uuid(rows[limit - 1][field]), scope)
+
+
+async def _case_assessments(case_id: UUID, actor: CurrentUser, clinical, limit: int, cursor: str | None) -> AssessmentPageDTO:
     repository = HealthAssessmentRepository(clinical)
-    rows = await repository.assessment_page({"service_case_id": case_id, "cursor_id": cursor, "limit": limit})
+    scope = _cursor_scope(actor, "assessment", service_case_id=str(case_id))
+    cursor_id = decode_slice5_cursor(cursor, scope)
+    rows = await repository.assessment_page({"service_case_id": case_id, "cursor_id": cursor_id, "limit": limit + 1})
     for row in rows:
         await _authorize_row(repository, actor, row)
-    return AssessmentPageDTO(items=tuple(_summary(row) for row in rows))
+    return AssessmentPageDTO(
+        items=tuple(_summary(row) for row in rows[:limit]),
+        next_cursor=_next_cursor(rows, limit, "assessment_id", scope),
+    )
 
 
 @therapist_router.get("/service-cases/{case_id}/assessments", response_model=AssessmentPageDTO)
-async def therapist_assessments(case_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
+async def therapist_assessments(case_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
     _require(actor, {"therapist"}, "THERAPIST_SCOPE_FORBIDDEN")
     return await _case_assessments(case_id, actor, clinical, limit, cursor)
 
@@ -414,15 +503,26 @@ async def therapist_dispute(payload: AssessmentDisputeRequest, case_id: UuidV7, 
     return await _dispute(assessment_id, payload, idempotency_key, actor, clinical, writer, "THERAPIST")
 
 
-async def _task_page(actor: CurrentUser, clinical, *, tenant_id: int | None = None, case_id: UUID | None = None, status: str | None = None, cursor: UUID | None = None, limit: int = 50) -> HighRiskTaskPageDTO:
+async def _task_page(actor: CurrentUser, clinical, *, tenant_id: int | None = None, case_id: UUID | None = None, status: str | None = None, cursor: str | None = None, limit: int = 50) -> HighRiskTaskPageDTO:
     repository = HealthAssessmentRepository(clinical)
-    rows = await repository.task_page({"tenant_id": tenant_id, "service_case_id": case_id, "status": status, "cursor_id": cursor, "limit": limit})
+    scope = _cursor_scope(
+        actor,
+        "high-risk-task",
+        tenant_id=tenant_id,
+        service_case_id=str(case_id) if case_id else None,
+        status=status,
+    )
+    cursor_id = decode_slice5_cursor(cursor, scope)
+    rows = await repository.task_page({"tenant_id": tenant_id, "service_case_id": case_id, "status": status, "cursor_id": cursor_id, "limit": limit + 1})
     for row in rows:
         assessment = await repository.assessment_detail(_uuid(row["assessment_id"]))
         if assessment is None:
             raise _error("DEPENDENCY_UNAVAILABLE")
         await _authorize_row(repository, actor, assessment)
-    return HighRiskTaskPageDTO(items=tuple(_task(row) for row in rows))
+    return HighRiskTaskPageDTO(
+        items=tuple(_task(row) for row in rows[:limit]),
+        next_cursor=_next_cursor(rows, limit, "task_id", scope),
+    )
 
 
 async def _task_detail(actor: CurrentUser, clinical, task_id: UUID) -> tuple[dict, dict]:
@@ -438,7 +538,7 @@ async def _task_detail(actor: CurrentUser, clinical, task_id: UUID) -> tuple[dic
 
 
 @therapist_router.get("/high-risk-tasks", response_model=HighRiskTaskPageDTO)
-async def therapist_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> HighRiskTaskPageDTO:
+async def therapist_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> HighRiskTaskPageDTO:
     _require(actor, {"therapist"}, "THERAPIST_SCOPE_FORBIDDEN")
     return await _task_page(actor, clinical, status=status, cursor=cursor, limit=limit)
 
@@ -472,7 +572,7 @@ async def therapist_task_action(payload: HighRiskTaskActionRequest, task_id: Uui
 
 
 @institution_router.get("/high-risk-tasks", response_model=HighRiskTaskPageDTO)
-async def institution_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> HighRiskTaskPageDTO:
+async def institution_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> HighRiskTaskPageDTO:
     _require(actor, {"org_admin", "org_operator"}, "INSTITUTION_SCOPE_FORBIDDEN")
     return await _task_page(actor, clinical, tenant_id=actor.tenant_id, status=status, cursor=cursor, limit=limit)
 
@@ -491,7 +591,7 @@ async def institution_task_action(payload: HighRiskTaskActionRequest, task_id: U
 
 
 @institution_router.get("/service-cases/{case_id}/assessments", response_model=AssessmentPageDTO)
-async def institution_assessments(case_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
+async def institution_assessments(case_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
     _require(actor, {"org_admin", "org_operator"}, "INSTITUTION_SCOPE_FORBIDDEN")
     return await _case_assessments(case_id, actor, clinical, limit, cursor)
 
@@ -508,17 +608,27 @@ async def _family_subject(repository: HealthAssessmentRepository, actor: Current
     return _uuid(row["subject_member_id"])
 
 
-async def _family_page(actor: CurrentUser, clinical, enrollment_id: UUID | None, limit: int, cursor: UUID | None) -> AssessmentPageDTO:
+async def _family_page(actor: CurrentUser, clinical, enrollment_id: UUID | None, limit: int, cursor: str | None) -> AssessmentPageDTO:
     repository = HealthAssessmentRepository(clinical)
     subject = await _family_subject(repository, actor, enrollment_id)
-    rows = await repository.assessment_page({"subject_member_id": subject, "cursor_id": cursor, "limit": limit})
+    scope = _cursor_scope(
+        actor,
+        "assessment",
+        subject_member_id=str(subject),
+        enrollment_id=str(enrollment_id) if enrollment_id else None,
+    )
+    cursor_id = decode_slice5_cursor(cursor, scope)
+    rows = await repository.assessment_page({"subject_member_id": subject, "cursor_id": cursor_id, "limit": limit + 1})
     for row in rows:
         await _authorize_row(repository, actor, row)
-    return AssessmentPageDTO(items=tuple(_summary(row) for row in rows))
+    return AssessmentPageDTO(
+        items=tuple(_summary(row) for row in rows[:limit]),
+        next_cursor=_next_cursor(rows, limit, "assessment_id", scope),
+    )
 
 
 @family_router.get("/assessments", response_model=AssessmentPageDTO)
-async def family_assessments(limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
+async def family_assessments(limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
     return await _family_page(actor, clinical, None, limit, cursor)
 
 
@@ -543,7 +653,7 @@ async def family_dispute(payload: AssessmentDisputeRequest, assessment_id: UuidV
 
 
 @family_router.get("/proxy-enrollments/{enrollment_id}/assessments", response_model=AssessmentPageDTO)
-async def proxy_assessments(enrollment_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
+async def proxy_assessments(enrollment_id: UuidV7, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), clinical=Depends(get_slice5_clinical_reader_session)) -> AssessmentPageDTO:
     return await _family_page(actor, clinical, enrollment_id, limit, cursor)
 
 
@@ -562,11 +672,9 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def _validate_rule_payload(value: dict) -> None:
-    if set(value) < {"included_rule_ids", "deferred_rule_ids", "golden_cases"}:
-        raise _error("INVALID_REQUEST")
-    if set(value["included_rule_ids"]) != set(INCLUDED_RULE_IDS) or set(value["deferred_rule_ids"]) != set(DEFERRED_RULE_IDS) or len(value["golden_cases"]) != 21:
-        raise _error("INVALID_REQUEST")
+def _rule_payload_and_digest(value: MedicalRulePayloadV1DTO) -> tuple[dict, str]:
+    payload = value.model_dump(mode="json")
+    return payload, hashlib.sha256(_canonical(payload)).hexdigest()
 
 
 async def _rule_detail(repository: HealthAssessmentRepository, version_id: UUID) -> dict:
@@ -579,11 +687,11 @@ async def _rule_detail(repository: HealthAssessmentRepository, version_id: UUID)
 @platform_router.post("/assessment-rule-sets", status_code=201, response_model=RuleSetVersionDetailDTO)
 async def create_rule_set(payload: RuleSetCreateRequest, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice5_rule_governance_writer_session)) -> RuleSetVersionDetailDTO:
     _require(actor, {"expert"}, "RULE_GOVERNANCE_FORBIDDEN")
-    _validate_rule_payload(payload.typed_rule_payload)
-    calculated = hashlib.sha256(_canonical(payload.typed_rule_payload)).hexdigest()
+    typed_rule_payload, calculated = _rule_payload_and_digest(payload.typed_rule_payload)
     if calculated != payload.medical_content_digest:
         raise _error("INVALID_REQUEST")
     repository = HealthAssessmentRepository(writer)
+    factory = await get_slice5_session_factory("rule_governance_writer")
     result = await govern_rule_set(
         repository,
         operation="CREATE",
@@ -592,19 +700,54 @@ async def create_rule_set(payload: RuleSetCreateRequest, idempotency_key: Idempo
         idempotency_key=idempotency_key,
         details={
             "version_no": payload.version_no,
-            "typed_rule_payload": payload.typed_rule_payload,
+            "typed_rule_payload": typed_rule_payload,
+            "content_digest": calculated,
+            "approval_evidence_ref": payload.approval_evidence_ref,
+        },
+        confirmation_session_factory=factory,
+    )
+    return _rule(result, detail=True)
+
+
+@platform_router.patch("/assessment-rule-sets/{version_id}/draft", response_model=RuleSetVersionDetailDTO)
+async def update_rule_set_draft(
+    payload: RuleSetDraftUpdateRequest,
+    version_id: UuidV7,
+    idempotency_key: IdempotencyKey,
+    actor: CurrentUser = Depends(get_current_user_from_jwt),
+    writer=Depends(get_slice5_rule_governance_writer_session),
+) -> RuleSetVersionDetailDTO:
+    _require(actor, {"expert"}, "RULE_GOVERNANCE_FORBIDDEN")
+    typed_rule_payload, calculated = _rule_payload_and_digest(payload.typed_rule_payload)
+    if calculated != payload.medical_content_digest:
+        raise _error("INVALID_REQUEST")
+    row = await _rule_detail(HealthAssessmentRepository(writer), version_id)
+    return await _govern(
+        "UPDATE_DRAFT",
+        version_id,
+        payload.expected_version,
+        idempotency_key,
+        actor,
+        writer,
+        {
+            "current_status": row["status"],
+            "typed_rule_payload": typed_rule_payload,
             "content_digest": calculated,
             "approval_evidence_ref": payload.approval_evidence_ref,
         },
     )
-    return RuleSetVersionDetailDTO(**result)
 
 
 @platform_router.get("/assessment-rule-sets", response_model=RuleSetPageDTO)
-async def rule_sets(limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice5_rule_governance_writer_session)) -> RuleSetPageDTO:
+async def rule_sets(limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice5_rule_governance_writer_session)) -> RuleSetPageDTO:
     _require(actor, {"expert", "sys_admin", "super_admin"}, "RULE_GOVERNANCE_FORBIDDEN")
-    rows = await HealthAssessmentRepository(writer).rule_set_page(cursor, limit)
-    return RuleSetPageDTO(items=tuple(_rule(row) for row in rows))
+    scope = _cursor_scope(actor, "rule-set")
+    cursor_id = decode_slice5_cursor(cursor, scope)
+    rows = await HealthAssessmentRepository(writer).rule_set_page(cursor_id, limit + 1)
+    return RuleSetPageDTO(
+        items=tuple(_rule(row) for row in rows[:limit]),
+        next_cursor=_next_cursor(rows, limit, "rule_set_version_id", scope),
+    )
 
 
 @platform_router.get("/assessment-rule-sets/{version_id}", response_model=RuleSetVersionDetailDTO)
@@ -615,11 +758,13 @@ async def rule_set_detail(version_id: UuidV7, actor: CurrentUser = Depends(get_c
 
 async def _govern(operation: str, version_id: UUID, expected_version: int, idempotency_key: str, actor: CurrentUser, writer, extra: Mapping[str, object] | None = None) -> RuleSetVersionDetailDTO:
     repository = HealthAssessmentRepository(writer)
+    factory = await get_slice5_session_factory("rule_governance_writer")
     row = await _rule_detail(repository, version_id)
     now = datetime.now(timezone.utc)
     response = _rule(row, detail=True).model_dump()
     response["version"] = expected_version + 1
     response["status"] = {
+        "UPDATE_DRAFT": row["status"],
         "SUBMIT": "IN_REVIEW",
         "REVIEW_APPROVE": "IN_REVIEW",
         "REVIEW_CORRECTION": "NEEDS_CORRECTION",
@@ -629,8 +774,11 @@ async def _govern(operation: str, version_id: UUID, expected_version: int, idemp
         "RETIRE": "RETIRED",
     }[operation]
     if operation in {"REVIEW_APPROVE", "REVIEW_CORRECTION"}:
-        response["reviewer"] = actor.id
+        response["reviewer_ref"] = _public_actor(actor.id, actor.role).model_dump()
         response["approval_state"] = "APPROVED" if operation == "REVIEW_APPROVE" else "NEEDS_CORRECTION"
+    if operation == "UPDATE_DRAFT":
+        response["typed_rule_payload"] = (extra or {})["typed_rule_payload"]
+        response["approval_evidence_ref"] = (extra or {})["approval_evidence_ref"]
     if operation == "PUBLISH":
         response["effective_from"] = (extra or {}).get("effective_from")
     if operation == "SUSPEND":
@@ -651,6 +799,7 @@ async def _govern(operation: str, version_id: UUID, expected_version: int, idemp
         expected_version=expected_version,
         details=details,
         occurred_at=now,
+        confirmation_session_factory=factory,
     )
     return RuleSetVersionDetailDTO(**result)
 
@@ -671,12 +820,14 @@ async def review_rule_set(payload: RuleReviewRequest, version_id: UuidV7, idempo
 @platform_router.post("/assessment-rule-sets/{version_id}/publish", response_model=RuleSetVersionDetailDTO)
 async def publish_rule_set(payload: RulePublishRequest, version_id: UuidV7, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice5_rule_governance_writer_session)) -> RuleSetVersionDetailDTO:
     _require(actor, {"sys_admin", "super_admin"}, "RULE_GOVERNANCE_FORBIDDEN")
-    return await _govern("PUBLISH", version_id, payload.expected_version, idempotency_key, actor, writer, {"effective_from": payload.effective_from})
+    return await _govern("PUBLISH", version_id, payload.expected_version, idempotency_key, actor, writer, {"effective_from": payload.effective_from, "reason_code": payload.reason_code})
 
 
 def _governance_route(operation: str):
     async def endpoint(payload: RuleGovernanceRequest, version_id: UuidV7, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), writer=Depends(get_slice5_rule_governance_writer_session)) -> RuleSetVersionDetailDTO:
         _require(actor, {"sys_admin", "super_admin"}, "RULE_GOVERNANCE_FORBIDDEN")
+        if payload.operation != operation:
+            raise _error("INVALID_REQUEST")
         return await _govern(operation, version_id, payload.expected_version, idempotency_key, actor, writer, {"reason_code": payload.reason_code})
     endpoint.__name__ = f"{operation.lower()}_rule_set"
     return endpoint
@@ -688,7 +839,7 @@ platform_router.post("/assessment-rule-sets/{version_id}/retire", response_model
 
 
 @platform_router.get("/high-risk-tasks", response_model=HighRiskTaskPageDTO)
-async def platform_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: UuidV7 | None = None, actor: CurrentUser = Depends(get_current_user_from_jwt), oversight=Depends(get_slice5_oversight_reader_session)) -> HighRiskTaskPageDTO:
+async def platform_tasks(status: str | None = None, limit: int = Query(50, ge=1, le=100), cursor: str | None = Query(None, max_length=2048), actor: CurrentUser = Depends(get_current_user_from_jwt), oversight=Depends(get_slice5_oversight_reader_session)) -> HighRiskTaskPageDTO:
     _require(actor, {"sys_admin", "super_admin"}, "RULE_GOVERNANCE_FORBIDDEN")
     return await _task_page(actor, oversight, status=status, cursor=cursor, limit=limit)
 

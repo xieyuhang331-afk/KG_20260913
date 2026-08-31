@@ -22,6 +22,7 @@ ROUTES = {
     ("GET", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}"),
     ("POST", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}/disputes"),
     ("POST", "/api/v1/platform/assessment-rule-sets"),
+    ("PATCH", "/api/v1/platform/assessment-rule-sets/{version_id}/draft"),
     ("GET", "/api/v1/platform/assessment-rule-sets"),
     ("GET", "/api/v1/platform/assessment-rule-sets/{version_id}"),
     ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/submit"),

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets as stdlib_secrets
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Mapping
@@ -35,6 +36,82 @@ class CommitOutcome(StrEnum):
     COMMITTED = "COMMITTED"
     NOT_COMMITTED = "NOT_COMMITTED"
     UNKNOWN = "UNKNOWN"
+
+
+class HealthAssessmentError(RuntimeError):
+    pass
+
+
+_CURSOR_DOMAIN = b"slice5-health-assessment-cursor:v1:\x00"
+_PUBLIC_USER_REF_DOMAIN = b"slice5-public-user-ref:v1:\x00"
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _cursor_key() -> bytes:
+    value = os.getenv("KG_JWT_SECRET_KEY")
+    if value is None or len(value.encode("utf-8")) < 32:
+        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE")
+    return value.encode("utf-8")
+
+
+def encode_slice5_cursor(cursor_id: UUID, scope: Mapping[str, object]) -> str:
+    if cursor_id.version != 7 or type(scope) is not dict:
+        raise HealthAssessmentError("INVALID_REQUEST")
+    raw = json.dumps(
+        {"cursor_id": str(cursor_id), "scope": _json_value(dict(scope)), "v": 1},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    signature = hmac.new(_cursor_key(), _CURSOR_DOMAIN + raw, hashlib.sha256).digest()
+    return f"{_base64url(raw)}.{_base64url(signature)}"
+
+
+def decode_slice5_cursor(cursor: str | None, scope: Mapping[str, object]) -> UUID | None:
+    if cursor is None:
+        return None
+    try:
+        encoded_payload, encoded_signature = cursor.split(".")
+        raw = base64.b64decode(
+            (encoded_payload + "=" * (-len(encoded_payload) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        signature = base64.b64decode(
+            (encoded_signature + "=" * (-len(encoded_signature) % 4)).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        if _base64url(raw) != encoded_payload or _base64url(signature) != encoded_signature:
+            raise ValueError
+        expected = hmac.new(_cursor_key(), _CURSOR_DOMAIN + raw, hashlib.sha256).digest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload = json.loads(raw)
+        if set(payload) != {"cursor_id", "scope", "v"} or payload["v"] != 1:
+            raise ValueError
+        if payload["scope"] != _json_value(dict(scope)):
+            raise ValueError
+        cursor_id = UUID(payload["cursor_id"])
+        if cursor_id.version != 7:
+            raise ValueError
+        return cursor_id
+    except (AttributeError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+        raise HealthAssessmentError("INVALID_REQUEST") from None
+
+
+def public_user_reference(actor_user_id: int) -> str:
+    if type(actor_user_id) is not int or actor_user_id < 1:
+        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE")
+    digest = hmac.new(
+        _cursor_key(),
+        _PUBLIC_USER_REF_DOMAIN + str(actor_user_id).encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"usr_{_base64url(digest)}"
 
 
 class Slice5Secrets:
@@ -1092,9 +1169,10 @@ async def govern_rule_set(
     details: Mapping[str, object] | None = None,
     occurred_at: datetime | None = None,
     secrets: Slice5Secrets | None = None,
+    confirmation_session_factory=None,
 ) -> dict[str, Any]:
     if operation not in {
-        "CREATE", "SUBMIT", "REVIEW_APPROVE", "REVIEW_CORRECTION",
+        "CREATE", "UPDATE_DRAFT", "SUBMIT", "REVIEW_APPROVE", "REVIEW_CORRECTION",
         "PUBLISH", "SUSPEND", "RESUME", "RETIRE",
     }:
         raise RuntimeError("INVALID_REQUEST") from None
@@ -1128,6 +1206,7 @@ async def govern_rule_set(
     )
     expected_status = {
         "CREATE": "DRAFT",
+        "UPDATE_DRAFT": "DRAFT",
         "SUBMIT": "IN_REVIEW",
         "REVIEW_APPROVE": "IN_REVIEW",
         "REVIEW_CORRECTION": "NEEDS_CORRECTION",
@@ -1151,6 +1230,15 @@ async def govern_rule_set(
             "suspended_at": None,
             "retired_at": None,
             "version": 1,
+            "rule_set_code": RULE_SET_CODE,
+            "typed_rule_payload": detail_payload["typed_rule_payload"],
+            "approval_evidence_ref": detail_payload.get("approval_evidence_ref"),
+        }
+    elif operation == "UPDATE_DRAFT":
+        response = {
+            "rule_set_version_id": target_id,
+            "status": detail_payload["current_status"],
+            "version": int(expected_version or 0) + 1,
             "rule_set_code": RULE_SET_CODE,
             "typed_rule_payload": detail_payload["typed_rule_payload"],
             "approval_evidence_ref": detail_payload.get("approval_evidence_ref"),
@@ -1191,7 +1279,51 @@ async def govern_rule_set(
     }
     payload.update(detail_payload)
     result = await repository.govern_rule_set(operation, payload)
-    await repository.session.commit()
+    if confirmation_session_factory is None:
+        await repository.session.commit()
+        return result
+
+    confirmation_payload = {
+        "operation": operation,
+        "rule_set_version_id": target_id,
+        "actor_user_id": actor_user_id,
+        "actor_role": payload["actor_role"],
+        "expected_version": expected_version,
+        "idempotency_key": idempotency_key,
+        "request_digest": request_digest,
+        "audit_id": audit_id,
+        "event_id": event_id,
+        "receipt_id": payload["receipt_id"],
+        "evidence_digest": evidence_digest,
+        "outbox_digest": outbox_digest,
+        "postimage_digest": postimage_digest,
+        "digest_key_id": payload["digest_key_id"],
+        "response": response,
+        "created_at": payload["created_at"],
+    }
+    if operation == "CREATE":
+        confirmation_payload.update(
+            {
+                "rule_set_code": payload["rule_set_code"],
+                "version_no": payload["version_no"],
+                "author_user_id": payload["actor_user_id"],
+                "typed_rule_payload": payload["typed_rule_payload"],
+                "content_digest": payload["content_digest"],
+                "approval_evidence_ref": payload.get("approval_evidence_ref"),
+            }
+        )
+
+    async def confirm() -> CommitOutcome:
+        async with confirmation_session_factory() as fresh:
+            value = await type(repository)(fresh).confirm_rule_governance(confirmation_payload)
+            try:
+                return CommitOutcome(value)
+            except ValueError:
+                return CommitOutcome.UNKNOWN
+
+    outcome = await commit_with_confirmation(repository.session, confirm=confirm)
+    if outcome is not CommitOutcome.COMMITTED:
+        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
     return result
 
 
