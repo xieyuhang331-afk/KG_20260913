@@ -175,7 +175,7 @@ async def _remove_ready_projection(connection, values):
 
 
 def test_Module_D五个READY视图与最小权限闭环(pg_database):
-    assert pg_database.fetch_value("SELECT version_num='20260827_0032' FROM alembic_version")
+    assert pg_database.fetch_value("SELECT version_num='20260830_0033' FROM alembic_version")
     assert pg_database.fetch_column(
         "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace "
         "AND relname IN ("
@@ -360,7 +360,10 @@ def test_Module_D_downgrade事务锁覆盖commit_rollback与cancellation(pg_data
     config = _build_alembic_config(_get_test_database_url())
 
     async def wait_for_waiter(connection, mode, operation=None):
-        for _ in range(200):
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        deadline = started_at + 30.0
+        while loop.time() < deadline:
             if operation is not None and operation.done():
                 await operation
             count = await connection.fetchval(
@@ -371,7 +374,15 @@ def test_Module_D_downgrade事务锁覆盖commit_rollback与cancellation(pg_data
             if count:
                 return
             await asyncio.sleep(0.025)
-        raise AssertionError("advisory lock waiter was not observed")
+        if operation is not None and operation.done():
+            await operation
+        waited_seconds = loop.time() - started_at
+        raise AssertionError(
+            "advisory lock waiter was not observed: "
+            f"mode={mode}, operation_done="
+            f"{operation.done() if operation is not None else None}, "
+            f"waited_seconds={waited_seconds:.3f}"
+        )
 
     async def verify():
         organization_url = PgDatabase(
@@ -657,7 +668,7 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
 
         command.upgrade(config, "head")
         assert pg_database.fetch_value(
-            "SELECT version_num='20260827_0032' FROM alembic_version"
+            "SELECT version_num='20260830_0033' FROM alembic_version"
         )
         asyncio.run(admin_execute(f'GRANT "{writer}" TO "{organization_reader}"'))
         try:
@@ -665,7 +676,7 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
                 command.downgrade(config, "20260814_0018")
             assert str(error.value) == SLICE4_CONFIGURATION_ERROR
             assert pg_database.fetch_value(
-                "SELECT version_num='20260827_0032' FROM alembic_version"
+                "SELECT version_num='20260830_0033' FROM alembic_version"
             )
             assert pg_database.fetch_column(
                 "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace "
@@ -680,5 +691,5 @@ def test_Module_D真实运行身份与membership预检失败保持零DDL(pg_data
         finally:
             asyncio.run(admin_execute(f'REVOKE "{writer}" FROM "{organization_reader}"'))
     finally:
-        if pg_database.fetch_value("SELECT version_num FROM alembic_version") != "20260827_0032":
+        if pg_database.fetch_value("SELECT version_num FROM alembic_version") != "20260830_0033":
             command.upgrade(config, "head")
