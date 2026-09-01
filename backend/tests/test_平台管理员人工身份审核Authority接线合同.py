@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -15,15 +16,26 @@ from app.modules.auth.manual_identity_review_application import (
     PlatformAdminManualIdentityReviewUnavailable,
 )
 
-
 DECIDED_AT = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
+SUBMISSION_ID = "0198a2ef-1234-7abc-8def-0123456789ab"
+SUBMISSION_DIGEST = "b" * 64
+
+
+def _expected_evidence_digest() -> str:
+    return hashlib.sha256(
+        (
+            f"identity-submission-review:v1:{SUBMISSION_ID}:1:"
+            f"{SUBMISSION_DIGEST}:APPROVED_OFFLINE_IDENTITY_CHECK"
+        ).encode()
+    ).hexdigest()
 
 
 def _request(**changes):
     values = {
         "idempotency_key": "manual-review-request-1042-v1",
         "decided_at": DECIDED_AT,
-        "evidence_digest": "a" * 64,
+        "submission_version": 1,
+        "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
     }
     values.update(changes)
     return PlatformAdminManualIdentityReviewRequest(**values)
@@ -281,6 +293,13 @@ def _snapshot(**changes):
             facts_version=19,
         ),
         "verification": None,
+        "submission": SimpleNamespace(
+            submission_id=SUBMISSION_ID,
+            user_ref=1042,
+            version=1,
+            status="submitted",
+            content_digest=SUBMISSION_DIGEST,
+        ),
     }
     values.update(changes)
     return SimpleNamespace(**values)
@@ -296,7 +315,7 @@ def test_AuthorityReader从当前最小投影构造不可变决定():
     assert decision.facts_version == 19
     assert decision.currentness_version == 1
     assert decision.verification_epoch == 1
-    assert decision.evidence_digest == "a" * 64
+    assert decision.evidence_digest == _expected_evidence_digest()
     assert decision.correlation_id == decision.authority_decision_id
 
 
@@ -342,7 +361,7 @@ def test_AuthorityReader同一决定稳定重放而冲突决定不可覆盖():
         user_ref=1042,
         verification_epoch=1,
         outcome="verified",
-        evidence_digest="a" * 64,
+        evidence_digest=_expected_evidence_digest(),
         actor_type="super_admin",
         actor_ref="17",
         decided_at=DECIDED_AT,
@@ -353,7 +372,7 @@ def test_AuthorityReader同一决定稳定重放而冲突决定不可覆盖():
         facts_version=19,
         verification_epoch=1,
         outcome="verified",
-        evidence_digest="a" * 64,
+        evidence_digest=_expected_evidence_digest(),
         actor_type="super_admin",
         actor_ref="17",
         decided_at=DECIDED_AT,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.modules.auth.identity_document import canonicalize_prc_resident_identity
 
 
 class UserRegisterRequest(BaseModel):
@@ -69,7 +72,7 @@ class IdentityVerificationSubmissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     real_name: str = Field(min_length=2, max_length=50)
-    id_card: str = Field(pattern=r"^\d{17}[0-9X]$")
+    id_card: str
     idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^\S(?:.*\S)?$")
     consent_version: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
 
@@ -80,6 +83,25 @@ class IdentityVerificationSubmissionRequest(BaseModel):
         if normalized != value or any(ord(character) < 32 for character in value):
             raise ValueError("real_name is invalid")
         return value
+
+    @field_validator("id_card")
+    @classmethod
+    def validate_id_card(cls, value: str) -> str:
+        return canonicalize_prc_resident_identity(value)
+
+
+class LegacyIdentityEndpointRetiredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal["LEGACY_IDENTITY_ENDPOINT_RETIRED"]
+    message: Literal["request rejected"]
+
+
+class LegacyMemberTenantBindingRetiredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal["LEGACY_MEMBER_TENANT_BINDING_RETIRED"]
+    message: Literal["request rejected"]
 
 
 class IdentityVerificationSubmissionResponse(BaseModel):

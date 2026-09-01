@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 import re
+from datetime import date, datetime
 from typing import Annotated, Generic, Literal, TypeVar
 from uuid import UUID
 
@@ -15,10 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.modules.member_enrollment.identity_authority import (
-    parse_prc_resident_identity_birth_date,
-)
-
+from app.modules.auth.identity_document import canonicalize_prc_resident_identity
 
 T = TypeVar("T")
 PHONE_RE = re.compile(r"^1[3-9][0-9]{9}$", re.ASCII)
@@ -142,8 +139,7 @@ class IdentitySubmissionRequest(StrictModel):
     @field_validator("id_number")
     @classmethod
     def validate_identity(cls, value: str) -> str:
-        parse_prc_resident_identity_birth_date(value)
-        return value
+        return canonicalize_prc_resident_identity(value)
 
 
 class IdentityResubmitRequest(StrictModel):
@@ -163,7 +159,7 @@ class IdentityResubmitRequest(StrictModel):
     @classmethod
     def validate_identity(cls, value: str | None) -> str | None:
         if value is not None:
-            parse_prc_resident_identity_birth_date(value)
+            return canonicalize_prc_resident_identity(value)
         return value
 
 

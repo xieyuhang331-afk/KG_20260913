@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -19,7 +19,13 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.security import CurrentUser
 from app.core.uuid_generator import Uuid7Generator
-from app.modules.member.application.member_no_allocator import generate_member_no_candidate
+from app.modules.auth.identity_document import (
+    canonicalize_prc_resident_identity,
+    mask_prc_resident_identity,
+)
+from app.modules.member.application.member_no_allocator import (
+    generate_member_no_candidate,
+)
 from app.modules.member_enrollment.domain import (
     AssignmentStatus,
     ConsentDocument,
@@ -43,19 +49,18 @@ from app.modules.member_enrollment.identity_authority import (
 from app.modules.member_enrollment.repository import MemberEnrollmentRepository
 from app.modules.member_enrollment.schemas import (
     AcceptEnrollmentRequest,
-    CreateMemberInvitationRequest,
-    IdentitySubmissionRequest,
-    IdentityResubmitRequest,
-    InstitutionIdentityCheckRequest,
-    PlatformIdentityDecisionRequest,
-    PiiAccessRequest,
     CreateAssignmentRequest,
     CreateConsentDocumentRequest,
+    CreateMemberInvitationRequest,
+    IdentityResubmitRequest,
+    IdentitySubmissionRequest,
+    InstitutionIdentityCheckRequest,
+    PiiAccessRequest,
+    PlatformIdentityDecisionRequest,
     PublishConsentDocumentRequest,
-    RecordConsentRequest,
     ReasonedVersionRequest,
+    RecordConsentRequest,
 )
-
 
 SAFE_UNAVAILABLE = "MEMBER_ENROLLMENT_DEPENDENCY_UNAVAILABLE"
 REQUIRED_PROXY_PERMISSIONS = (
@@ -298,6 +303,7 @@ class MemberEnrollmentSecrets:
         return self._hmac(key, "invitation-code", value)
 
     def identity_fingerprint(self, value: str) -> tuple[str, str]:
+        value = canonicalize_prc_resident_identity(value)
         material = self.fingerprint_keys[self.fingerprint_key_id]
         return self.fingerprint_key_id, hmac.new(
             material,
@@ -808,7 +814,7 @@ class MemberEnrollmentService:
             document_type="PRC_RESIDENT_ID", real_name_ciphertext=real_name_cipher,
             real_name_key_id=real_name_key, id_ciphertext=id_cipher, id_key_id=id_key,
             birth_date_ciphertext=birth_cipher, birth_date_key_id=birth_key,
-            id_masked=request.id_number[:3] + "***********" + request.id_number[-4:],
+            id_masked=mask_prc_resident_identity(request.id_number),
             identity_fingerprint=fingerprint,
             fingerprint_key_id=key_id,
             input_digest=self.secrets.request_digest(request),
@@ -897,7 +903,7 @@ class MemberEnrollmentService:
             real_name_ciphertext=real_cipher, real_name_key_id=real_key,
             id_ciphertext=id_cipher, id_key_id=id_key,
             birth_date_ciphertext=birth_cipher, birth_date_key_id=birth_key,
-            id_masked=id_number[:3] + "***********" + id_number[-4:],
+            id_masked=mask_prc_resident_identity(id_number),
             identity_fingerprint=fingerprint,
             fingerprint_key_id=_key_id,
             input_digest=self.secrets.request_digest(request),
