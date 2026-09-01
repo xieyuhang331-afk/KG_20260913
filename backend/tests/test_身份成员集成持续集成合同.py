@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260901_0034"
+EXPECTED_HEAD = "20260902_0035"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260901_0034; found stale revision 20260816_0020"
+    "20260902_0035; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -854,6 +854,14 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
             "KG_TEST_A2_IDENTITY_INVENTORY_ROLE", "kg_ci_a2_inventory_test_run"
         )
         monkeypatch.setenv(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE",
+            "kg_ci_a2_remediation_writer_test_run",
+        )
+        monkeypatch.setenv(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
+            "kg_ci_a2_remediation_confirmation_test_run",
+        )
+        monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
         fixture = integration_conftest.pg_database.__wrapped__()
@@ -1466,3 +1474,47 @@ def test_A2_2_P匿名盘点专用角色与数据库URL按闭合CI合同传播():
         '"$KG_TEST_A2_IDENTITY_INVENTORY_ROLE_PASSWORD"'
         in backend_integration_job
     )
+
+
+def test_A2_2_L整改账本双角色与数据库URL按闭合CI合同传播():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    for role_name, prefix in (
+        (
+            "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE",
+            "kg_ci_a2_remediation_writer_",
+        ),
+        (
+            "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
+            "kg_ci_a2_remediation_confirmation_",
+        ),
+    ):
+        assert backend_integration_job.count(
+            f'"{role_name}": f"{prefix}{{suffix}}"'
+        ) == 1
+        url_name = role_name.replace("_ROLE", "_DATABASE_URL")
+        assert backend_integration_job.count(
+            f'"{url_name}": "{role_name}"'
+        ) == 1
+    assert backend_integration_job.count(
+        '"KG_A2_IDENTITY_REMEDIATION_WRITER_ROLE": '
+        '"KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE"'
+    ) == 1
+    assert backend_integration_job.count(
+        '"KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": '
+        '"KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE"'
+    ) == 1
+    assert backend_integration_job.count(
+        'CREATE ROLE :"a2_identity_remediation_writer_role" LOGIN'
+    ) == 1
+    assert backend_integration_job.count(
+        'CREATE ROLE :"a2_identity_remediation_confirmation_role" LOGIN'
+    ) == 1
+    for cli_name in (
+        "a2_identity_remediation_writer",
+        "a2_identity_remediation_confirmation",
+    ):
+        assert f'--set={cli_name}_role="$KG_TEST_{cli_name.upper()}_ROLE"' in backend_integration_job
+        assert (
+            f'--set={cli_name}_password="$KG_TEST_{cli_name.upper()}_ROLE_PASSWORD"'
+            in backend_integration_job
+        )

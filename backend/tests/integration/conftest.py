@@ -18,7 +18,7 @@ from tests.integration.database_safety import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260901_0034"
+REQUIRED_HEAD_REVISION = "20260902_0035"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -251,6 +251,18 @@ def _get_a2_identity_inventory_database_url() -> str:
     return _get_role_database_url("KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL")
 
 
+def _get_a2_identity_remediation_writer_database_url() -> str:
+    return _get_role_database_url(
+        "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL"
+    )
+
+
+def _get_a2_identity_remediation_confirmation_database_url() -> str:
+    return _get_role_database_url(
+        "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL"
+    )
+
+
 def _propagate_module_d_role_preflight_environment() -> None:
     aliases = {
         "KG_DATABASE_USER": "KG_TEST_APPLICATION_ROLE",
@@ -367,6 +379,10 @@ def _propagate_module_d_role_preflight_environment() -> None:
         "KG_SLICE7_OVERSIGHT_READER_DATABASE_URL": "KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL",
         "KG_A2_IDENTITY_INVENTORY_ROLE": "KG_TEST_A2_IDENTITY_INVENTORY_ROLE",
         "KG_A2_IDENTITY_INVENTORY_DATABASE_URL": "KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL",
+        "KG_A2_IDENTITY_REMEDIATION_WRITER_ROLE": "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE",
+        "KG_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL",
+        "KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
+        "KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL",
     }
     for target, source in aliases.items():
         os.environ[target] = os.environ[source]
@@ -865,6 +881,12 @@ def pg_database():
         a2_identity_inventory_role = _validated_role_name(
             "KG_TEST_A2_IDENTITY_INVENTORY_ROLE"
         )
+        a2_identity_remediation_writer_role = _validated_role_name(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE"
+        )
+        a2_identity_remediation_confirmation_role = _validated_role_name(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE"
+        )
         roles = (
             application_role,
             migration_role,
@@ -925,6 +947,8 @@ def pg_database():
             slice7_family_role,
             slice7_oversight_role,
             a2_identity_inventory_role,
+            a2_identity_remediation_writer_role,
+            a2_identity_remediation_confirmation_role,
         )
         if len(set(roles)) != len(roles):
             raise RuntimeError("database validation roles must be distinct")
@@ -1261,6 +1285,36 @@ def a2_identity_inventory_database(pg_database):
         expected_role = _validated_role_name("KG_TEST_A2_IDENTITY_INVENTORY_ROLE")
         if connected_role != expected_role:
             raise RuntimeError("A2 identity inventory database role mismatch")
+    return database
+
+
+@pytest.fixture(scope="module")
+def a2_identity_remediation_writer_database(pg_database):
+    del pg_database
+    database = PgDatabase(_get_a2_identity_remediation_writer_database_url())
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        expected_role = _validated_role_name(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE"
+        )
+        if connected_role != expected_role:
+            raise RuntimeError("A2 identity remediation writer role mismatch")
+    return database
+
+
+@pytest.fixture(scope="module")
+def a2_identity_remediation_confirmation_database(pg_database):
+    del pg_database
+    database = PgDatabase(
+        _get_a2_identity_remediation_confirmation_database_url()
+    )
+    if os.getenv("KG_TEST_ROLE_SEPARATION") == "1":
+        connected_role = database.fetch_value("SELECT current_user")
+        expected_role = _validated_role_name(
+            "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE"
+        )
+        if connected_role != expected_role:
+            raise RuntimeError("A2 identity remediation confirmation role mismatch")
     return database
 
 

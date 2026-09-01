@@ -173,7 +173,7 @@ def test_注册资格证据真实数据库权限重放与currentness(pg_database
     revision = pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
     )
-    assert revision == "20260901_0034"
+    assert revision == "20260902_0035"
     asyncio.run(_execute_contract())
 
 
