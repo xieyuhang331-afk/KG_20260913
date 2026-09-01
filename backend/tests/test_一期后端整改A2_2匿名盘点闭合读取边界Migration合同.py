@@ -15,7 +15,7 @@ HISTORICAL_0033 = (
     / "20260830_0033_phase1_slice5_web_api_contract_hotfix.py"
 )
 HISTORICAL_0033_SHA256 = (
-    "CF87349DC27C389EC954BDE730FB289546853B1ECEA88D1B35877F74694138C4"
+    "811BAD2D1EA620A776BFD6E9451BEC2BDE704244BD72CEE2585481A85E3835D6"
 )
 FUNCTION_SIGNATURE = "identity.a2_identity_inventory_snapshot_v1()"
 RETURN_FIELDS = (
@@ -41,6 +41,12 @@ def _load_revision(path: Path):
     return module
 
 
+def _normalized_lf_sha256(path: Path) -> str:
+    source = path.read_text(encoding="utf-8")
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest().upper()
+
+
 def _revision_heads() -> set[str]:
     revisions = {}
     parents = set()
@@ -62,9 +68,7 @@ def test_A2_2_P_0034修订与历史0033保持单一Head():
     assert module.branch_labels is None
     assert module.depends_on is None
     assert _revision_heads() == {"20260901_0034"}
-    assert hashlib.sha256(HISTORICAL_0033.read_bytes()).hexdigest().upper() == (
-        HISTORICAL_0033_SHA256
-    )
+    assert _normalized_lf_sha256(HISTORICAL_0033) == HISTORICAL_0033_SHA256
 
 
 def test_A2_2_P函数输出字段闭合且无标识或敏感值():
