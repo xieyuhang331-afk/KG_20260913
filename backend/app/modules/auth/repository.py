@@ -53,14 +53,10 @@ async def update_user_identity(
     id_card: str,
     verify_status: str,
 ):
-    user.real_name = real_name
-    user.id_card = id_card
-    user.verify_status = verify_status
-    await session.flush()
-    return user
+    del session, user, real_name, id_card, verify_status
+    raise RuntimeError("LEGACY_IDENTITY_ENDPOINT_RETIRED")
 
 
 async def update_user_tenant_binding(session, user, *, tenant_id: int):
-    user.tenant_id = tenant_id
-    await session.flush()
-    return user
+    del session, user, tenant_id
+    raise RuntimeError("LEGACY_MEMBER_TENANT_BINDING_RETIRED")

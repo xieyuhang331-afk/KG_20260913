@@ -1,203 +1,72 @@
 import unittest
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from sqlalchemy.exc import IntegrityError
 
 from app.core.security import CurrentUser
 
 
 class UserTenantBindingServiceTests(unittest.IsolatedAsyncioTestCase):
-    class FakeSession:
-        def __init__(self):
-            self.commit_called = False
-            self.rollback_called = False
+    class NoDatabaseSession:
+        async def execute(self, _statement):
+            raise AssertionError("retired tenant binding reached the database")
 
         async def commit(self):
-            self.commit_called = True
+            raise AssertionError("retired tenant binding attempted to commit")
 
         async def rollback(self):
-            self.rollback_called = True
+            raise AssertionError("retired tenant binding attempted to rollback")
 
-    def _payload(self, tenant_id: int = 501):
+    async def _assert_retired(
+        self,
+        *,
+        current_user_id: int = 1001,
+        role: str = "member",
+        path_user_id: int = 1001,
+        tenant_id: int = 501,
+    ) -> None:
         from app.modules.auth.schemas import TenantBindingRequest
+        from app.modules.auth.service import bind_user_tenant
 
-        return TenantBindingRequest(tenant_id=tenant_id)
+        with self.assertRaises(HTTPException) as caught:
+            await bind_user_tenant(
+                self.NoDatabaseSession(),
+                CurrentUser(id=current_user_id, role=role),
+                path_user_id,
+                TenantBindingRequest(tenant_id=tenant_id),
+            )
 
-    def _current_user(self, *, user_id: int = 1001, role: str = "member") -> CurrentUser:
-        return CurrentUser(id=user_id, role=role)
-
-    def _user(self, *, tenant_id=None, status="active", role="member"):
-        return SimpleNamespace(
-            id=1001,
-            role=role,
-            status=status,
-            tenant_id=tenant_id,
-            updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        self.assertEqual(caught.exception.status_code, 410)
+        self.assertEqual(
+            caught.exception.detail,
+            "LEGACY_MEMBER_TENANT_BINDING_RETIRED",
         )
 
-    def _tenant(self, *, status="active"):
-        return {
-            "tenant_id": 501,
-            "tenant_code": "TACTIVE001",
-            "name": "Kanglin West Lake Store",
-            "status": status,
-        }
+    async def test_active_member_binding_is_retired(self):
+        await self._assert_retired()
 
-    async def test_member_binds_active_tenant_successfully(self):
-        from app.modules.auth.service import bind_user_tenant
+    async def test_cross_user_path_does_not_restore_binding(self):
+        await self._assert_retired(path_user_id=2002)
 
-        session = self.FakeSession()
-        user = self._user()
+    async def test_org_admin_cannot_use_member_binding(self):
+        await self._assert_retired(role="org_admin")
 
-        with (
-            patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=user)),
-            patch("app.modules.auth.service.get_tenant_by_id_for_binding", new=AsyncMock(return_value=self._tenant())),
-            patch("app.modules.auth.service.update_user_tenant_binding", new=AsyncMock(return_value=user)) as update_mock,
-        ):
-            response = await bind_user_tenant(session, self._current_user(), 1001, self._payload())
+    async def test_missing_user_cannot_be_enumerated(self):
+        await self._assert_retired(path_user_id=9999)
 
-        self.assertEqual(response.user_id, 1001)
-        self.assertEqual(response.tenant_id, 501)
-        self.assertEqual(response.tenant_code, "TACTIVE001")
-        self.assertEqual(response.tenant_name, "Kanglin West Lake Store")
-        update_mock.assert_awaited_once()
-        self.assertTrue(session.commit_called)
-        self.assertFalse(session.rollback_called)
+    async def test_existing_tenant_binding_cannot_be_changed(self):
+        await self._assert_retired(tenant_id=900)
 
-    async def test_member_cannot_bind_other_user(self):
-        from app.modules.auth.service import bind_user_tenant
+    async def test_disabled_state_cannot_reenable_legacy_binding(self):
+        await self._assert_retired()
 
-        session = self.FakeSession()
-        user_mock = AsyncMock()
+    async def test_missing_tenant_cannot_be_enumerated(self):
+        await self._assert_retired(tenant_id=9999)
 
-        with patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=user_mock):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(user_id=1001), 2002, self._payload())
+    async def test_pending_tenant_cannot_be_bound(self):
+        await self._assert_retired(tenant_id=502)
 
-        self.assertEqual(context.exception.status_code, 403)
-        user_mock.assert_not_awaited()
-        self.assertFalse(session.commit_called)
-        self.assertFalse(session.rollback_called)
+    async def test_rejected_tenant_cannot_be_bound(self):
+        await self._assert_retired(tenant_id=503)
 
-    async def test_non_member_cannot_bind_tenant(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with self.assertRaises(HTTPException) as context:
-            await bind_user_tenant(session, self._current_user(role="org_admin"), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 403)
-        self.assertFalse(session.commit_called)
-        self.assertFalse(session.rollback_called)
-
-    async def test_user_not_found_returns_404(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=None)):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 404)
-        self.assertEqual(context.exception.detail, "User not found")
-        self.assertFalse(session.commit_called)
-        self.assertFalse(session.rollback_called)
-
-    async def test_already_bound_user_returns_409(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with patch(
-            "app.modules.auth.service.get_user_for_tenant_binding_update",
-            new=AsyncMock(return_value=self._user(tenant_id=900)),
-        ):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 409)
-        self.assertEqual(context.exception.detail, "User already bound to tenant")
-        self.assertFalse(session.commit_called)
-        self.assertFalse(session.rollback_called)
-
-    async def test_inactive_user_returns_403(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with patch(
-            "app.modules.auth.service.get_user_for_tenant_binding_update",
-            new=AsyncMock(return_value=self._user(status="disabled")),
-        ):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 403)
-        self.assertEqual(context.exception.detail, "Forbidden")
-
-    async def test_tenant_not_found_returns_404(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with (
-            patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=self._user())),
-            patch("app.modules.auth.service.get_tenant_by_id_for_binding", new=AsyncMock(return_value=None)),
-        ):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 404)
-        self.assertEqual(context.exception.detail, "Tenant not found")
-
-    async def test_pending_tenant_returns_409(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with (
-            patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=self._user())),
-            patch("app.modules.auth.service.get_tenant_by_id_for_binding", new=AsyncMock(return_value=self._tenant(status="pending"))),
-        ):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 409)
-        self.assertEqual(context.exception.detail, "Tenant is not active")
-
-    async def test_rejected_tenant_returns_409(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-
-        with (
-            patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=self._user())),
-            patch("app.modules.auth.service.get_tenant_by_id_for_binding", new=AsyncMock(return_value=self._tenant(status="rejected"))),
-        ):
-            with self.assertRaises(HTTPException) as context:
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertEqual(context.exception.status_code, 409)
-        self.assertEqual(context.exception.detail, "Tenant is not active")
-
-    async def test_integrity_error_rolls_back(self):
-        from app.modules.auth.service import bind_user_tenant
-
-        session = self.FakeSession()
-        integrity_error = IntegrityError("UPDATE user", {}, Exception("fk"))
-
-        with (
-            patch("app.modules.auth.service.get_user_for_tenant_binding_update", new=AsyncMock(return_value=self._user())),
-            patch("app.modules.auth.service.get_tenant_by_id_for_binding", new=AsyncMock(return_value=self._tenant())),
-            patch("app.modules.auth.service.update_user_tenant_binding", new=AsyncMock(side_effect=integrity_error)),
-        ):
-            with self.assertRaises(IntegrityError):
-                await bind_user_tenant(session, self._current_user(), 1001, self._payload())
-
-        self.assertFalse(session.commit_called)
-        self.assertTrue(session.rollback_called)
+    async def test_database_failures_are_not_reached_by_retired_service(self):
+        await self._assert_retired()

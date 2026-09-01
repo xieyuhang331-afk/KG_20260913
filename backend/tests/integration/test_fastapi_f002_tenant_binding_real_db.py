@@ -1,6 +1,5 @@
 import pytest
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -71,14 +70,10 @@ def test_f002_real_db_member_binds_active_tenant(real_db_client, pg_database):
         headers=_headers(user_id=user["id"]),
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["user_id"] == user["id"]
-    assert data["tenant_id"] == active_tenant_id
-    assert data["tenant_code"] == "TASK8ACTIVE"
-    assert data["tenant_name"] == "Kanglin Active Store"
-    assert data["bound_at"] is not None
-    assert _user_tenant_id(pg_database, user["id"]) == active_tenant_id
+    assert response.status_code == 410
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["code"] == "LEGACY_MEMBER_TENANT_BINDING_RETIRED"
+    assert _user_tenant_id(pg_database, user["id"]) is None
 
 
 def test_f002_real_db_pending_and_rejected_tenants_cannot_be_bound(real_db_client, pg_database):
@@ -97,8 +92,8 @@ def test_f002_real_db_pending_and_rejected_tenants_cannot_be_bound(real_db_clien
         headers=_headers(user_id=rejected_user["id"]),
     )
 
-    assert pending_response.status_code == 409
-    assert rejected_response.status_code == 409
+    assert pending_response.status_code == 410
+    assert rejected_response.status_code == 410
     assert _user_tenant_id(pg_database, pending_user["id"]) is None
     assert _user_tenant_id(pg_database, rejected_user["id"]) is None
 
@@ -120,10 +115,9 @@ def test_f002_real_db_duplicate_binding_does_not_overwrite(real_db_client, pg_da
         headers=_headers(user_id=user["id"]),
     )
 
-    assert first_response.status_code == 200
-    assert second_response.status_code == 409
-    assert second_response.json()["detail"] == "User already bound to tenant"
-    assert _user_tenant_id(pg_database, user["id"]) == first_tenant_id
+    assert first_response.status_code == 410
+    assert second_response.status_code == 410
+    assert _user_tenant_id(pg_database, user["id"]) is None
 
 
 def test_f002_real_db_tenant_binding_idor_is_blocked(real_db_client, pg_database):
@@ -137,7 +131,7 @@ def test_f002_real_db_tenant_binding_idor_is_blocked(real_db_client, pg_database
         headers=_headers(user_id=user_a["id"]),
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 410
     assert _user_tenant_id(pg_database, user_b["id"]) is None
 
 
@@ -151,5 +145,5 @@ def test_f002_real_db_non_member_cannot_bind_tenant(real_db_client, pg_database)
         headers=_headers(role="org_admin", user_id=user["id"]),
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 410
     assert _user_tenant_id(pg_database, user["id"]) is None

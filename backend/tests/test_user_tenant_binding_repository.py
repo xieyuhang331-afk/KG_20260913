@@ -57,17 +57,20 @@ class UserTenantBindingRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 
-    async def test_update_user_tenant_binding_writes_tenant_id_and_flushes(self):
+    async def test_update_user_tenant_binding_is_retired_without_write(self):
         from app.modules.auth.repository import update_user_tenant_binding
 
         user = SimpleNamespace(id=1001, tenant_id=None)
         session = self.FakeSession(None)
 
-        result = await update_user_tenant_binding(session, user, tenant_id=501)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "LEGACY_MEMBER_TENANT_BINDING_RETIRED",
+        ):
+            await update_user_tenant_binding(session, user, tenant_id=501)
 
-        self.assertIs(result, user)
-        self.assertEqual(user.tenant_id, 501)
-        self.assertTrue(session.flush_called)
+        self.assertIsNone(user.tenant_id)
+        self.assertFalse(session.flush_called)
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 

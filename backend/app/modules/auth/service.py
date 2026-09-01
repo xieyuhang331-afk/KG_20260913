@@ -8,15 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
-from app.core.permissions import ensure_can_access_own_user_resource
 from app.core.security import CurrentUser, create_access_token
 from app.modules.auth.repository import (
     create_user_record,
-    get_user_for_tenant_binding_update,
-    get_user_by_id,
     get_user_by_phone,
-    update_user_identity,
-    update_user_tenant_binding,
     user_exists_by_phone,
 )
 from app.modules.auth.schemas import (
@@ -24,20 +19,11 @@ from app.modules.auth.schemas import (
     AuthLoginResponse,
     AuthLoginUser,
     TenantBindingRequest,
-    TenantBindingResponse,
     UserIdentityRequest,
-    UserIdentityResponse,
     UserRegisterRequest,
     UserRegisterResponse,
 )
-from app.modules.tenant.repository import get_tenant_by_id_for_binding
 from app.modules.tenant.models import Tenant
-
-
-def mask_id_card(id_card: str) -> str:
-    if len(id_card) != 18 or not id_card.isdigit():
-        raise ValueError("Invalid id_card")
-    return f"{id_card[:6]}********{id_card[-4:]}"
 
 
 def hash_password(password: str) -> str:
@@ -256,31 +242,11 @@ async def submit_user_identity(
     current_user: CurrentUser,
     user_id: int,
     payload: UserIdentityRequest,
-) -> UserIdentityResponse:
-    ensure_can_access_own_user_resource(current_user, user_id)
-
-    user = await get_user_by_id(session, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        user = await update_user_identity(
-            session,
-            user,
-            real_name=payload.real_name,
-            id_card=payload.id_card,
-            verify_status="submitted",
-        )
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-
-    return UserIdentityResponse(
-        user_id=user.id,
-        real_name=user.real_name,
-        id_card_masked=mask_id_card(user.id_card),
-        verify_status=user.verify_status,
+) -> None:
+    del session, current_user, user_id, payload
+    raise HTTPException(
+        status_code=410,
+        detail="LEGACY_IDENTITY_ENDPOINT_RETIRED",
     )
 
 
@@ -289,34 +255,9 @@ async def bind_user_tenant(
     current_user: CurrentUser,
     user_id: int,
     payload: TenantBindingRequest,
-) -> TenantBindingResponse:
-    ensure_can_access_own_user_resource(current_user, user_id)
-
-    user = await get_user_for_tenant_binding_update(session, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.role != "member" or user.status != "active":
-        raise HTTPException(status_code=403, detail="Forbidden")
-    if user.tenant_id is not None:
-        raise HTTPException(status_code=409, detail="User already bound to tenant")
-
-    tenant = await get_tenant_by_id_for_binding(session, payload.tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    if tenant["status"] != "active":
-        raise HTTPException(status_code=409, detail="Tenant is not active")
-
-    try:
-        user = await update_user_tenant_binding(session, user, tenant_id=payload.tenant_id)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-
-    return TenantBindingResponse(
-        user_id=user.id,
-        tenant_id=tenant["tenant_id"],
-        tenant_code=tenant["tenant_code"],
-        tenant_name=tenant["name"],
-        bound_at=user.updated_at,
+) -> None:
+    del session, current_user, user_id, payload
+    raise HTTPException(
+        status_code=410,
+        detail="LEGACY_MEMBER_TENANT_BINDING_RETIRED",
     )
