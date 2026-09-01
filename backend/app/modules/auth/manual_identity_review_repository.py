@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timezone
-import hashlib
 from types import SimpleNamespace
 
-from sqlalchemy import select
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.eligibility_evidence_models import (
     IdentityVerificationEvidenceOrmModel,
     UserAccountClassificationEvidenceOrmModel,
+)
+from app.modules.auth.identity_submission_models import (
+    IdentityVerificationSubmissionOrmModel,
 )
 from app.modules.auth.identity_verification_authority import (
     ManualIdentityReviewAuthorityDecision,
@@ -23,13 +25,11 @@ from app.modules.auth.manual_identity_review_application import (
     PlatformAdminManualIdentityReviewUnavailable,
 )
 from app.modules.auth.models import User
-from app.modules.auth.identity_submission_models import IdentityVerificationSubmissionOrmModel
 from app.modules.auth.registration_outbox import (
     P1VerificationTransitionCommand,
 )
-from app.modules.tenant.models import Tenant
 from app.modules.system.models import OperationLog
-
+from app.modules.tenant.models import Tenant
 
 _WRITER_AUTHORITY = "P1_MANUAL_IDENTITY_REVIEW"
 
@@ -171,29 +171,24 @@ class SqlAlchemyManualIdentityReviewAuthorityPort:
                 "manual identity review prerequisites are not ready"
             )
 
-        evidence_digest = self._request.evidence_digest
-        if self._request.submission_version is not None:
-            if (
-                submission is None
-                or submission.status not in {"submitted", "verified"}
-                or submission.user_ref != self._user_ref
-                or self._request.decision_basis_code != "APPROVED_OFFLINE_IDENTITY_CHECK"
-            ):
-                raise PlatformAdminManualIdentityReviewConflict(
-                    "manual identity review submission is stale"
-                )
-            import hashlib
-            evidence_digest = hashlib.sha256(
-                (
-                    f"identity-submission-review:v1:{submission.submission_id}:"
-                    f"{submission.version}:{submission.content_digest}:"
-                    f"{self._request.decision_basis_code}"
-                ).encode()
-            ).hexdigest()
-        if evidence_digest is None:
+        if (
+            self._request.submission_version is None
+            or submission is None
+            or submission.status not in {"submitted", "verified"}
+            or submission.user_ref != self._user_ref
+            or self._request.decision_basis_code
+            != "APPROVED_OFFLINE_IDENTITY_CHECK"
+        ):
             raise PlatformAdminManualIdentityReviewConflict(
-                "manual identity review evidence is missing"
+                "manual identity review submission is stale"
             )
+        evidence_digest = hashlib.sha256(
+            (
+                f"identity-submission-review:v1:{submission.submission_id}:"
+                f"{submission.version}:{submission.content_digest}:"
+                f"{self._request.decision_basis_code}"
+            ).encode()
+        ).hexdigest()
 
         decision = ManualIdentityReviewAuthorityDecision(
             authority_source="manual_review",

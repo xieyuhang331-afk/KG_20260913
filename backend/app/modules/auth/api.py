@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from app.core.database import get_db_session
-from app.core.permissions import ensure_can_access_own_user_resource
 from app.core.responses import ok_response
 from app.core.security import (
     CurrentUser,
@@ -13,15 +15,14 @@ from app.core.security import (
 from app.modules.auth.schemas import (
     AuthLoginRequest,
     AuthMeResponse,
-    TenantBindingRequest,
-    UserIdentityRequest,
+    IdentityVerificationStatusResponse,
     IdentityVerificationSubmissionRequest,
     IdentityVerificationSubmissionResponse,
-    IdentityVerificationStatusResponse,
+    LegacyIdentityEndpointRetiredResponse,
+    LegacyMemberTenantBindingRetiredResponse,
     UserRegisterRequest,
 )
-from app.modules.auth.service import bind_user_tenant, login_user, register_user, submit_user_identity
-
+from app.modules.auth.service import login_user, register_user
 
 router = APIRouter(prefix="/api/v1/users", tags=["auth"])
 auth_router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -29,7 +30,9 @@ auth_router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 def _identity_submission_service(session):
     from app.composition.identity_submission import create_identity_submission_service
-    from app.modules.auth.identity_submission_crypto import IdentitySubmissionCryptoUnavailable
+    from app.modules.auth.identity_submission_crypto import (
+        IdentitySubmissionCryptoUnavailable,
+    )
 
     try:
         return create_identity_submission_service(session)
@@ -55,12 +58,67 @@ def _identity_submission_http_error(error):
     return HTTPException(status_code=503, detail="Identity verification service unavailable")
 
 
-@router.put("/me/identity-verification")
+_NO_STORE_RESPONSE = {
+    "headers": {
+        "Cache-Control": {
+            "description": "Sensitive identity responses are never cacheable.",
+            "schema": {"type": "string", "example": "no-store"},
+        }
+    }
+}
+
+
+_IDENTITY_INPUT_INVALID_RESPONSE = {
+    **_NO_STORE_RESPONSE,
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["code", "message"],
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "enum": ["IDENTITY_VERIFICATION_INPUT_INVALID"],
+                    },
+                    "message": {
+                        "type": "string",
+                        "enum": ["request rejected"],
+                    },
+                },
+            }
+        }
+    },
+}
+
+
+class IdentityVerificationSubmissionRoute(APIRoute):
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            try:
+                return await original(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "code": "IDENTITY_VERIFICATION_INPUT_INVALID",
+                        "message": "request rejected",
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+
+        return handler
+
+
 async def put_identity_verification_submission_api(
     payload: IdentityVerificationSubmissionRequest,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_db_session),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     try:
         result = await _identity_submission_service(session).submit(
             current_user=current_user, request=payload
@@ -78,11 +136,28 @@ async def put_identity_verification_submission_api(
     return ok_response(response.model_dump())
 
 
-@router.get("/me/identity-verification")
+router.add_api_route(
+    "/me/identity-verification",
+    put_identity_verification_submission_api,
+    methods=["PUT"],
+    responses={
+        200: _NO_STORE_RESPONSE,
+        422: _IDENTITY_INPUT_INVALID_RESPONSE,
+    },
+    route_class_override=IdentityVerificationSubmissionRoute,
+)
+
+
+@router.get(
+    "/me/identity-verification",
+    responses={200: _NO_STORE_RESPONSE},
+)
 async def get_identity_verification_status_api(
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_db_session),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     try:
         result = await _identity_submission_service(session).status(
             current_user=current_user
@@ -136,24 +211,41 @@ async def register_user_api(
     return ok_response(result.model_dump())
 
 
-@router.post("/{user_id}/identity")
+@router.post(
+    "/{user_id}/identity",
+    deprecated=True,
+    status_code=410,
+    response_model=LegacyIdentityEndpointRetiredResponse,
+    responses={410: _NO_STORE_RESPONSE},
+)
 async def submit_user_identity_api(
     user_id: int,
-    payload: UserIdentityRequest,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
-    session=Depends(get_db_session),
-) -> dict:
-    result = await submit_user_identity(session, current_user, user_id, payload)
-    return ok_response(result.model_dump())
+) -> LegacyIdentityEndpointRetiredResponse:
+    del user_id, current_user
+    response.headers["Cache-Control"] = "no-store"
+    return LegacyIdentityEndpointRetiredResponse(
+        code="LEGACY_IDENTITY_ENDPOINT_RETIRED",
+        message="request rejected",
+    )
 
 
-@router.post("/{user_id}/tenant-binding")
+@router.post(
+    "/{user_id}/tenant-binding",
+    deprecated=True,
+    status_code=410,
+    response_model=LegacyMemberTenantBindingRetiredResponse,
+    responses={410: _NO_STORE_RESPONSE},
+)
 async def bind_user_tenant_api(
     user_id: int,
-    payload: TenantBindingRequest,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
-    session=Depends(get_db_session),
-) -> dict:
-    ensure_can_access_own_user_resource(current_user, user_id)
-    result = await bind_user_tenant(session, current_user, user_id, payload)
-    return ok_response(result.model_dump())
+) -> LegacyMemberTenantBindingRetiredResponse:
+    del user_id, current_user
+    response.headers["Cache-Control"] = "no-store"
+    return LegacyMemberTenantBindingRetiredResponse(
+        code="LEGACY_MEMBER_TENANT_BINDING_RETIRED",
+        message="request rejected",
+    )

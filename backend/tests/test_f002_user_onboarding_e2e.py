@@ -51,8 +51,11 @@ def _profile_payload() -> dict:
 
 @pytest.fixture
 def e2e_state(monkeypatch):
-    from app.modules.auth.schemas import TenantBindingResponse, UserIdentityResponse, UserRegisterResponse
-    from app.modules.tenant.schemas import ActiveTenantListItem, ActiveTenantListResponse
+    from app.modules.auth.schemas import UserRegisterResponse
+    from app.modules.tenant.schemas import (
+        ActiveTenantListItem,
+        ActiveTenantListResponse,
+    )
     from app.modules.user_health.schemas import HealthProfileResponse
 
     state = {
@@ -95,22 +98,6 @@ def e2e_state(monkeypatch):
             verify_status=None,
             tenant_id=None,
             created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
-        )
-
-    async def submit_identity(session, current_user, user_id, payload):
-        if current_user.id != user_id or current_user.role != "member":
-            raise HTTPException(status_code=403, detail="Forbidden")
-        user = state["users"].get(user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        user["real_name"] = payload.real_name
-        user["id_card"] = payload.id_card
-        user["verify_status"] = "submitted"
-        return UserIdentityResponse(
-            user_id=user_id,
-            real_name=payload.real_name,
-            id_card_masked="110101********1234",
-            verify_status="submitted",
         )
 
     async def create_profile(session, *, user_id, payload):
@@ -170,34 +157,10 @@ def e2e_state(monkeypatch):
         ]
         return ActiveTenantListResponse(items=items, total=len(items), page=query.page, page_size=query.page_size)
 
-    async def bind_tenant(session, current_user, user_id, payload):
-        if current_user.id != user_id or current_user.role != "member":
-            raise HTTPException(status_code=403, detail="Forbidden")
-        user = state["users"].get(user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        if user["tenant_id"] is not None:
-            raise HTTPException(status_code=409, detail="User already bound to tenant")
-        tenant = state["tenants"].get(payload.tenant_id)
-        if tenant is None:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-        if tenant["status"] != "active":
-            raise HTTPException(status_code=409, detail="Tenant is not active")
-        user["tenant_id"] = payload.tenant_id
-        return TenantBindingResponse(
-            user_id=user_id,
-            tenant_id=payload.tenant_id,
-            tenant_code=tenant["tenant_code"],
-            tenant_name=tenant["name"],
-            bound_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
-        )
-
     monkeypatch.setattr("app.modules.auth.api.register_user", register_user)
-    monkeypatch.setattr("app.modules.auth.api.submit_user_identity", submit_identity)
     monkeypatch.setattr("app.modules.user_health.api.create_health_profile", create_profile)
     monkeypatch.setattr("app.modules.user_health.api.get_health_profile", get_profile)
     monkeypatch.setattr("app.modules.tenant.api.list_active_tenants", list_active_tenants)
-    monkeypatch.setattr("app.modules.auth.api.bind_user_tenant", bind_tenant)
     return state
 
 
@@ -219,11 +182,9 @@ def test_f002_user_onboarding_happy_path(monkeypatch, e2e_state):
         json={"real_name": "Zhang San", "id_card": "110101199001011234"},
         headers=_jwt_headers(user_id=user["id"]),
     )
-    assert identity_response.status_code == 200
-    identity = identity_response.json()["data"]
-    assert identity["verify_status"] == "submitted"
-    assert identity["id_card_masked"] == "110101********1234"
-    assert "id_card" not in identity
+    assert identity_response.status_code == 410
+    assert identity_response.json()["code"] == "LEGACY_IDENTITY_ENDPOINT_RETIRED"
+    assert e2e_state["users"][user["id"]]["id_card"] is None
 
     create_profile_response = client.post(
         f"/api/v1/users/{user['id']}/health-profile",
@@ -259,11 +220,9 @@ def test_f002_user_onboarding_happy_path(monkeypatch, e2e_state):
         json={"tenant_id": 501},
         headers=_jwt_headers(user_id=user["id"]),
     )
-    assert bind_response.status_code == 200
-    binding = bind_response.json()["data"]
-    assert binding["user_id"] == user["id"]
-    assert binding["tenant_id"] == 501
-    assert e2e_state["users"][user["id"]]["tenant_id"] == 501
+    assert bind_response.status_code == 410
+    assert bind_response.json()["code"] == "LEGACY_MEMBER_TENANT_BINDING_RETIRED"
+    assert e2e_state["users"][user["id"]]["tenant_id"] is None
 
 
 def test_f002_duplicate_registration_returns_409(monkeypatch, e2e_state):
@@ -306,10 +265,10 @@ def test_f002_idor_guards_do_not_mutate_target_user(monkeypatch, e2e_state):
         headers=_jwt_headers(user_id=user_a["id"]),
     )
 
-    assert identity.status_code == 403
+    assert identity.status_code == 410
     assert create_profile.status_code == 403
     assert query_profile.status_code == 403
-    assert bind_tenant.status_code == 403
+    assert bind_tenant.status_code == 410
     assert e2e_state["users"][user_b["id"]]["real_name"] is None
     assert user_b["id"] not in e2e_state["profiles"]
     assert e2e_state["users"][user_b["id"]]["tenant_id"] is None
@@ -337,8 +296,8 @@ def test_f002_duplicate_health_profile_returns_409(monkeypatch, e2e_state):
     assert list(e2e_state["profiles"]).count(user["id"]) == 1
 
 
-@pytest.mark.parametrize("tenant_id,expected_status", [(502, 409), (503, 409), (999999, 404)])
-def test_f002_tenant_binding_rejects_invalid_tenants(monkeypatch, e2e_state, tenant_id, expected_status):
+@pytest.mark.parametrize("tenant_id", [502, 503, 999999])
+def test_f002_tenant_binding_rejects_invalid_tenants(monkeypatch, e2e_state, tenant_id):
     client = _client(monkeypatch)
     user = client.post("/api/v1/users/register", json={"phone": f"13800139{tenant_id % 1000:03d}", "password": "Secret12345"}).json()[
         "data"
@@ -350,7 +309,7 @@ def test_f002_tenant_binding_rejects_invalid_tenants(monkeypatch, e2e_state, ten
         headers=_jwt_headers(user_id=user["id"]),
     )
 
-    assert response.status_code == expected_status
+    assert response.status_code == 410
     assert e2e_state["users"][user["id"]]["tenant_id"] is None
 
 
@@ -371,9 +330,9 @@ def test_f002_duplicate_tenant_binding_does_not_overwrite(monkeypatch, e2e_state
         headers=_jwt_headers(user_id=user["id"]),
     )
 
-    assert first.status_code == 200
-    assert second.status_code == 409
-    assert e2e_state["users"][user["id"]]["tenant_id"] == 501
+    assert first.status_code == 410
+    assert second.status_code == 410
+    assert e2e_state["users"][user["id"]]["tenant_id"] is None
 
 
 @pytest.mark.parametrize("role", ["org_admin", "super_admin", "province_admin", "city_admin"])
@@ -405,8 +364,8 @@ def test_f002_non_member_roles_are_forbidden(monkeypatch, e2e_state, role):
         headers=jwt_headers,
     )
 
-    assert identity.status_code == 403
+    assert identity.status_code == 410
     assert create_profile.status_code == 403
     assert query_profile.status_code == 403
     assert active_tenants.status_code == 403
-    assert bind_tenant.status_code == 403
+    assert bind_tenant.status_code == 410

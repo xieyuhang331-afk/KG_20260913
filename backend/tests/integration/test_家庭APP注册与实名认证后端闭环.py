@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
-
 
 pytestmark = pytest.mark.integration
 NOW = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
@@ -189,6 +188,16 @@ def test_本人提交查询管理员详情审计审核通过与幂等闭环(
         "outcome": "CREATED",
     }, "STAGE_SUBMIT_RESPONSE")
     _require_absent(created.text, _submission()["id_card"], "STAGE_SUBMIT_REDACTION")
+    account_projection = application_database.fetch_rows(
+        'SELECT real_name, id_card, verify_status, tenant_id FROM public."user" '
+        f"WHERE id={user_id}"
+    )[0]
+    assert account_projection == {
+        "real_name": None,
+        "id_card": None,
+        "verify_status": "submitted",
+        "tenant_id": None,
+    }, "STAGE_FORMAL_SUBMISSION_NO_LEGACY_PII"
 
     replay = real_db_client.put(
         "/api/v1/users/me/identity-verification",

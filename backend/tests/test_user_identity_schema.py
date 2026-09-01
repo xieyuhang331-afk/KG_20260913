@@ -38,17 +38,20 @@ class UserIdentitySchemaTests(unittest.TestCase):
                     UserIdentityRequest(real_name="Zhang San", id_card=value)
 
     def test_mask_id_card_masks_middle_digits(self):
-        from app.modules.auth.service import mask_id_card
+        from app.modules.auth.identity_document import mask_prc_resident_identity
 
-        self.assertEqual(mask_id_card("110101199001011234"), "110101********1234")
+        self.assertEqual(
+            mask_prc_resident_identity("11010519491231002x"),
+            "110105********002X",
+        )
 
     def test_mask_id_card_rejects_invalid_values(self):
-        from app.modules.auth.service import mask_id_card
+        from app.modules.auth.identity_document import mask_prc_resident_identity
 
         for value in ("", "11010119900101123", "1101011990010112345", "11010119900101123A"):
             with self.subTest(id_card=value):
                 with self.assertRaises(ValueError):
-                    mask_id_card(value)
+                    mask_prc_resident_identity(value)
 
     def test_identity_response_contains_only_safe_fields(self):
         from app.modules.auth.schemas import UserIdentityResponse

@@ -9,6 +9,11 @@ from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from app.modules.auth.identity_document import (
+    canonicalize_prc_resident_identity,
+    mask_prc_resident_identity,
+)
+
 
 class IdentitySubmissionCryptoUnavailable(RuntimeError):
     pass
@@ -74,6 +79,8 @@ class IdentitySubmissionCrypto:
             ) from None
 
     def digest(self, domain: str, value: str) -> str:
+        if domain == "id-card":
+            value = canonicalize_prc_resident_identity(value)
         return hmac.new(
             self._hmac_key,
             f"identity-submission:{domain}:v1:{value}".encode(),
@@ -82,4 +89,4 @@ class IdentitySubmissionCrypto:
 
 
 def mask_id_card(id_card: str) -> str:
-    return f"{id_card[:6]}********{id_card[-4:]}"
+    return mask_prc_resident_identity(id_card)

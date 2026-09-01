@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -187,11 +186,8 @@ def test_f002_real_db_full_user_onboarding_happy_path(real_db_client, pg_databas
         json={"real_name": "Zhang San", "id_card": "110101199001011234"},
         headers=_member_headers(user["id"]),
     )
-    assert identity_response.status_code == 200
-    identity = identity_response.json()["data"]
-    assert identity["verify_status"] == "submitted"
-    assert identity["id_card_masked"] == "110101********1234"
-    assert "id_card" not in identity
+    assert identity_response.status_code == 410
+    assert identity_response.json()["code"] == "LEGACY_IDENTITY_ENDPOINT_RETIRED"
 
     create_profile_response = real_db_client.post(
         f"/api/v1/users/{user['id']}/health-profile",
@@ -235,17 +231,17 @@ def test_f002_real_db_full_user_onboarding_happy_path(real_db_client, pg_databas
         json={"tenant_id": active_tenant_id},
         headers=_member_headers(user["id"]),
     )
-    assert bind_response.status_code == 200
-    assert bind_response.json()["data"]["tenant_id"] == active_tenant_id
+    assert bind_response.status_code == 410
+    assert bind_response.json()["code"] == "LEGACY_MEMBER_TENANT_BINDING_RETIRED"
 
     db_user = _fetch_user(pg_database, user["id"])
     assert db_user["role"] == "member"
     assert db_user["status"] == "active"
     assert db_user["password_hash"] != "Secret12345"
-    assert db_user["real_name"] == "Zhang San"
-    assert db_user["id_card"] == "110101199001011234"
-    assert db_user["verify_status"] == "submitted"
-    assert db_user["tenant_id"] == active_tenant_id
+    assert db_user["real_name"] is None
+    assert db_user["id_card"] is None
+    assert db_user["verify_status"] is None
+    assert db_user["tenant_id"] is None
 
     db_profile = _fetch_health_profile(pg_database, user["id"])
     assert db_profile["user_id"] == user["id"]
@@ -291,10 +287,10 @@ def test_f002_real_db_idor_guards_do_not_mutate_target_user(real_db_client, pg_d
         headers=_member_headers(user_a["id"]),
     )
 
-    assert identity.status_code == 403
+    assert identity.status_code == 410
     assert create_profile.status_code == 403
     assert query_profile.status_code == 403
-    assert bind.status_code == 403
+    assert bind.status_code == 410
     db_user_b = _fetch_user(pg_database, user_b["id"])
     assert db_user_b["real_name"] is None
     assert db_user_b["id_card"] is None
@@ -357,15 +353,15 @@ def test_f002_real_db_tenant_binding_guards(real_db_client, pg_database):
         headers=_member_headers(duplicate_user["id"]),
     )
 
-    assert pending.status_code == 409
-    assert rejected.status_code == 409
-    assert missing.status_code == 404
-    assert first_binding.status_code == 200
-    assert second_binding.status_code == 409
+    assert pending.status_code == 410
+    assert rejected.status_code == 410
+    assert missing.status_code == 410
+    assert first_binding.status_code == 410
+    assert second_binding.status_code == 410
     assert _fetch_user(pg_database, pending_user["id"])["tenant_id"] is None
     assert _fetch_user(pg_database, rejected_user["id"])["tenant_id"] is None
     assert _fetch_user(pg_database, missing_tenant_user["id"])["tenant_id"] is None
-    assert _fetch_user(pg_database, duplicate_user["id"])["tenant_id"] == active_tenant_id
+    assert _fetch_user(pg_database, duplicate_user["id"])["tenant_id"] is None
 
 
 @pytest.mark.parametrize("role", ["org_admin", "super_admin", "province_admin", "city_admin"])
@@ -392,11 +388,11 @@ def test_f002_real_db_non_member_roles_are_forbidden(real_db_client, pg_database
         headers=headers,
     )
 
-    assert identity.status_code == 403
+    assert identity.status_code == 410
     assert create_profile.status_code == 403
     assert query_profile.status_code == 403
     assert active_tenants.status_code == 403
-    assert bind_tenant.status_code == 403
+    assert bind_tenant.status_code == 410
     assert _fetch_user(pg_database, user["id"])["tenant_id"] is None
 
 
@@ -433,6 +429,6 @@ def test_f001_approved_tenant_can_be_consumed_by_f002_binding(real_db_client, pg
         headers=_member_headers(member["id"]),
     )
 
-    assert bind_response.status_code == 200
-    assert _fetch_user(pg_database, member["id"])["tenant_id"] == tenant_id
+    assert bind_response.status_code == 410
+    assert _fetch_user(pg_database, member["id"])["tenant_id"] is None
     assert _operation_log_count(pg_database, tenant_id) == before_log_count

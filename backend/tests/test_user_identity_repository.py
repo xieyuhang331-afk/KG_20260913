@@ -27,7 +27,7 @@ class UserIdentityRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, user)
         self.assertTrue(session.execute_called)
 
-    async def test_update_user_identity_updates_fields_and_flushes(self):
+    async def test_update_user_identity_is_retired_without_plaintext_write(self):
         from app.modules.auth.models import User
         from app.modules.auth.repository import update_user_identity
 
@@ -53,19 +53,19 @@ class UserIdentityRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 self.rollback_called = True
 
         session = FakeSession()
-        result = await update_user_identity(
-            session,
-            user,
-            real_name="Zhang San",
-            id_card="110101199001011234",
-            verify_status="submitted",
-        )
+        with self.assertRaisesRegex(RuntimeError, "LEGACY_IDENTITY_ENDPOINT_RETIRED"):
+            await update_user_identity(
+                session,
+                user,
+                real_name="Zhang San",
+                id_card="110101199001011234",
+                verify_status="submitted",
+            )
 
-        self.assertIs(result, user)
-        self.assertEqual(user.real_name, "Zhang San")
-        self.assertEqual(user.id_card, "110101199001011234")
-        self.assertEqual(user.verify_status, "submitted")
-        self.assertTrue(session.flush_called)
+        self.assertIsNone(user.real_name)
+        self.assertIsNone(user.id_card)
+        self.assertIsNone(user.verify_status)
+        self.assertFalse(session.flush_called)
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 

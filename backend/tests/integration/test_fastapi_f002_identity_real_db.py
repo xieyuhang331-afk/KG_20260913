@@ -1,6 +1,5 @@
 import pytest
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -48,21 +47,17 @@ def test_f002_real_db_member_submits_identity(real_db_client, pg_database):
         headers=_member_headers(user["id"]),
     )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data == {
-        "user_id": user["id"],
-        "real_name": "Zhang San",
-        "id_card_masked": "110101********1234",
-        "verify_status": "submitted",
+    assert response.status_code == 410
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "code": "LEGACY_IDENTITY_ENDPOINT_RETIRED",
+        "message": "request rejected",
     }
-    assert "id_card" not in data
-    assert "password_hash" not in data
 
     db_user = _fetch_identity(pg_database, user["id"])
-    assert db_user["real_name"] == "Zhang San"
-    assert db_user["id_card"] == "110101199001011234"
-    assert db_user["verify_status"] == "submitted"
+    assert db_user["real_name"] is None
+    assert db_user["id_card"] is None
+    assert db_user["verify_status"] is None
 
 
 def test_f002_real_db_identity_idor_is_blocked(real_db_client, pg_database):
@@ -75,7 +70,7 @@ def test_f002_real_db_identity_idor_is_blocked(real_db_client, pg_database):
         headers=_member_headers(user_a["id"]),
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 410
     db_user_b = _fetch_identity(pg_database, user_b["id"])
     assert db_user_b["real_name"] is None
     assert db_user_b["id_card"] is None
@@ -89,5 +84,6 @@ def test_f002_real_db_identity_user_not_found_returns_404(real_db_client):
         headers=_member_headers(99999999),
     )
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "User not found"
+    assert response.status_code == 410
+    assert response.json()["code"] == "LEGACY_IDENTITY_ENDPOINT_RETIRED"
+    assert "99999999" not in response.text

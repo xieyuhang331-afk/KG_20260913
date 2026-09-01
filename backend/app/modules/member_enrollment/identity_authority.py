@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
@@ -8,6 +7,10 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.modules.auth.identity_document import (
+    canonicalize_prc_resident_identity,
+    parse_prc_resident_identity_birth_date,
+)
 from app.modules.auth.identity_submission_crypto import (
     EncryptedIdentityValue,
     IdentitySubmissionCrypto,
@@ -16,29 +19,10 @@ from app.modules.auth.identity_submission_crypto import (
 from app.modules.member_enrollment.ports import VerifiedIdentitySummaryV2
 
 
-_PRC_ID_RE = re.compile(r"^[0-9]{17}[0-9X]$", re.ASCII)
-_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
-_CHECK_CODES = "10X98765432"
-
-
-def parse_prc_resident_identity_birth_date(value: str) -> date:
-    if type(value) is not str or _PRC_ID_RE.fullmatch(value) is None:
-        raise ValueError("IDENTITY_DOCUMENT_INVALID")
-    expected = _CHECK_CODES[
-        sum(int(digit) * weight for digit, weight in zip(value[:17], _WEIGHTS)) % 11
-    ]
-    if value[-1] != expected:
-        raise ValueError("IDENTITY_DOCUMENT_INVALID")
-    try:
-        return date(int(value[6:10]), int(value[10:12]), int(value[12:14]))
-    except ValueError:
-        raise ValueError("IDENTITY_DOCUMENT_INVALID") from None
-
-
 def parse_prc_resident_identity_gender(value: str) -> str:
     """Return the PRC resident identity gender marker after full validation."""
-    parse_prc_resident_identity_birth_date(value)
-    return "MALE" if int(value[16]) % 2 else "FEMALE"
+    canonical = canonicalize_prc_resident_identity(value)
+    return "MALE" if int(canonical[16]) % 2 else "FEMALE"
 
 
 def verified_adult_on(birth_date: date, as_of: date) -> bool:

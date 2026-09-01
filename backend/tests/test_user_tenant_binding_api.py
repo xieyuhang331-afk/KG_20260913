@@ -1,18 +1,9 @@
 import unittest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
 class UserTenantBindingApiTests(unittest.TestCase):
-    def _headers(self, *, user_id: int = 1001, role: str = "member") -> dict:
-        return {
-            "x-user-id": str(user_id),
-            "x-user-role": role,
-        }
-
     def _jwt_headers(
         self,
         *,
@@ -29,152 +20,90 @@ class UserTenantBindingApiTests(unittest.TestCase):
         return {"Authorization": f"Bearer {token}"}
 
     def _client(self):
-        from app.core.database import get_db_session
         from app.main import create_app
 
-        app = create_app()
+        return TestClient(create_app())
 
-        class FakeSession:
-            pass
-
-        session = FakeSession()
-
-        async def fake_session():
-            yield session
-
-        app.dependency_overrides[get_db_session] = fake_session
-        return TestClient(app), session
-
-    def _service_response(self):
-        from app.modules.auth.schemas import TenantBindingResponse
-
-        return TenantBindingResponse(
-            user_id=1001,
-            tenant_id=501,
-            tenant_code="TACTIVE001",
-            tenant_name="Kanglin West Lake Store",
-            bound_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+    def _assert_retired(self, response) -> None:
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(
+            response.json(),
+            {
+                "code": "LEGACY_MEMBER_TENANT_BINDING_RETIRED",
+                "message": "request rejected",
+            },
         )
 
     def test_router_registers_tenant_binding(self):
-        client, _ = self._client()
-
-        response = client.get("/openapi.json")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("/api/v1/users/{user_id}/tenant-binding", response.json()["paths"])
-        self.assertIn("post", response.json()["paths"]["/api/v1/users/{user_id}/tenant-binding"])
+        document = self._client().get("/openapi.json").json()
+        operation = document["paths"]["/api/v1/users/{user_id}/tenant-binding"]["post"]
+        self.assertTrue(operation["deprecated"])
+        self.assertIn("410", operation["responses"])
 
     def test_member_binds_own_tenant_successfully(self):
-        client, session = self._client()
-
-        async def bind(session_arg, current_user, user_id, payload):
-            self.assertIs(session_arg, session)
-            self.assertEqual(current_user.id, 1001)
-            self.assertEqual(current_user.role, "member")
-            self.assertEqual(current_user.tenant_id, 301)
-            self.assertEqual(user_id, 1001)
-            self.assertEqual(payload.tenant_id, 501)
-            return self._service_response()
-
-        with patch("app.modules.auth.api.bind_user_tenant", new=AsyncMock(side_effect=bind)):
-            response = client.post(
-                "/api/v1/users/1001/tenant-binding",
-                json={"tenant_id": 501},
-                headers=self._jwt_headers(user_id=1001, tenant_id=301),
-            )
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["data"]
-        self.assertEqual(data["user_id"], 1001)
-        self.assertEqual(data["tenant_id"], 501)
-        self.assertEqual(data["tenant_code"], "TACTIVE001")
-        self.assertEqual(data["tenant_name"], "Kanglin West Lake Store")
-        self.assertNotIn("password_hash", data)
-        self.assertNotIn("id_card", data)
-        self.assertNotIn("real_name", data)
-        self.assertNotIn("credit_code", data)
-        self.assertNotIn("license_no", data)
-        self.assertNotIn("org_id", data)
+        response = self._client().post(
+            "/api/v1/users/1001/tenant-binding",
+            json={"tenant_id": 501},
+            headers=self._jwt_headers(user_id=1001, tenant_id=301),
+        )
+        self._assert_retired(response)
 
     def test_member_cannot_bind_other_user(self):
-        client, _ = self._client()
-        service_mock = AsyncMock()
-
-        with patch("app.modules.auth.api.bind_user_tenant", new=service_mock):
-            response = client.post(
-                "/api/v1/users/2002/tenant-binding",
-                json={"tenant_id": 501},
-                headers=self._jwt_headers(user_id=1001),
-            )
-
-        self.assertEqual(response.status_code, 403)
-        service_mock.assert_not_awaited()
+        response = self._client().post(
+            "/api/v1/users/2002/tenant-binding",
+            json={"tenant_id": 501},
+            headers=self._jwt_headers(user_id=1001),
+        )
+        self._assert_retired(response)
+        self.assertNotIn("2002", response.text)
 
     def test_non_member_cannot_bind_tenant(self):
-        for role in ("org_admin", "super_admin", "province_admin", "city_admin"):
+        roles = ("org_admin", "therapist", "super_admin", "province_admin", "city_admin")
+        for role in roles:
             with self.subTest(role=role):
-                client, _ = self._client()
-                service_mock = AsyncMock()
-
-                with patch("app.modules.auth.api.bind_user_tenant", new=service_mock):
-                    response = client.post(
-                        "/api/v1/users/1001/tenant-binding",
-                        json={"tenant_id": 501},
-                        headers=self._jwt_headers(user_id=1001, role=role),
-                    )
-
-                self.assertEqual(response.status_code, 403)
-                service_mock.assert_not_awaited()
+                response = self._client().post(
+                    "/api/v1/users/1001/tenant-binding",
+                    json={"tenant_id": 501},
+                    headers=self._jwt_headers(user_id=1001, role=role),
+                )
+                self._assert_retired(response)
 
     def test_invalid_path_and_body_return_422(self):
-        client, _ = self._client()
-
-        path_response = client.post(
+        path_response = self._client().post(
             "/api/v1/users/bad/tenant-binding",
             json={"tenant_id": 501},
             headers=self._jwt_headers(),
         )
-        body_response = client.post(
+        body_response = self._client().post(
             "/api/v1/users/1001/tenant-binding",
             json={},
             headers=self._jwt_headers(),
         )
-        invalid_tenant_response = client.post(
+        invalid_tenant_response = self._client().post(
             "/api/v1/users/1001/tenant-binding",
             json={"tenant_id": 0},
             headers=self._jwt_headers(),
         )
-
         self.assertEqual(path_response.status_code, 422)
-        self.assertEqual(body_response.status_code, 422)
-        self.assertEqual(invalid_tenant_response.status_code, 422)
+        self._assert_retired(body_response)
+        self._assert_retired(invalid_tenant_response)
 
     def test_service_404_and_409_are_propagated(self):
-        for status_code, detail in ((404, "Tenant not found"), (409, "Tenant is not active")):
-            with self.subTest(status_code=status_code):
-                client, _ = self._client()
-
-                with patch(
-                    "app.modules.auth.api.bind_user_tenant",
-                    new=AsyncMock(side_effect=HTTPException(status_code=status_code, detail=detail)),
-                ):
-                    response = client.post(
-                        "/api/v1/users/1001/tenant-binding",
-                        json={"tenant_id": 501},
-                        headers=self._jwt_headers(),
-                    )
-
-                self.assertEqual(response.status_code, status_code)
-                self.assertEqual(response.json()["detail"], detail)
+        for user_id in (1001, 99999999):
+            with self.subTest(user_id=user_id):
+                response = self._client().post(
+                    f"/api/v1/users/{user_id}/tenant-binding",
+                    json={"tenant_id": 99999999},
+                    headers=self._jwt_headers(),
+                )
+                self._assert_retired(response)
+                self.assertNotIn("99999999", response.text)
 
     def test_missing_token_returns_401(self):
-        client, _ = self._client()
-
-        response = client.post(
+        response = self._client().post(
             "/api/v1/users/1001/tenant-binding",
             json={"tenant_id": 501},
         )
-
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"], "Authentication required")

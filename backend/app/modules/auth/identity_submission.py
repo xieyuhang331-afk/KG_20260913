@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+from app.modules.auth.identity_document import canonicalize_prc_resident_identity
 from app.modules.auth.identity_submission_crypto import (
     IdentitySubmissionCrypto,
     mask_id_card,
@@ -57,9 +58,12 @@ class IdentitySubmissionService:
             idempotency_digest = self._crypto.digest(
                 "idempotency", request.idempotency_key
             )
+            canonical_id_card = canonicalize_prc_resident_identity(
+                request.id_card
+            )
             content_digest = self._crypto.digest(
                 "content",
-                f"{request.real_name}\x1f{request.id_card}\x1f{request.consent_version}",
+                f"{request.real_name}\x1f{canonical_id_card}\x1f{request.consent_version}",
             )
             existing = await self._repository.find_by_idempotency(
                 current_user.id, idempotency_digest
@@ -98,7 +102,7 @@ class IdentitySubmissionService:
                 version=version, field="id_card", key_id=self._crypto.key_id,
             )
             encrypted_name = self._crypto.encrypt(request.real_name, aad=name_aad)
-            encrypted_card = self._crypto.encrypt(request.id_card, aad=card_aad)
+            encrypted_card = self._crypto.encrypt(canonical_id_card, aad=card_aad)
             await self._repository.mark_user_submitted(current_user.id)
             model = await self._repository.add(
                 submission_id=submission_id,
@@ -106,10 +110,10 @@ class IdentitySubmissionService:
                 version=version,
                 real_name=encrypted_name,
                 id_card=encrypted_card,
-                id_card_masked=mask_id_card(request.id_card),
+                id_card_masked=mask_id_card(canonical_id_card),
                 key_id=self._crypto.key_id,
                 content_digest=content_digest,
-                id_card_digest=self._crypto.digest("id-card", request.id_card),
+                id_card_digest=self._crypto.digest("id-card", canonical_id_card),
                 idempotency_digest=idempotency_digest,
                 consent_version=request.consent_version,
                 submitted_at=now,
