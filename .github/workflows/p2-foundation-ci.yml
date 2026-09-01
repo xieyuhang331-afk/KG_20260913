@@ -65,12 +65,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          python-version: '3.11.16'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.7'
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
 
       - name: Install test dependencies
-        run: python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0
+        run: |
+          uv lock --check
+          grep -Fq 'pytest-asyncio==1.4.0' pyproject.toml
+          uv sync --frozen --all-groups --python 3.11.16
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Enforce Python lock and Ruff no-new-debt gates
+        run: |
+          uv run --frozen python -m pytest tests/test_工程质量Ruff与依赖锁门禁.py -q
+          uv run --frozen ruff check app tests --select E9,F821
 
       - name: Generate process-only test secrets
         shell: bash
@@ -98,12 +112,50 @@ jobs:
       - name: Run non-database regression
         run: python -m pytest tests --ignore=tests/integration --ignore=tests/uuid_validation -q --junitxml=pytest-report.xml
 
+      - name: Record D1 toolchain evidence
+        shell: bash
+        run: |
+          uv run --frozen python - <<'PY'
+          import hashlib
+          import os
+          import platform
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          lock_hash = hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest().upper()
+          fields = {
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "python_exact_version": platform.python_version(),
+              "python_cache_tag": sys.implementation.cache_tag,
+              "uv_version": subprocess.check_output(["uv", "--version"], text=True).strip(),
+              "ruff_version": subprocess.check_output(["ruff", "--version"], text=True).strip(),
+              "pyproject_sha256": hashlib.sha256(Path("pyproject.toml").read_bytes()).hexdigest().upper(),
+              "uv_lock_sha256": lock_hash,
+              "resolution_graph_sha256": lock_hash,
+              "ruff_baseline_sha256": hashlib.sha256(Path("ruff基线_V1.json").read_bytes()).hexdigest().upper(),
+              "runner_os": os.environ.get("RUNNER_OS", "unknown"),
+              "runner_image": os.environ.get("ImageOS", "unknown"),
+              "runner_image_version": os.environ.get("ImageVersion", "unknown"),
+              "uv_lock_check_exit": "0",
+              "uv_sync_frozen_exit": "0",
+              "ruff_gate_exit": "0",
+              "pytest_exit": "0",
+          }
+          Path("d1-toolchain-evidence.txt").write_text(
+              "".join(f"{name}={value}\n" for name, value in fields.items()),
+              encoding="utf-8",
+          )
+          PY
+
       - name: Upload backend test report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-pytest-report
-          path: backend/pytest-report.xml
+          path: |
+            backend/pytest-report.xml
+            backend/d1-toolchain-evidence.txt
           if-no-files-found: warn
           retention-days: 14
 
@@ -142,12 +194,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          python-version: '3.11.16'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.12.7'
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
 
       - name: Install test dependencies
-        run: python -m pip install -e . pytest==9.1.1 pytest-asyncio==1.4.0
+        run: |
+          uv lock --check
+          grep -Fq 'pytest-asyncio==1.4.0' pyproject.toml
+          uv sync --frozen --all-groups --python 3.11.16
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Prepare masked ephemeral integration configuration
         shell: bash
