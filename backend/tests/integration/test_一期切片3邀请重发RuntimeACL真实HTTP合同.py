@@ -1,11 +1,15 @@
 import os
 import secrets
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from alembic import command
 
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
+from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
+    _activate_org_admin_for_test,
+    _login,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -20,44 +24,40 @@ EXISTING_COLUMNS = (
 )
 
 
-def _seed_active_institution(pg_database) -> tuple[str, str]:
+def _seed_active_institution(pg_database, real_db_client) -> tuple[str, str, str]:
     from app.core.uuid_generator import Uuid7Generator
-    from app.modules.auth.service import hash_password
 
     tenant_id = 97301
-    user_id = 97302
     org_id = 97303
     phone = "13" + "9" + ("3" * 8)
     password = secrets.token_urlsafe(24)
-    password_hash = hash_password(password).replace("'", "''")
     tenant_public_id = Uuid7Generator().generate()
-    institution_invitation_id = uuid4()
-    institution_application_id = uuid4()
     pg_database.execute(
         "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
         f"VALUES ({org_id},NULL,'ACL county','ACL-COUNTY','county','active',1);"
         "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
-        f"VALUES ({tenant_id},{org_id},'ACL-TENANT','ACL institution','store','test','test','active',now(),now());"
-        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
-        f"VALUES ({user_id},'13' || '9' || repeat('3',8),'{password_hash}','org_admin','active',{tenant_id});"
-        "INSERT INTO public.institution_invitation("
-        "invitation_id,institution_name,institution_type,applicant_phone_ciphertext,applicant_phone_digest,"
-        "pilot_batch_code,administrative_region_id,code_digest,status,failed_attempts,expires_at,issued_by,issued_at,activated_at,version) VALUES ("
-        f"'{institution_invitation_id}','ACL institution','HEALTH_STORE',decode('00','hex'),repeat('a',64),"
-        f"'ACL',{org_id},repeat('b',64),'ACTIVATED',0,now()+interval '1 day',{user_id},now(),now(),1);"
-        "INSERT INTO public.institution_application("
-        "application_id,invitation_id,applicant_user_id,institution_type,status,draft_payload,correction_fields,"
-        "current_revision_no,tenant_internal_id,tenant_public_id,service_ready,created_at,updated_at,submitted_at,reviewed_at,version) VALUES ("
-        f"'{institution_application_id}','{institution_invitation_id}',{user_id},'HEALTH_STORE','APPROVED',"
-        f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
-        f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+        f"VALUES ({tenant_id},{org_id},'ACL-TENANT','ACL institution','store','test','test','active',now(),now())"
+    )
+    activated = _activate_org_admin_for_test(
+        pg_database,
+        real_db_client,
+        phone=phone,
+        password=password,
+        org_id=org_id,
+        tenant_id=tenant_id,
+        tenant_public_id=tenant_public_id,
+        institution_name="ACL institution",
+        pilot_batch_code="ACL",
+        service_tags=("GLUCOSE_METABOLISM",),
+    )
+    pg_database.execute(
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,"
         "evidence_version,input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("
         f"{tenant_id},'SERVICE_READY',ARRAY[]::text[],1,now(),1,repeat('c',64),repeat('d',64),"
         "'{}'::jsonb,current_date+30,1)"
     )
-    return phone, password
+    return phone, password, str(activated["totp_secret"])
 
 
 def _resend_counts(pg_database, invitation_id: UUID, idempotency_key: str) -> tuple[int, ...]:
@@ -121,13 +121,15 @@ def test_真实Runtime邀请重发与幂等及陈旧版本闭环(
     pg_database,
     real_db_client,
 ) -> None:
-    phone, password = _seed_active_institution(pg_database)
-    login = real_db_client.post(
-        "/api/v1/auth/login",
-        json={"phone": phone, "password": password},
+    phone, password, totp_secret = _seed_active_institution(
+        pg_database, real_db_client
     )
-    assert login.status_code == 200
-    authorization = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+    authorization = _login(
+        real_db_client,
+        phone,
+        password,
+        totp_secret=totp_secret,
+    )
     created = real_db_client.post(
         "/api/v1/institution/member-invitations",
         headers={**authorization, "Idempotency-Key": "acl-create-invitation"},

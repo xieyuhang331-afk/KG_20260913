@@ -17,6 +17,7 @@ from alembic import command
 
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
 from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
+    _activate_org_admin_for_test,
     _create_accepted_self_enrollment,
     _login,
     _synthetic_prc_identity,
@@ -255,12 +256,11 @@ def _direct_platform_decision(
     return asyncio.run(run())
 
 
-def _seed_real_journey_actors(pg_database) -> dict[str, object]:
+def _seed_real_journey_actors(pg_database, real_db_client) -> dict[str, object]:
     from app.core.uuid_generator import Uuid7Generator
     from app.modules.auth.service import hash_password
 
     tenant_id = 98601
-    admin_user_id = 98602
     member_user_id = 98603
     reviewer_user_id = 98604
     org_id = 98605
@@ -276,7 +276,6 @@ def _seed_real_journey_actors(pg_database) -> dict[str, object]:
     reviewer_password = secrets.token_urlsafe(24)
     other_reviewer_password = secrets.token_urlsafe(24)
     values = {
-        "admin_password_hash": hash_password(admin_password).replace("'", "''"),
         "member_password_hash": hash_password(member_password).replace("'", "''"),
         "reviewer_password_hash": hash_password(reviewer_password).replace("'", "''"),
         "other_reviewer_password_hash": hash_password(other_reviewer_password).replace("'", "''"),
@@ -285,9 +284,22 @@ def _seed_real_journey_actors(pg_database) -> dict[str, object]:
         "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
         f"VALUES ({org_id},NULL,'PII journey county','PII-JOURNEY-COUNTY','county','active',1);"
         "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
-        f"VALUES ({tenant_id},{org_id},'PII-JOURNEY-TENANT','PII journey institution','store','test','test','active',now(),now());"
+        f"VALUES ({tenant_id},{org_id},'PII-JOURNEY-TENANT','PII journey institution','store','test','test','active',now(),now())"
+    )
+    activated = _activate_org_admin_for_test(
+        pg_database,
+        real_db_client,
+        phone=admin_phone,
+        password=admin_password,
+        org_id=org_id,
+        tenant_id=tenant_id,
+        tenant_public_id=tenant_public_id,
+        institution_name="PII journey institution",
+        pilot_batch_code="PII-JOURNEY",
+        service_tags=("GLUCOSE_METABOLISM",),
+    )
+    pg_database.execute(
         "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) VALUES "
-        f"({admin_user_id},'{admin_phone}','{values['admin_password_hash']}','org_admin','active',{tenant_id}),"
         f"({member_user_id},'{member_phone}','{values['member_password_hash']}','member','active',NULL),"
         f"({reviewer_user_id},'{reviewer_phone}','{values['reviewer_password_hash']}','super_admin','active',NULL),"
         f"({other_reviewer_user_id},'{other_reviewer_phone}','{values['other_reviewer_password_hash']}','super_admin','active',NULL);"
@@ -298,19 +310,6 @@ def _seed_real_journey_actors(pg_database) -> dict[str, object]:
         "establishment_record_ref,created_at) VALUES ("
         f"'{uuid4()}',{member_user_id},'{member_id}','REGISTRATION_VERIFIED','{uuid4()}',"
         f"'REGISTRATION_VERIFIED_BOOTSTRAP','{uuid4()}',now());"
-        "INSERT INTO public.institution_invitation("
-        "invitation_id,institution_name,institution_type,applicant_phone_ciphertext,applicant_phone_digest,"
-        "pilot_batch_code,administrative_region_id,code_digest,status,failed_attempts,expires_at,issued_by,issued_at,activated_at,version) VALUES ("
-        f"'{uuid4()}','PII journey institution','HEALTH_STORE',decode('00','hex'),repeat('a',64),"
-        f"'PII-JOURNEY',{org_id},repeat('b',64),'ACTIVATED',0,now()+interval '1 day',{admin_user_id},now(),now(),1);"
-        "INSERT INTO public.institution_application("
-        "application_id,invitation_id,applicant_user_id,institution_type,status,draft_payload,correction_fields,"
-        "current_revision_no,tenant_internal_id,tenant_public_id,service_ready,created_at,updated_at,submitted_at,reviewed_at,version) "
-        "SELECT "
-        f"'{uuid4()}',invitation_id,{admin_user_id},'HEALTH_STORE','APPROVED',"
-        f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
-        f"'{tenant_public_id}',false,now(),now(),now(),now(),3 "
-        "FROM public.institution_invitation WHERE issued_by=" + str(admin_user_id) + ";"
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,evidence_version,"
         "input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("
@@ -320,6 +319,7 @@ def _seed_real_journey_actors(pg_database) -> dict[str, object]:
     return {
         "admin_phone": admin_phone,
         "admin_password": admin_password,
+        "admin_totp_secret": activated["totp_secret"],
         "member_phone": member_phone,
         "member_password": member_password,
         "reviewer_phone": reviewer_phone,
@@ -339,11 +339,12 @@ def test_平台审核员一次性PII访问使用真实ASGI和正式Runtime(
     member_enrollment_writer_database,
     member_identity_review_writer_database,
 ) -> None:
-    seeded = _seed_real_journey_actors(pg_database)
+    seeded = _seed_real_journey_actors(pg_database, real_db_client)
     admin_headers = _login(
         real_db_client,
         str(seeded["admin_phone"]),
         str(seeded["admin_password"]),
+        totp_secret=str(seeded["admin_totp_secret"]),
     )
     member_headers = _login(
         real_db_client,

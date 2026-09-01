@@ -152,15 +152,13 @@ def _seed_consent_documents(pg_database, *, published_by: int) -> tuple[dict[str
     return tuple(documents)
 
 
-def _seed_concurrent_target_institution(pg_database) -> dict[str, object]:
+def _seed_concurrent_target_institution(
+    pg_database, real_db_client
+) -> dict[str, object]:
     tenant_id = 100401
-    admin_user_id = 100402
     org_id = 100404
     admin_phone = "18844444444"
     admin_password = secrets.token_urlsafe(24)
-    password_hash = hash_password(admin_password).replace("'", "''")
-    institution_invitation_id = uuid4()
-    institution_application_id = uuid4()
     tenant_public_id = Uuid7Generator().generate()
     pg_database.execute(
         "INSERT INTO public.platform_org(id,parent_id,org_name,org_code,org_type,status,version) "
@@ -168,28 +166,35 @@ def _seed_concurrent_target_institution(pg_database) -> dict[str, object]:
         "'county','active',1);"
         "INSERT INTO public.tenant(id,org_id,tenant_code,name,type,province,city,status,created_at,updated_at) "
         f"VALUES ({tenant_id},{org_id},'CONCURRENT-TARGET-TENANT','Concurrent target institution',"
-        "'store','test','test','active',now(),now());"
-        "INSERT INTO public.\"user\"(id,phone,password_hash,role,status,tenant_id) "
-        f"VALUES ({admin_user_id},'{admin_phone}','{password_hash}','org_admin','active',{tenant_id});"
-        "INSERT INTO public.institution_invitation("
-        "invitation_id,institution_name,institution_type,applicant_phone_ciphertext,applicant_phone_digest,"
-        "pilot_batch_code,administrative_region_id,code_digest,status,failed_attempts,expires_at,issued_by,issued_at,activated_at,version) VALUES ("
-        f"'{institution_invitation_id}','Concurrent target institution','HEALTH_STORE',decode('00','hex'),"
-        f"repeat('e',64),'CONCURRENT',{org_id},repeat('f',64),'ACTIVATED',0,"
-        f"now()+interval '1 day',{admin_user_id},now(),now(),1);"
-        "INSERT INTO public.institution_application("
-        "application_id,invitation_id,applicant_user_id,institution_type,status,draft_payload,correction_fields,"
-        "current_revision_no,tenant_internal_id,tenant_public_id,service_ready,created_at,updated_at,submitted_at,reviewed_at,version) VALUES ("
-        f"'{institution_application_id}','{institution_invitation_id}',{admin_user_id},'HEALTH_STORE','APPROVED',"
-        f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
-        f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+        "'store','test','test','active',now(),now())"
+    )
+    currentness = importlib.import_module(
+        "tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同"
+    )
+    activated = currentness._activate_org_admin_for_test(
+        pg_database,
+        real_db_client,
+        phone=admin_phone,
+        password=admin_password,
+        org_id=org_id,
+        tenant_id=tenant_id,
+        tenant_public_id=tenant_public_id,
+        institution_name="Concurrent target institution",
+        pilot_batch_code="CONCURRENT",
+        service_tags=("GLUCOSE_METABOLISM",),
+    )
+    pg_database.execute(
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,"
         "evidence_version,input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("
         f"{tenant_id},'SERVICE_READY',ARRAY[]::text[],1,now(),1,repeat('1',64),repeat('2',64),"
         "'{}'::jsonb,current_date+30,1)"
     )
-    return {"admin_phone": admin_phone, "admin_password": admin_password}
+    return {
+        "admin_phone": admin_phone,
+        "admin_password": admin_password,
+        "admin_totp_secret": activated["totp_secret"],
+    }
 
 
 def _complete_identity_http(
@@ -593,16 +598,26 @@ def test_转机构后同会员实名复用并经正式Assignment创建新Case真
     currentness = importlib.import_module(
         "tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同"
     )
-    source = currentness._seed_current_member_and_institution(pg_database, variant=0)
-    target = currentness._seed_current_member_and_institution(pg_database, variant=1)
+    source = currentness._seed_current_member_and_institution(
+        pg_database, real_db_client, variant=0
+    )
+    target = currentness._seed_current_member_and_institution(
+        pg_database, real_db_client, variant=1
+    )
     member_headers = currentness._login(
         real_db_client, source["member_phone"], source["member_password"]
     )
     source_headers = currentness._login(
-        real_db_client, source["admin_phone"], source["admin_password"]
+        real_db_client,
+        source["admin_phone"],
+        source["admin_password"],
+        totp_secret=source["admin_totp_secret"],
     )
     target_headers = currentness._login(
-        real_db_client, target["admin_phone"], target["admin_password"]
+        real_db_client,
+        target["admin_phone"],
+        target["admin_password"],
+        totp_secret=target["admin_totp_secret"],
     )
     source_admin = int(
         _value(
@@ -952,16 +967,24 @@ def test_并发重新入组只能形成一个当前Enrollment真实HTTP合同(
     currentness = importlib.import_module(
         "tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同"
     )
-    first = currentness._seed_current_member_and_institution(pg_database, variant=2)
-    second = _seed_concurrent_target_institution(pg_database)
+    first = currentness._seed_current_member_and_institution(
+        pg_database, real_db_client, variant=2
+    )
+    second = _seed_concurrent_target_institution(pg_database, real_db_client)
     member_headers = currentness._login(
         real_db_client, first["member_phone"], first["member_password"]
     )
     first_headers = currentness._login(
-        real_db_client, first["admin_phone"], first["admin_password"]
+        real_db_client,
+        first["admin_phone"],
+        first["admin_password"],
+        totp_secret=first["admin_totp_secret"],
     )
     second_headers = currentness._login(
-        real_db_client, second["admin_phone"], second["admin_password"]
+        real_db_client,
+        second["admin_phone"],
+        second["admin_password"],
+        totp_secret=second["admin_totp_secret"],
     )
 
     invitations = []
