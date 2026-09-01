@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260830_0033"
+EXPECTED_HEAD = "20260901_0034"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260830_0033; found stale revision 20260816_0020"
+    "20260901_0034; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -851,6 +851,9 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_SLICE7_FAMILY_READER_ROLE", "kg_ci_slice7_family_test_run")
         monkeypatch.setenv("KG_TEST_SLICE7_OVERSIGHT_READER_ROLE", "kg_ci_slice7_oversight_test_run")
         monkeypatch.setenv(
+            "KG_TEST_A2_IDENTITY_INVENTORY_ROLE", "kg_ci_a2_inventory_test_run"
+        )
+        monkeypatch.setenv(
             "KG_TEST_DDL_OWNER_ROLE", "kg_ci_ddl_owner_test_run"
         )
         fixture = integration_conftest.pg_database.__wrapped__()
@@ -1433,3 +1436,33 @@ def test_member_enrollment_secrets_fail_closed_when_any_runtime_keyring_value_is
 
     with pytest.raises(RuntimeError, match="^MEMBER_ENROLLMENT_DEPENDENCY_UNAVAILABLE$"):
         MemberEnrollmentSecrets()
+
+
+def test_A2_2_P匿名盘点专用角色与数据库URL按闭合CI合同传播():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    assert backend_integration_job.count(
+        '"KG_TEST_A2_IDENTITY_INVENTORY_ROLE": f"kg_ci_a2_inventory_{suffix}"'
+    ) == 1
+    assert backend_integration_job.count(
+        '"KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL": '
+        '"KG_TEST_A2_IDENTITY_INVENTORY_ROLE"'
+    ) == 1
+    assert backend_integration_job.count(
+        '"KG_A2_IDENTITY_INVENTORY_ROLE": "KG_TEST_A2_IDENTITY_INVENTORY_ROLE"'
+    ) == 1
+    assert backend_integration_job.count(
+        '"KG_A2_IDENTITY_INVENTORY_DATABASE_URL": '
+        '"KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL"'
+    ) == 1
+    assert backend_integration_job.count(
+        'CREATE ROLE :"a2_identity_inventory_role" LOGIN'
+    ) == 1
+    assert (
+        '--set=a2_identity_inventory_role="$KG_TEST_A2_IDENTITY_INVENTORY_ROLE"'
+        in backend_integration_job
+    )
+    assert (
+        '--set=a2_identity_inventory_password='
+        '"$KG_TEST_A2_IDENTITY_INVENTORY_ROLE_PASSWORD"'
+        in backend_integration_job
+    )
