@@ -295,7 +295,7 @@ jobs:
               "KG_TEST_SLICE7_OVERSIGHT_READER_ROLE": f"kg_ci_slice7_oversight_{suffix}",
               "KG_TEST_A2_IDENTITY_INVENTORY_ROLE": f"kg_ci_a2_inventory_{suffix}",
               "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE": f"kg_ci_a2_remediation_writer_{suffix}",
-              "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": f"kg_ci_a2_remediation_confirmation_{suffix}",
+              "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": f"kg_ci_a2_remediation_confirm_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)

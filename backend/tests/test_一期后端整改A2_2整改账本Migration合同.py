@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = BACKEND_ROOT.parent
+WORKFLOW_FILE = REPOSITORY_ROOT / ".github" / "workflows" / "p2-foundation-ci.yml"
 VERSIONS = BACKEND_ROOT / "app" / "migrations" / "versions"
 REVISION_FILE = VERSIONS / "20260902_0035_a2_identity_remediation_ledger.py"
 
@@ -302,3 +304,30 @@ def test_A2_2_L_降级只删除0035对象且不触碰业务数据() -> None:
         "truncate",
     ):
         assert forbidden not in downgrade
+
+
+def test_A2_2_L_CI整改双角色名在正式最长suffix下安全且互异() -> None:
+    source = WORKFLOW_FILE.read_text(encoding="utf-8")
+    assert 'secrets.token_hex(8)' in source
+    writer_prefix_match = re.search(
+        r'"KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE": f"([a-z0-9_]+)\{suffix\}"',
+        source,
+    )
+    confirmation_prefix_match = re.search(
+        r'"KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": '
+        r'f"([a-z0-9_]+)\{suffix\}"',
+        source,
+    )
+    assert writer_prefix_match is not None
+    assert confirmation_prefix_match is not None
+
+    longest_formal_suffix = "33557929034_1_0000000000000000"
+    role_pattern = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+    writer_role = f"{writer_prefix_match.group(1)}{longest_formal_suffix}"
+    confirmation_role = f"{confirmation_prefix_match.group(1)}{longest_formal_suffix}"
+
+    assert writer_role != confirmation_role
+    assert len(writer_role) <= 63
+    assert len(confirmation_role) <= 63
+    assert role_pattern.fullmatch(writer_role)
+    assert role_pattern.fullmatch(confirmation_role)

@@ -1485,7 +1485,7 @@ def test_A2_2_L整改账本双角色与数据库URL按闭合CI合同传播():
         ),
         (
             "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
-            "kg_ci_a2_remediation_confirmation_",
+            "kg_ci_a2_remediation_confirm_",
         ),
     ):
         assert backend_integration_job.count(
