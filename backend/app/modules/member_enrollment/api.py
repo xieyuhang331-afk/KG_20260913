@@ -1068,7 +1068,9 @@ async def consent_record(enrollment_id:UuidV7,payload:RecordConsentRequest,reque
     member_id=await _member_for_actor(authority,actor); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
     if enrollment is None: raise _error("ENROLLMENT_NOT_FOUND")
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"CONSENT_ACCEPT"))
-    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"]); docs=await repo.current_consent_documents(("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK","PROXY_AUTHORIZATION"),"zh-CN"); match=next((d for d in docs if d["document_version_id"]==payload.document_version_id),None)
+    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
+    docs=await repo.current_consent_documents(("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK","PROXY_AUTHORIZATION"),"zh-CN")
+    match=next((d for d in docs if d["document_version_id"]==payload.document_version_id),None)
     if match is None or tuple(payload.purpose_codes)!=_purposes(match["document_type"]): raise _error("CONSENT_VERSION_STALE")
     context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,enrollment_id); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_RECORD",request_value,target_id=enrollment_id)
     if replay is not None: return replay
