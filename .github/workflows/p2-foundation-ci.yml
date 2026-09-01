@@ -294,6 +294,8 @@ jobs:
               "KG_TEST_SLICE7_FAMILY_READER_ROLE": f"kg_ci_slice7_family_{suffix}",
               "KG_TEST_SLICE7_OVERSIGHT_READER_ROLE": f"kg_ci_slice7_oversight_{suffix}",
               "KG_TEST_A2_IDENTITY_INVENTORY_ROLE": f"kg_ci_a2_inventory_{suffix}",
+              "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE": f"kg_ci_a2_remediation_writer_{suffix}",
+              "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": f"kg_ci_a2_remediation_confirm_{suffix}",
           }
           passwords = {
               name: secrets.token_urlsafe(48)
@@ -509,6 +511,8 @@ jobs:
               "KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL": "KG_TEST_SLICE7_FAMILY_READER_ROLE",
               "KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL": "KG_TEST_SLICE7_OVERSIGHT_READER_ROLE",
               "KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL": "KG_TEST_A2_IDENTITY_INVENTORY_ROLE",
+              "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE",
+              "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
           }
           for environment_name, role_name in url_names.items():
               role = roles[role_name]
@@ -638,6 +642,8 @@ jobs:
               "KG_SLICE7_FAMILY_READER_ROLE": "KG_TEST_SLICE7_FAMILY_READER_ROLE",
               "KG_SLICE7_OVERSIGHT_READER_ROLE": "KG_TEST_SLICE7_OVERSIGHT_READER_ROLE",
               "KG_A2_IDENTITY_INVENTORY_ROLE": "KG_TEST_A2_IDENTITY_INVENTORY_ROLE",
+              "KG_A2_IDENTITY_REMEDIATION_WRITER_ROLE": "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE",
+              "KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE",
           }
           url_aliases = {
               "KG_READONLY_DATABASE_URL": "KG_TEST_READONLY_DATABASE_URL",
@@ -651,6 +657,8 @@ jobs:
               "KG_SLICE7_FAMILY_READER_DATABASE_URL": "KG_TEST_SLICE7_FAMILY_READER_DATABASE_URL",
               "KG_SLICE7_OVERSIGHT_READER_DATABASE_URL": "KG_TEST_SLICE7_OVERSIGHT_READER_DATABASE_URL",
               "KG_A2_IDENTITY_INVENTORY_DATABASE_URL": "KG_TEST_A2_IDENTITY_INVENTORY_DATABASE_URL",
+              "KG_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_DATABASE_URL",
+              "KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL": "KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_DATABASE_URL",
           }
           for target, source in (*role_aliases.items(), *url_aliases.items()):
               values[target] = values[source]
@@ -883,6 +891,10 @@ jobs:
             --set=slice7_oversight_password="$KG_TEST_SLICE7_OVERSIGHT_READER_ROLE_PASSWORD" \
             --set=a2_identity_inventory_role="$KG_TEST_A2_IDENTITY_INVENTORY_ROLE" \
             --set=a2_identity_inventory_password="$KG_TEST_A2_IDENTITY_INVENTORY_ROLE_PASSWORD" \
+            --set=a2_identity_remediation_writer_role="$KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE" \
+            --set=a2_identity_remediation_writer_password="$KG_TEST_A2_IDENTITY_REMEDIATION_WRITER_ROLE_PASSWORD" \
+            --set=a2_identity_remediation_confirmation_role="$KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE" \
+            --set=a2_identity_remediation_confirmation_password="$KG_TEST_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE_PASSWORD" \
             --set=migration_password="$KG_TEST_MIGRATION_ROLE_PASSWORD" <<'SQL'
           CREATE ROLE :"ddl_owner_role" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"migration_role" LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -943,6 +955,8 @@ jobs:
           CREATE ROLE :"slice7_family_role" LOGIN PASSWORD :'slice7_family_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"slice7_oversight_role" LOGIN PASSWORD :'slice7_oversight_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"a2_identity_inventory_role" LOGIN PASSWORD :'a2_identity_inventory_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"a2_identity_remediation_writer_role" LOGIN PASSWORD :'a2_identity_remediation_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"a2_identity_remediation_confirmation_role" LOGIN PASSWORD :'a2_identity_remediation_confirmation_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE EXTENSION IF NOT EXISTS timescaledb;
           ALTER DATABASE :"database_name" OWNER TO :"migration_role";
           ALTER SCHEMA public OWNER TO :"migration_role";

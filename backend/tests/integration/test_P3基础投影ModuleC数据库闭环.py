@@ -14,7 +14,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_Module_C_migration_and_minimum_privileges(pg_database):
-    assert pg_database.fetch_value("SELECT version_num='20260901_0034' FROM alembic_version")
+    assert pg_database.fetch_value("SELECT version_num='20260902_0035' FROM alembic_version")
     for relation in (
         "organization_projection_shadow_run",
         "organization_projection_shadow_audit",
@@ -147,7 +147,7 @@ def test_Module_C_nonempty_projection_refuses_downgrade_without_data_loss(pg_dat
     try:
         with pytest.raises(RuntimeError, match="organization projection rows exist"):
             command.downgrade(config, "20260813_0017")
-        assert pg_database.fetch_value("SELECT version_num='20260901_0034' FROM alembic_version")
+        assert pg_database.fetch_value("SELECT version_num='20260902_0035' FROM alembic_version")
         assert pg_database.fetch_value(
             f"SELECT path_versions='[1,1,1,1]'::jsonb FROM public.organization_projection WHERE generation_id={generation_id} AND organization_id=4"
         )

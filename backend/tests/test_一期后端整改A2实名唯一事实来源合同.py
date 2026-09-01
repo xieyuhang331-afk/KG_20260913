@@ -544,12 +544,13 @@ def test_A2_R20_正式身份GET与PUT均声明并返回no_store() -> None:
         assert "Cache-Control" in headers
 
 
-def test_A2_R23_R28_A2_1无Migration且仅允许获批A2_2_P闭合边界Migration() -> None:
+def test_A2_R23_R28_A2_1无Migration且仅允许获批A2_2_Migration链() -> None:
     root = Path(__file__).resolve().parents[1]
     migrations = root / "app/migrations/versions"
     assert sorted(path.name for path in migrations.glob("*a2*")) == [
-        "20260901_0034_a2_identity_inventory_closed_read_boundary.py"
+        "20260901_0034_a2_identity_inventory_closed_read_boundary.py",
+        "20260902_0035_a2_identity_remediation_ledger.py",
     ]
-    assert "20260901_0034" in (
+    assert "20260902_0035" in (
         root / "tests/integration/conftest.py"
     ).read_text(encoding="utf-8")
