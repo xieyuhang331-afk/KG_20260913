@@ -43,6 +43,14 @@ def _workflow_text() -> str:
     return WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
+def _workflow_step_block(name: str) -> str:
+    workflow = _workflow_text()
+    marker = f"      - name: {name}\n"
+    start = workflow.index(marker)
+    end = workflow.find("\n      - name: ", start + len(marker))
+    return workflow[start:] if end == -1 else workflow[start:end]
+
+
 def _pyproject() -> dict[str, object]:
     with PYPROJECT_PATH.open("rb") as file:
         return tomllib.load(file)
@@ -208,6 +216,28 @@ def test_R07_Fresh工具链证据清单必须完整() -> None:
     missing = sorted(field for field in EVIDENCE_FIELDS if f'"{field}":' not in workflow)
     assert not missing, "D1_EVIDENCE_CONTRACT_MISSING"
     assert 'f"{name}={value}\\n"' in workflow, "D1_EVIDENCE_CONTRACT_MISSING"
+
+
+def test_R08_UUIDv7候选必须使用固定uv安装到同一虚拟环境() -> None:
+    install = _workflow_step_block("Install pinned UUIDv7 validation candidate")
+    validation = _workflow_step_block("Run UUIDv7 library validation")
+    assert "python -m pip" not in install, "UUIDV7_INSTALL_MUST_USE_UV"
+    assert "uv pip install" in install, "UUIDV7_INSTALL_MUST_USE_UV"
+    assert '--python "$PWD/.venv/bin/python"' in install, (
+        "UUIDV7_INSTALL_MUST_TARGET_FROZEN_VENV"
+    )
+    for contract in (
+        "--only-binary=:all:",
+        "--no-deps",
+        "--require-hashes",
+        "-r tests/uuid_validation/requirements-linux.txt",
+    ):
+        assert contract in install, "UUIDV7_INSTALL_SECURITY_CONTRACT_MISSING"
+    assert "python -m pytest tests/uuid_validation" in validation, (
+        "UUIDV7_VALIDATION_STEP_MISSING"
+    )
+    assert "continue-on-error" not in validation
+    assert "if:" not in validation
 
 
 def test_normalized_baseline与当前诊断一致() -> None:
