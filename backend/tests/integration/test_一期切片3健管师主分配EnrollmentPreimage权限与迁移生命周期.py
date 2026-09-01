@@ -20,7 +20,7 @@ def test_0028到0029升级降级再升级只对称改变受限函数(pg_database
     config = _build_alembic_config(_get_test_database_url())
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260830_0033"
+    ) == "20260901_0034"
 
     command.downgrade(config, "20260824_0029")
     assert pg_database.fetch_value(
@@ -49,7 +49,7 @@ def test_0028到0029升级降级再升级只对称改变受限函数(pg_database
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260830_0033"
+    ) == "20260901_0034"
     assert pg_database.fetch_value(
         f"SELECT to_regprocedure('{FUNCTION_SIGNATURE}') IS NOT NULL"
     )
