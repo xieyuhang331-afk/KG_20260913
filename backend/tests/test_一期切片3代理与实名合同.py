@@ -32,6 +32,7 @@ def test_身份证日期与校验位有效时计算成年() -> None:
         "11010520250230002X",
         "",
     ],
+    ids=["invalid-checksum", "full-width", "invalid-birth-date", "empty"],
 )
 def test_身份证非法格式日期或校验位fail_closed(value: str) -> None:
     with pytest.raises(ValueError, match="IDENTITY_DOCUMENT_INVALID"):
