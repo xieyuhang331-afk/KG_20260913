@@ -1068,7 +1068,7 @@ def test_0023到0025生命周期只改受限Authority与精确ACL(pg_database) -
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260902_0035"
+    ) == "20260903_0036"
     assert pg_database.fetch_value(
         f"SELECT has_function_privilege('{application_role}',"
         f"'{FUNCTION_SIGNATURE}','EXECUTE')"
@@ -1091,7 +1091,7 @@ def test_0023到0025生命周期只改受限Authority与精确ACL(pg_database) -
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260902_0035"
+    ) == "20260903_0036"
     assert pg_database.fetch_value(
         "SELECT to_regprocedure("
         "'public.slice3_member_currentness_authority_v1(bigint,character varying)') IS NOT NULL"
@@ -1112,7 +1112,7 @@ def test_0024到0025往返仅增加Revision受限读与两列补正权限(
     def assert_0025_present() -> None:
         assert pg_database.fetch_value(
             "SELECT version_num FROM alembic_version"
-        ) == "20260902_0035"
+        ) == "20260903_0036"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure($$"
             + IDENTITY_SUMMARY_SIGNATURE

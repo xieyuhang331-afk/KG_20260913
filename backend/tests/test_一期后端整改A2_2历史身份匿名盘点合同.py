@@ -209,7 +209,7 @@ def test_A2_R34_公开Evidence闭合脱敏且相同快照Hash稳定() -> None:
     assert second_document["snapshot_at"]
     assert first_document["snapshot_ceiling_present"] is False
     assert first_document["anonymous_watermark_present"] is False
-    assert first_document["migration_head"] == "20260902_0035"
+    assert first_document["migration_head"] == "20260903_0036"
     assert first_document["total_count"] == 8
     assert first_document["member_count"] == 7
     assert first_document["excluded_non_member_count"] == 1
