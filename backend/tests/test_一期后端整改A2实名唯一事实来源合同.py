@@ -550,7 +550,8 @@ def test_A2_R23_R28_A2_1无Migration且仅允许获批A2_2_Migration链() -> Non
     assert sorted(path.name for path in migrations.glob("*a2*")) == [
         "20260901_0034_a2_identity_inventory_closed_read_boundary.py",
         "20260902_0035_a2_identity_remediation_ledger.py",
+        "20260903_0036_a2_remediation_subject_h3_closed_boundary.py",
     ]
-    assert "20260902_0035" in (
+    assert "20260903_0036" in (
         root / "tests/integration/conftest.py"
     ).read_text(encoding="utf-8")
