@@ -35,6 +35,10 @@ class IdentityRemediationCommitOutcomeUnknown(IdentityRemediationContractError):
     pass
 
 
+def _public_count(value: int) -> int | str:
+    return "SMALL_COUNT" if 0 < value < 5 else value
+
+
 @dataclass(frozen=True, slots=True)
 class H3ExactMatchResult:
     approved: bool
@@ -55,9 +59,12 @@ class RemediationRunSummary:
         return {
             "status": self.status,
             "result_code": self.result_code,
-            "class_status_counts": dict(sorted(self.class_status_counts.items())),
-            "processed_count": self.processed_count,
-            "mutation_count": self.mutation_count,
+            "class_status_counts": {
+                key: _public_count(value)
+                for key, value in sorted(self.class_status_counts.items())
+            },
+            "processed_count": _public_count(self.processed_count),
+            "mutation_count": _public_count(self.mutation_count),
             "digest_present": self.digest_present,
         }
 
@@ -210,6 +217,7 @@ class IdentityRemediationApplicationService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._uuid_factory = uuid_factory or uuid4
         self._running_batch: LedgerWriteResult | None = None
+        self._pause_attempted = False
         self._used = False
 
     def _key(self, operation: str, batch_ref: UUID, item_ref: UUID | None) -> str:
@@ -284,8 +292,13 @@ class IdentityRemediationApplicationService:
 
     async def _best_effort_pause(self) -> None:
         prior = self._running_batch
-        if prior is None or prior.state != "RUNNING":
+        if (
+            prior is None
+            or prior.state != "RUNNING"
+            or self._pause_attempted
+        ):
             return
+        self._pause_attempted = True
         request = self._base_request(
             operation="PAUSE_BATCH",
             batch_ref=prior.target_ref,
@@ -387,11 +400,20 @@ class IdentityRemediationApplicationService:
 
         return await self._execute(operation)
 
+    async def _execute_terminal_pause(
+        self,
+        request: LedgerWriteRequest,
+        expectation: LedgerExpectation,
+    ) -> LedgerWriteResult:
+        self._pause_attempted = True
+        return await self._execute_request(request, expectation)
+
     async def run(self) -> RemediationRunSummary:
         if self._used:
             raise IdentityRemediationContractError("A2_REMEDIATION_SERVICE_ONE_SHOT")
         self._used = True
         self._running_batch = None
+        self._pause_attempted = False
         try:
             return await self._run_once()
         except asyncio.CancelledError:
@@ -475,7 +497,7 @@ class IdentityRemediationApplicationService:
                 prior=running,
                 reason_code="A2_BATCH_CONTROLLED",
             )
-            terminal = await self._execute_request(
+            terminal = await self._execute_terminal_pause(
                 pause_request,
                 LedgerExpectation("PAUSED", running.version + 1, "PAUSED"),
             )

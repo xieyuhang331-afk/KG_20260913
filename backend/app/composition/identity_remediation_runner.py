@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import os
 import re
-from contextlib import suppress
 from urllib.parse import urlparse
 
 from sqlalchemy import text
@@ -171,6 +170,37 @@ async def _assert_role(
             )
 
 
+async def _cleanup_failed_entry(transaction, connection, primary_error) -> None:
+    cleanup_error: BaseException | None = None
+    cleanup_cancellation: asyncio.CancelledError | None = None
+    try:
+        if transaction is not None and transaction.is_active:
+            try:
+                await transaction.rollback()
+            except BaseException as error:
+                if isinstance(error, asyncio.CancelledError):
+                    cleanup_cancellation = error
+                else:
+                    cleanup_error = error
+    finally:
+        if connection is not None:
+            try:
+                await connection.close()
+            except BaseException as error:
+                if isinstance(error, asyncio.CancelledError):
+                    cleanup_cancellation = cleanup_cancellation or error
+                else:
+                    cleanup_error = cleanup_error or error
+    if isinstance(primary_error, asyncio.CancelledError):
+        if cleanup_error is not None or cleanup_cancellation is not None:
+            primary_error.add_note("A2_REMEDIATION_UOW_ENTRY_CLEANUP_FAILED")
+        return
+    if cleanup_cancellation is not None:
+        raise cleanup_cancellation
+    if cleanup_error is not None:
+        primary_error.add_note("A2_REMEDIATION_UOW_ENTRY_CLEANUP_FAILED")
+
+
 class _WriterUnitOfWork:
     def __init__(self, engine: AsyncEngine, role: str) -> None:
         self._engine = engine
@@ -190,13 +220,8 @@ class _WriterUnitOfWork:
             self.ledger = IdentityRemediationLedgerRepository(self._connection)
             self.subjects = IdentityRemediationSubjectRepository(self._connection)
             return self
-        except BaseException:
-            if self._transaction is not None and self._transaction.is_active:
-                with suppress(BaseException):
-                    await self._transaction.rollback()
-            if self._connection is not None:
-                with suppress(BaseException):
-                    await self._connection.close()
+        except BaseException as error:
+            await _cleanup_failed_entry(self._transaction, self._connection, error)
             raise
 
     async def commit(self) -> None:
@@ -204,22 +229,36 @@ class _WriterUnitOfWork:
         await self._transaction.commit()
 
     async def __aexit__(self, exc_type, exc, traceback) -> None:
-        cancellation_active = isinstance(exc, asyncio.CancelledError)
         cleanup_error: BaseException | None = None
+        cleanup_cancellation: asyncio.CancelledError | None = None
         try:
             if self._transaction is not None and self._transaction.is_active:
                 try:
                     await self._transaction.rollback()
                 except BaseException as error:
-                    cleanup_error = error
+                    if isinstance(error, asyncio.CancelledError):
+                        cleanup_cancellation = error
+                    else:
+                        cleanup_error = error
         finally:
             if self._connection is not None:
                 try:
                     await self._connection.close()
                 except BaseException as error:
-                    cleanup_error = cleanup_error or error
-        if not cancellation_active and cleanup_error is not None:
-            raise cleanup_error
+                    if isinstance(error, asyncio.CancelledError):
+                        cleanup_cancellation = cleanup_cancellation or error
+                    else:
+                        cleanup_error = cleanup_error or error
+        if isinstance(exc, asyncio.CancelledError):
+            if cleanup_error is not None or cleanup_cancellation is not None:
+                exc.add_note("A2_REMEDIATION_UOW_CLEANUP_FAILED")
+            return
+        if cleanup_cancellation is not None:
+            raise cleanup_cancellation
+        if cleanup_error is not None:
+            if exc is None:
+                raise cleanup_error
+            exc.add_note("A2_REMEDIATION_UOW_CLEANUP_FAILED")
 
 
 class _ConfirmationUnitOfWork:
@@ -241,32 +280,41 @@ class _ConfirmationUnitOfWork:
             )
             self.ledger = IdentityRemediationLedgerRepository(self._connection)
             return self
-        except BaseException:
-            if self._transaction is not None and self._transaction.is_active:
-                with suppress(BaseException):
-                    await self._transaction.rollback()
-            if self._connection is not None:
-                with suppress(BaseException):
-                    await self._connection.close()
+        except BaseException as error:
+            await _cleanup_failed_entry(self._transaction, self._connection, error)
             raise
 
     async def __aexit__(self, exc_type, exc, traceback) -> None:
-        cancellation_active = isinstance(exc, asyncio.CancelledError)
         cleanup_error: BaseException | None = None
+        cleanup_cancellation: asyncio.CancelledError | None = None
         try:
             if self._transaction is not None and self._transaction.is_active:
                 try:
                     await self._transaction.rollback()
                 except BaseException as error:
-                    cleanup_error = error
+                    if isinstance(error, asyncio.CancelledError):
+                        cleanup_cancellation = error
+                    else:
+                        cleanup_error = error
         finally:
             if self._connection is not None:
                 try:
                     await self._connection.close()
                 except BaseException as error:
-                    cleanup_error = cleanup_error or error
-        if not cancellation_active and cleanup_error is not None:
-            raise cleanup_error
+                    if isinstance(error, asyncio.CancelledError):
+                        cleanup_cancellation = cleanup_cancellation or error
+                    else:
+                        cleanup_error = cleanup_error or error
+        if isinstance(exc, asyncio.CancelledError):
+            if cleanup_error is not None or cleanup_cancellation is not None:
+                exc.add_note("A2_REMEDIATION_UOW_CLEANUP_FAILED")
+            return
+        if cleanup_cancellation is not None:
+            raise cleanup_cancellation
+        if cleanup_error is not None:
+            if exc is None:
+                raise cleanup_error
+            exc.add_note("A2_REMEDIATION_UOW_CLEANUP_FAILED")
 
 
 def _engines() -> tuple[AsyncEngine, AsyncEngine]:
@@ -280,6 +328,37 @@ def _engines() -> tuple[AsyncEngine, AsyncEngine]:
     )
 
 
+async def _dispose_engines(
+    engines: tuple[AsyncEngine, AsyncEngine],
+    *,
+    primary_error: BaseException | None,
+) -> None:
+    cleanup_errors: list[BaseException] = []
+    for engine in engines:
+        try:
+            await engine.dispose()
+        except BaseException as error:
+            cleanup_errors.append(error)
+    if not cleanup_errors:
+        return
+    if isinstance(primary_error, asyncio.CancelledError):
+        primary_error.add_note("A2_REMEDIATION_ENGINE_CLEANUP_FAILED")
+        return
+    cleanup_cancellation = next(
+        (
+            error
+            for error in cleanup_errors
+            if isinstance(error, asyncio.CancelledError)
+        ),
+        None,
+    )
+    if cleanup_cancellation is not None:
+        raise cleanup_cancellation
+    if primary_error is None:
+        raise cleanup_errors[0]
+    primary_error.add_note("A2_REMEDIATION_ENGINE_CLEANUP_FAILED")
+
+
 async def run_identity_remediation() -> RemediationRunSummary:
     writer_role = _validated_role("KG_A2_IDENTITY_REMEDIATION_WRITER_ROLE")
     confirmation_role = _validated_role(
@@ -290,6 +369,7 @@ async def run_identity_remediation() -> RemediationRunSummary:
             "A2_REMEDIATION_DATABASE_ROLE_MISMATCH"
         )
     writer_engine, confirmation_engine = _engines()
+    primary_error: BaseException | None = None
     try:
         service = IdentityRemediationApplicationService(
             inventory_provider=run_identity_inventory,
@@ -301,9 +381,13 @@ async def run_identity_remediation() -> RemediationRunSummary:
             actor_scope=_actor_scope(os.environ["KG_TEST_RUN_ID"]),
         )
         return await service.run()
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        await writer_engine.dispose()
-        await confirmation_engine.dispose()
+        await _dispose_engines(
+            (writer_engine, confirmation_engine), primary_error=primary_error
+        )
 
 
 async def inspect_remediation_runtime() -> dict[str, str]:
@@ -317,6 +401,7 @@ async def inspect_remediation_runtime() -> dict[str, str]:
             "A2_REMEDIATION_DATABASE_ROLE_MISMATCH"
         )
     writer_engine, confirmation_engine = _engines()
+    primary_error: BaseException | None = None
     try:
         inventory_inspection = await inspect_read_only_transaction()
         if inventory_inspection != {
@@ -347,6 +432,10 @@ async def inspect_remediation_runtime() -> dict[str, str]:
             "database_sentinel": "verified",
             "direct_table_authority": "denied",
         }
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        await writer_engine.dispose()
-        await confirmation_engine.dispose()
+        await _dispose_engines(
+            (writer_engine, confirmation_engine), primary_error=primary_error
+        )

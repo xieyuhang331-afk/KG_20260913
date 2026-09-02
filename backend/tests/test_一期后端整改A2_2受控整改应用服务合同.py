@@ -5,6 +5,7 @@ import base64
 import hashlib
 import importlib
 import inspect
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -671,6 +672,251 @@ def test_A2_2_R_普通cleanup失败仍保持可见() -> None:
         asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("unit_name", ("writer", "confirmation"))
+@pytest.mark.parametrize("primary_kind", ("ordinary", "cancelled"))
+def test_A2_2_R_UoW清理失败不得覆盖已有主异常且rollback_close均尽力(
+    unit_name: str,
+    primary_kind: str,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    calls: list[str] = []
+
+    class Transaction:
+        is_active = True
+
+        async def rollback(self):
+            calls.append("rollback")
+            raise RuntimeError("synthetic rollback failure")
+
+    class Connection:
+        async def close(self):
+            calls.append("close")
+            raise RuntimeError("synthetic close failure")
+
+    primary = (
+        asyncio.CancelledError()
+        if primary_kind == "cancelled"
+        else RuntimeError("A2_REMEDIATION_PRIMARY_FAILURE")
+    )
+
+    async def exercise() -> None:
+        unit_class = (
+            runner._WriterUnitOfWork
+            if unit_name == "writer"
+            else runner._ConfirmationUnitOfWork
+        )
+        unit = unit_class(None, "synthetic")
+        unit._transaction = Transaction()
+        unit._connection = Connection()
+        try:
+            raise primary
+        except BaseException as error:
+            await unit.__aexit__(type(error), error, error.__traceback__)
+            raise
+
+    with pytest.raises(type(primary)) as captured:
+        asyncio.run(exercise())
+    assert captured.value is primary
+    assert calls == ["rollback", "close"]
+    assert getattr(primary, "__notes__", []) == [
+        "A2_REMEDIATION_UOW_CLEANUP_FAILED"
+    ]
+
+
+@pytest.mark.parametrize("unit_name", ("writer", "confirmation"))
+def test_A2_2_R_UoW无主异常时cleanup失败仍可见且rollback_close均尽力(
+    unit_name: str,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    calls: list[str] = []
+
+    class Transaction:
+        is_active = True
+
+        async def rollback(self):
+            calls.append("rollback")
+            raise RuntimeError("synthetic rollback failure")
+
+    class Connection:
+        async def close(self):
+            calls.append("close")
+            raise RuntimeError("synthetic close failure")
+
+    async def exercise() -> None:
+        unit_class = (
+            runner._WriterUnitOfWork
+            if unit_name == "writer"
+            else runner._ConfirmationUnitOfWork
+        )
+        unit = unit_class(None, "synthetic")
+        unit._transaction = Transaction()
+        unit._connection = Connection()
+        await unit.__aexit__(None, None, None)
+
+    with pytest.raises(RuntimeError, match="^synthetic rollback failure$"):
+        asyncio.run(exercise())
+    assert calls == ["rollback", "close"]
+
+
+@pytest.mark.parametrize("unit_name", ("writer", "confirmation"))
+@pytest.mark.parametrize("cancel_stage", ("rollback", "close"))
+def test_A2_2_R_UoW普通主异常期间cleanup取消仍优先且close仍尽力(
+    unit_name: str,
+    cancel_stage: str,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    calls: list[str] = []
+
+    class Transaction:
+        is_active = True
+
+        async def rollback(self):
+            calls.append("rollback")
+            if cancel_stage == "rollback":
+                raise asyncio.CancelledError()
+            raise RuntimeError("synthetic rollback failure")
+
+    class Connection:
+        async def close(self):
+            calls.append("close")
+            if cancel_stage == "close":
+                raise asyncio.CancelledError()
+
+    async def exercise() -> None:
+        unit_class = (
+            runner._WriterUnitOfWork
+            if unit_name == "writer"
+            else runner._ConfirmationUnitOfWork
+        )
+        unit = unit_class(None, "synthetic")
+        unit._transaction = Transaction()
+        unit._connection = Connection()
+        primary = RuntimeError("A2_REMEDIATION_PRIMARY_FAILURE")
+        await unit.__aexit__(type(primary), primary, primary.__traceback__)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(exercise())
+    assert calls == ["rollback", "close"]
+
+
+def test_A2_2_R_Runner取消期间dispose失败不覆盖取消且两个engine均清理(
+    monkeypatch,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    disposals: list[str] = []
+
+    class Engine:
+        def __init__(self, name: str, fail: bool) -> None:
+            self.name = name
+            self.fail = fail
+
+        async def dispose(self):
+            disposals.append(self.name)
+            if self.fail:
+                raise RuntimeError("synthetic dispose failure")
+
+    class Service:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def run(self):
+            raise asyncio.CancelledError()
+
+    roles = {
+        "KG_A2_IDENTITY_REMEDIATION_WRITER_ROLE": "synthetic_writer",
+        "KG_A2_IDENTITY_REMEDIATION_CONFIRMATION_ROLE": "synthetic_confirmation",
+    }
+    monkeypatch.setattr(runner, "_validated_role", roles.__getitem__)
+    monkeypatch.setattr(
+        runner,
+        "_engines",
+        lambda: (Engine("writer", True), Engine("confirmation", False)),
+    )
+    monkeypatch.setattr(runner, "IdentityRemediationApplicationService", Service)
+    monkeypatch.setattr(
+        runner.IdentitySubmissionCrypto,
+        "from_environment",
+        staticmethod(lambda: object()),
+    )
+    monkeypatch.setattr(runner, "_actor_scope", lambda run_id: "synthetic-scope")
+    monkeypatch.setenv("KG_TEST_RUN_ID", "synthetic-run")
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner.run_identity_remediation())
+    assert disposals == ["writer", "confirmation"]
+
+
+@pytest.mark.parametrize("primary_kind", ("none", "ordinary", "cancelled"))
+@pytest.mark.parametrize("writer_cleanup_kind", ("none", "ordinary", "cancelled"))
+@pytest.mark.parametrize(
+    "confirmation_cleanup_kind", ("none", "ordinary", "cancelled")
+)
+def test_A2_2_R_Runtime检查双engine清理状态表与取消优先(
+    primary_kind: str,
+    writer_cleanup_kind: str,
+    confirmation_cleanup_kind: str,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    disposals: list[str] = []
+    primary = RuntimeError("A2_REMEDIATION_RUNTIME_INSPECTION_FAILED")
+    cancellation = asyncio.CancelledError()
+
+    class Engine:
+        def __init__(self, name: str, cleanup_kind: str) -> None:
+            self.name = name
+            self.cleanup_kind = cleanup_kind
+
+        async def dispose(self):
+            disposals.append(self.name)
+            if self.cleanup_kind == "cancelled":
+                raise asyncio.CancelledError()
+            if self.cleanup_kind == "ordinary":
+                raise RuntimeError("synthetic dispose failure")
+
+    async def exercise() -> None:
+        active_error: BaseException | None = None
+        engines = (
+            Engine("writer", writer_cleanup_kind),
+            Engine("confirmation", confirmation_cleanup_kind),
+        )
+        try:
+            if primary_kind == "ordinary":
+                raise primary
+            if primary_kind == "cancelled":
+                raise cancellation
+        except BaseException as error:
+            active_error = error
+            raise
+        finally:
+            await runner._dispose_engines(engines, primary_error=active_error)
+
+    cleanup_cancelled = (
+        writer_cleanup_kind == "cancelled"
+        or confirmation_cleanup_kind == "cancelled"
+    )
+    cleanup_ordinary = (
+        writer_cleanup_kind == "ordinary"
+        or confirmation_cleanup_kind == "ordinary"
+    )
+    if primary_kind == "cancelled":
+        with pytest.raises(asyncio.CancelledError) as caught:
+            asyncio.run(exercise())
+        assert caught.value is cancellation
+    elif cleanup_cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(exercise())
+    elif primary_kind == "ordinary":
+        with pytest.raises(RuntimeError) as caught:
+            asyncio.run(exercise())
+        assert caught.value is primary
+    elif cleanup_ordinary:
+        with pytest.raises(RuntimeError, match="^synthetic dispose failure$"):
+            asyncio.run(exercise())
+    else:
+        asyncio.run(exercise())
+    assert disposals == ["writer", "confirmation"]
+
+
 @pytest.mark.parametrize(
     ("unit_name", "fail_stage"),
     (
@@ -765,6 +1011,55 @@ def test_A2_2_R_UoW入口取消优先于rollback与close失败(monkeypatch) -> N
     assert calls == ["rollback", "close"]
 
 
+@pytest.mark.parametrize("unit_name", ("writer", "confirmation"))
+@pytest.mark.parametrize("cancel_stage", ("rollback", "close"))
+def test_A2_2_R_UoW普通入口异常清理期间取消仍优先且两项清理均尽力(
+    monkeypatch,
+    unit_name: str,
+    cancel_stage: str,
+) -> None:
+    runner = _module("app.composition.identity_remediation_runner")
+    calls: list[str] = []
+
+    class Transaction:
+        is_active = True
+
+        async def rollback(self):
+            calls.append("rollback")
+            if cancel_stage == "rollback":
+                raise asyncio.CancelledError()
+            raise RuntimeError("synthetic rollback failure")
+
+    class Connection:
+        async def begin(self):
+            return Transaction()
+
+        async def execute(self, statement):
+            return None
+
+        async def close(self):
+            calls.append("close")
+            if cancel_stage == "close":
+                raise asyncio.CancelledError()
+
+    class Engine:
+        async def connect(self):
+            return Connection()
+
+    async def fail_assert(*args, **kwargs):
+        raise RuntimeError("A2_REMEDIATION_ENTRY_PRIMARY_FAILURE")
+
+    monkeypatch.setattr(runner, "_assert_role", fail_assert)
+    unit_class = (
+        runner._WriterUnitOfWork
+        if unit_name == "writer"
+        else runner._ConfirmationUnitOfWork
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(unit_class(Engine(), "synthetic").__aenter__())
+    assert calls == ["rollback", "close"]
+
+
 def test_A2_2_R_CLI异常闭合且不泄漏vendor_SQL_URL_Credential_PII(
     monkeypatch,
     capsys,
@@ -794,6 +1089,41 @@ def test_A2_2_R_CLI异常闭合且不泄漏vendor_SQL_URL_Credential_PII(
         "traceback",
     ):
         assert forbidden not in combined
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--credential", "synthetic-private-value"),
+        ("--format",),
+        ("--format", "synthetic-private-value"),
+        ("--f", "json"),
+    ),
+    ids=("unknown", "missing-value", "invalid-value", "abbreviation"),
+)
+def test_A2_2_R_CLI参数错误只输出稳定匿名码且不回显argv(
+    capsys,
+    arguments: tuple[str, ...],
+) -> None:
+    cli = _module("scripts.run_a2_identity_remediation")
+    parser_exited = False
+    try:
+        result = cli.main(list(arguments))
+    except SystemExit:
+        capsys.readouterr()
+        parser_exited = True
+    if parser_exited:
+        pytest.fail("A2_REMEDIATION_ARGUMENT_ERROR_NOT_CONTROLLED", pytrace=False)
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "code": "A2_REMEDIATION_ARGUMENT_INVALID",
+        "status": "FAILED",
+    }
+    rendered = captured.err.lower()
+    if any(str(value).lower() in rendered for value in arguments):
+        pytest.fail("A2_REMEDIATION_ARGUMENT_OUTPUT_UNSAFE", pytrace=False)
 
 
 def test_A2_2_R_COMMITTED后读回失败只暴露稳定错误码(monkeypatch) -> None:
@@ -1098,9 +1428,13 @@ def test_A2_2_R_公开结果仅含匿名闭合字段() -> None:
     summary = application.RemediationRunSummary(
         status="PAUSED",
         result_code="A2_REMEDIATION_TOKEN_WINDOW_UNPROVEN",
-        class_status_counts={"H4:REMEDIATION_REQUIRED": 1},
-        processed_count=1,
-        mutation_count=0,
+        class_status_counts={
+            "H0:EXCLUDED": 0,
+            "H3:REMEDIATED": 5,
+            "H4:REMEDIATION_REQUIRED": 1,
+        },
+        processed_count=4,
+        mutation_count=1,
         digest_present=True,
     )
     public = summary.to_public_dict()
@@ -1113,6 +1447,13 @@ def test_A2_2_R_公开结果仅含匿名闭合字段() -> None:
         "mutation_count",
         "digest_present",
     }
+    assert public["class_status_counts"] == {
+        "H0:EXCLUDED": 0,
+        "H3:REMEDIATED": 5,
+        "H4:REMEDIATION_REQUIRED": "SMALL_COUNT",
+    }
+    assert public["processed_count"] == "SMALL_COUNT"
+    assert public["mutation_count"] == "SMALL_COUNT"
     for forbidden in (
         "user_ref",
         "real_name",
@@ -1213,6 +1554,168 @@ def test_A2_2_R_START后普通异常必须退出原UoW再受控Pause且保留主
     ):
         asyncio.run(service.run())
     assert events == ["writer-exited", "pause-after-exit"]
+
+
+@pytest.mark.parametrize(
+    ("path", "inner_pause", "pause_succeeds", "error_type"),
+    (
+        ("success", True, True, RuntimeError),
+        ("failure", True, False, RuntimeError),
+        ("unknown", True, False, RuntimeError),
+        ("readback", True, False, ValueError),
+        ("ordinary", False, False, LookupError),
+    ),
+    ids=("success", "failure", "unknown", "readback", "ordinary"),
+)
+def test_A2_2_R_best_effort_pause所有路径全程最多尝试一次(
+    monkeypatch,
+    path: str,
+    inner_pause: bool,
+    pause_succeeds: bool,
+    error_type: type[Exception],
+) -> None:
+    application = _module("app.modules.auth.identity_remediation_application")
+    ledger = _module("app.modules.auth.identity_remediation_ledger_repository")
+    attempts = 0
+    running = ledger.LedgerWriteResult(
+        "BATCH",
+        UUID("00000000-0000-7000-8000-000000000311"),
+        "RUNNING",
+        2,
+        "RUNNING",
+        UUID("00000000-0000-7000-8000-000000000312"),
+        "c" * 64,
+    )
+
+    class Unit:
+        class Ledger:
+            async def write(self, request):
+                return replace(
+                    running,
+                    state="PAUSED",
+                    version=3,
+                    result_code="PAUSED",
+                )
+
+        ledger = Ledger()
+
+        async def commit(self):
+            return None
+
+    class UnitContext:
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            if not pause_succeeds:
+                raise RuntimeError("synthetic pause unavailable")
+            return Unit()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    service = application.IdentityRemediationApplicationService(
+        inventory_provider=lambda: None,
+        unit_of_work_factory=UnitContext,
+        confirmation_factory=lambda: None,
+        crypto=_crypto(),
+        actor_scope="synthetic-a2-r",
+    )
+
+    async def run_once():
+        service._running_batch = running
+        if inner_pause:
+            await service._best_effort_pause()
+        if path == "unknown":
+            raise application.IdentityRemediationCommitOutcomeUnknown(
+                "A2_REMEDIATION_COMMIT_OUTCOME_UNKNOWN"
+            )
+        if path == "readback":
+            raise application.IdentityRemediationContractError(
+                "A2_REMEDIATION_COMMITTED_READBACK_FAILED"
+            )
+        raise error_type("synthetic primary failure")
+
+    monkeypatch.setattr(service, "_run_once", run_once)
+    expected_error = {
+        "unknown": application.IdentityRemediationCommitOutcomeUnknown,
+        "readback": application.IdentityRemediationContractError,
+    }.get(path, error_type)
+    with pytest.raises(expected_error):
+        asyncio.run(service.run())
+    assert attempts == 1
+
+
+def test_A2_2_R_正常终态Pause提交结果不明不得发起第二个Pause() -> None:
+    application = _module("app.modules.auth.identity_remediation_application")
+    ledger = _module("app.modules.auth.identity_remediation_ledger_repository")
+    writes: list[tuple[object, ...]] = []
+    running = ledger.LedgerWriteResult(
+        "BATCH",
+        UUID("00000000-0000-7000-8000-000000000321"),
+        "RUNNING",
+        2,
+        "RUNNING",
+        UUID("00000000-0000-7000-8000-000000000322"),
+        "d" * 64,
+    )
+
+    class WriterUnit:
+        class Ledger:
+            async def write(self, request):
+                writes.append(request.as_parameters())
+                return replace(running, state="PAUSED", version=3)
+
+        ledger = Ledger()
+
+        async def commit(self):
+            raise RuntimeError("synthetic unknown commit")
+
+    class WriterContext:
+        async def __aenter__(self):
+            return WriterUnit()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class Confirmation:
+        class Ledger:
+            async def confirm(self, request, expectation):
+                return ledger.CommitOutcome.UNKNOWN
+
+        ledger = Ledger()
+
+    class ConfirmationContext:
+        async def __aenter__(self):
+            return Confirmation()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    service = application.IdentityRemediationApplicationService(
+        inventory_provider=lambda: None,
+        unit_of_work_factory=WriterContext,
+        confirmation_factory=ConfirmationContext,
+        crypto=_crypto(),
+        actor_scope="synthetic-a2-r",
+    )
+    service._running_batch = running
+    request = service._base_request(
+        operation="PAUSE_BATCH",
+        batch_ref=running.target_ref,
+        item_ref=None,
+        prior=running,
+        reason_code="A2_BATCH_CONTROLLED",
+    )
+
+    with pytest.raises(application.IdentityRemediationCommitOutcomeUnknown):
+        asyncio.run(
+            service._execute_terminal_pause(
+                request,
+                ledger.LedgerExpectation("PAUSED", 3, "PAUSED"),
+            )
+        )
+    assert len(writes) == 1
+    assert service._pause_attempted is True
 
 
 @pytest.mark.parametrize(

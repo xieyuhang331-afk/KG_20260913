@@ -474,6 +474,13 @@ def test_A2_2_R_Fresh真实服务H4H5前置仍处理后部H3H0且最终仅Pause�
             ):
                 pytest.fail("A2_REMEDIATION_FRESH_SUMMARY_INVALID")
             public_summary = summary.to_public_dict()
+            if (
+                public_summary["processed_count"] != 5
+                or public_summary["mutation_count"] != "SMALL_COUNT"
+                or set(public_summary["class_status_counts"].values())
+                != {"SMALL_COUNT"}
+            ):
+                pytest.fail("A2_REMEDIATION_PUBLIC_COUNT_SUPPRESSION_INVALID")
             public_text = repr(public_summary).lower()
             for forbidden in (
                 str(h4_user_ref),
@@ -907,7 +914,15 @@ def test_A2_2_R_Fresh无H4H5真实服务最终唯一Complete(
                 }
             ):
                 pytest.fail("A2_REMEDIATION_COMPLETED_SUMMARY_INVALID")
-            public_text = repr(summary.to_public_dict()).lower()
+            public_summary = summary.to_public_dict()
+            if (
+                public_summary["processed_count"] != "SMALL_COUNT"
+                or public_summary["mutation_count"] != "SMALL_COUNT"
+                or set(public_summary["class_status_counts"].values())
+                != {"SMALL_COUNT"}
+            ):
+                pytest.fail("A2_REMEDIATION_PUBLIC_COUNT_SUPPRESSION_INVALID")
+            public_text = repr(public_summary).lower()
             for forbidden in (
                 *(str(value) for value in user_refs),
                 synthetic_name.lower(),
