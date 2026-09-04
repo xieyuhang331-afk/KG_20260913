@@ -74,7 +74,8 @@ async def post_upload_complete(file_id: str, payload: UploadCompleteRequest, cur
 
 
 @router.get("/{file_id}")
-async def get_file(file_id: str, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_institution_onboarding_reader_session)):
+async def get_file(file_id: str, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_institution_onboarding_reader_session)):
+    response.headers["Cache-Control"] = "no-store"
     return ok_response(await _safe_call(metadata(session, current_user.id, file_id)))
 
 

@@ -9,6 +9,8 @@ DISPATCH_TASK_NAME = "identity.registration.dispatch_outbox"
 RECONCILE_TASK_NAME = "identity.registration.reconcile_outbox"
 PRIVATE_FILE_QUEUE = "private-file"
 PRIVATE_FILE_SCAN_TASK_NAME = "phase1.private_file.scan"
+PRIVATE_FILE_RECOVER_TASK_NAME = "phase1.private_file.recover_pending"
+PRIVATE_FILE_CLEANUP_TASK_NAME = "phase1.private_file.cleanup_orphans"
 THERAPIST_WORKFLOW_QUEUE = "therapist-workflow"
 MEMBER_ENROLLMENT_QUEUE = "member-enrollment-workflow"
 SLICE4_HEALTH_QUEUE = "slice4-health-workflow"
@@ -61,6 +63,8 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
             DISPATCH_TASK_NAME: {"queue": REGISTRATION_QUEUE},
             RECONCILE_TASK_NAME: {"queue": REGISTRATION_QUEUE},
             PRIVATE_FILE_SCAN_TASK_NAME: {"queue": PRIVATE_FILE_QUEUE},
+            PRIVATE_FILE_RECOVER_TASK_NAME: {"queue": PRIVATE_FILE_QUEUE},
+            PRIVATE_FILE_CLEANUP_TASK_NAME: {"queue": PRIVATE_FILE_QUEUE},
             "phase1.therapist.dispatch_outbox": {"queue": THERAPIST_WORKFLOW_QUEUE},
             "phase1.therapist.consume_outbox": {"queue": THERAPIST_WORKFLOW_QUEUE},
             "phase1.therapist.recover_workflow": {"queue": THERAPIST_WORKFLOW_QUEUE},
@@ -102,6 +106,16 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
                 "task": RECONCILE_TASK_NAME,
                 "schedule": 60.0,
                 "options": {"queue": REGISTRATION_QUEUE},
+            },
+            "private-file-scan-recovery": {
+                "task": PRIVATE_FILE_RECOVER_TASK_NAME,
+                "schedule": 60.0,
+                "options": {"queue": PRIVATE_FILE_QUEUE},
+            },
+            "private-file-orphan-cleanup": {
+                "task": PRIVATE_FILE_CLEANUP_TASK_NAME,
+                "schedule": 300.0,
+                "options": {"queue": PRIVATE_FILE_QUEUE},
             },
             "therapist-workflow-dispatch": {
                 "task": "phase1.therapist.dispatch_outbox",
