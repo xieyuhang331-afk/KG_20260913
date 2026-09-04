@@ -116,7 +116,10 @@ export function InstitutionReviewPage() {
 		setMessage("");
 		try {
 			const access = await requestPrivateFileAccess(fileId, password);
-			const blob = await fetchPrivateFileContent(access.access_path);
+			const blob = await fetchPrivateFileContent(
+				access.content_path,
+				access.access_credential,
+			);
 			const objectUrl = URL.createObjectURL(blob);
 			window.open(objectUrl, "_blank", "noopener,noreferrer");
 			window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
