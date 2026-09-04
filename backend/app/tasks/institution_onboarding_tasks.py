@@ -18,6 +18,7 @@ from app.modules.private_file.repository import PrivateFileRepository
 from app.modules.system.models import PLATFORM_ORG_TABLE
 from app.modules.tenant.models import TENANT_TABLE
 from app.modules.private_file.service import cleanup_orphan_private_file, record_scan
+from app.modules.private_file.storage import build_private_object_store
 from app.tasks.celery_app import (
     PRIVATE_FILE_CLEANUP_TASK_NAME,
     PRIVATE_FILE_QUEUE,
@@ -74,6 +75,16 @@ def _scanner_for_worker():
     return scanner if callable(getattr(scanner, "scan", None)) else _UnavailableScanner()
 
 
+def _object_store_for_worker():
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return build_private_object_store(
+        backend=settings.file_storage_backend,
+        root=settings.private_file_storage_root,
+    )
+
+
 def configure_private_file_scanner_for_test(scanner) -> None:
     if os.getenv("KG_TEST_ENVIRONMENT") != "ci_ephemeral":
         raise RuntimeError("PRIVATE_FILE_SCANNER_CONFIGURATION_FORBIDDEN")
@@ -88,7 +99,12 @@ def reset_private_file_scanner_for_test() -> None:
 
 async def scan_private_file(session, file_id: str, *, scanner) -> dict:
     """Queue-safe entrypoint; the Celery adapter supplies a fresh short UoW."""
-    return await record_scan(session, file_id, scanner=scanner)
+    return await record_scan(
+        session,
+        file_id,
+        scanner=scanner,
+        object_store=_object_store_for_worker(),
+    )
 
 
 @celery_app.task(
@@ -161,7 +177,15 @@ def cleanup_orphan_private_files(limit: int = 100) -> int:
 
 async def _cleanup_orphans(limit: int) -> int:
     factory = get_slice1_session_factory("file_writer")
+    object_store = _object_store_for_worker()
     async with factory() as session:
+        active_leases = await PrivateFileRepository(session).active_upload_leases(
+            now=datetime.now(UTC)
+        )
+        await object_store.cleanup_temporary(
+            active_leases=active_leases,
+            older_than=datetime.now(UTC) - timedelta(minutes=10),
+        )
         file_ids = await PrivateFileRepository(session).expired_orphan_ids(
             now=datetime.now(timezone.utc),
             limit=limit,
@@ -169,7 +193,9 @@ async def _cleanup_orphans(limit: int) -> int:
     cleaned = 0
     for file_id in file_ids:
         async with factory() as session:
-            cleaned += int(await cleanup_orphan_private_file(session, file_id))
+            cleaned += int(await cleanup_orphan_private_file(
+                session, file_id, object_store=object_store
+            ))
     return cleaned
 
 

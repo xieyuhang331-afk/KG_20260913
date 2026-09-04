@@ -1,7 +1,7 @@
 from functools import lru_cache
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,15 +55,18 @@ class Settings(BaseModel):
     jwt_access_token_expire_minutes: int = 120
     auth_context_map: dict[str, dict[str, Any]] = Field(default_factory=dict)
     async_runtime: str = "Celery + RabbitMQ"
-    file_storage_backend: str = "MinIO"
+    file_storage_backend: Literal["local_filesystem", "minio"] = "local_filesystem"
+    private_file_storage_root: str | None = None
     phase1_pilot_mode: bool = False
     institution_onboarding_writer_database_url: str | None = None
     institution_review_writer_database_url: str | None = None
     private_file_writer_database_url: str | None = None
+    private_file_access_writer_database_url: str | None = None
     institution_onboarding_reader_database_url: str | None = None
     institution_onboarding_writer_role: str | None = None
     institution_review_writer_role: str | None = None
     private_file_writer_role: str | None = None
+    private_file_access_writer_role: str | None = None
     institution_onboarding_reader_role: str | None = None
     therapist_onboarding_writer_database_url: str | None = None
     therapist_review_writer_database_url: str | None = None
@@ -210,13 +213,23 @@ def get_settings() -> Settings:
         ),
         auth_context_map=json.loads(os.getenv("KG_AUTH_CONTEXT_MAP", "{}")),
         phase1_pilot_mode=os.getenv("KG_PHASE1_PILOT_MODE", "false").lower() == "true",
+        file_storage_backend=os.getenv(
+            "KG_FILE_STORAGE_BACKEND", "local_filesystem"
+        ),
+        private_file_storage_root=os.getenv("KG_PRIVATE_FILE_STORAGE_ROOT"),
         institution_onboarding_writer_database_url=os.getenv("KG_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"),
         institution_review_writer_database_url=os.getenv("KG_INSTITUTION_REVIEW_WRITER_DATABASE_URL"),
         private_file_writer_database_url=os.getenv("KG_PRIVATE_FILE_WRITER_DATABASE_URL"),
+        private_file_access_writer_database_url=os.getenv(
+            "KG_PRIVATE_FILE_ACCESS_WRITER_DATABASE_URL"
+        ),
         institution_onboarding_reader_database_url=os.getenv("KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL"),
         institution_onboarding_writer_role=os.getenv("KG_INSTITUTION_ONBOARDING_WRITER_ROLE"),
         institution_review_writer_role=os.getenv("KG_INSTITUTION_REVIEW_WRITER_ROLE"),
         private_file_writer_role=os.getenv("KG_PRIVATE_FILE_WRITER_ROLE"),
+        private_file_access_writer_role=os.getenv(
+            "KG_PRIVATE_FILE_ACCESS_WRITER_ROLE"
+        ),
         institution_onboarding_reader_role=os.getenv("KG_INSTITUTION_ONBOARDING_READER_ROLE"),
         therapist_onboarding_writer_database_url=os.getenv("KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"),
         therapist_review_writer_database_url=os.getenv("KG_THERAPIST_REVIEW_WRITER_DATABASE_URL"),

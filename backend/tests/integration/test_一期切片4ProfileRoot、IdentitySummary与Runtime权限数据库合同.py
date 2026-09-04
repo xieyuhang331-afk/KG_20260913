@@ -1345,7 +1345,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     slice4_institution_reader_database,
     slice4_identity_authority_database,
 ) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     databases = (
         health_record_writer_database,
         assessment_readiness_writer_database,
@@ -1688,10 +1688,13 @@ async def test_D01_D13_PG10_本人正式HTTP原子创建Profile并可稳定重�
 async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列表(
     pg_database,
     real_db_client,
+    slice4_clinical_reader_database,
+    slice4_institution_reader_database,
     tmp_path,
     monkeypatch,
 ) -> None:
     from app.core.security import create_access_token
+    from app.modules.private_file.storage import LocalFilesystemAdapter
 
     generated = Uuid7Generator()
     tenant_public_id = generated.generate()
@@ -1714,6 +1717,9 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
     monkeypatch.setenv(
         "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY",
         "slice4-disposable-private-file-access-key",
+    )
+    real_db_client.app.state.private_object_store = LocalFilesystemAdapter(
+        tmp_path.resolve()
     )
     await pg_database._execute(
         "INSERT INTO public.private_file(file_id,purpose,owner_user_id,declared_size,"
@@ -1751,22 +1757,24 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
     assert detail.json()["attachments"] == [
         {"file_id": str(file_id), "mime_type": "application/pdf", "size": 8, "status": "CLEAN"}
     ]
-    created_at = await pg_database._fetch_value(
-        "SELECT created_at FROM public.private_file WHERE file_id=$1", file_id
+    object_key = await pg_database._fetch_value(
+        "SELECT object_key FROM public.private_file WHERE file_id=$1", file_id
     )
-    stored_path = (
-        tmp_path / "slice1" / f"{created_at:%Y}" / f"{created_at:%m}" / str(file_id)
-    )
+    stored_path = tmp_path / str(object_key)
     stored_path.parent.mkdir(parents=True, exist_ok=True)
     stored_path.write_bytes(file_content)
     access = real_db_client.post(
         f"/api/v1/private-files/{file_id}/access",
         headers=authorization,
-        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+        json={"reason_code": "DETECTION_REPORT"},
     )
     assert access.status_code == 200, access.json()
     content = real_db_client.get(
-        access.json()["data"]["access_path"], headers=authorization
+        access.json()["data"]["content_path"],
+        headers={
+            **authorization,
+            "X-Private-File-Access": access.json()["data"]["access_credential"],
+        },
     )
     assert content.status_code == 200
     assert content.content == file_content
@@ -1785,12 +1793,17 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
     institution_access = real_db_client.post(
         f"/api/v1/private-files/{file_id}/access",
         headers=institution_authorization,
-        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+        json={"reason_code": "DETECTION_REPORT"},
     )
     assert institution_access.status_code == 200, institution_access.json()
     institution_content = real_db_client.get(
-        institution_access.json()["data"]["access_path"],
-        headers=institution_authorization,
+        institution_access.json()["data"]["content_path"],
+        headers={
+            **institution_authorization,
+            "X-Private-File-Access": institution_access.json()["data"][
+                "access_credential"
+            ],
+        },
     )
     assert institution_content.status_code == 200
     assert institution_content.content == file_content
@@ -1813,7 +1826,7 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
     cross_tenant_access = real_db_client.post(
         f"/api/v1/private-files/{file_id}/access",
         headers=cross_tenant_authorization,
-        json={"reason_code": "REPORT_ORIGINAL_VIEW"},
+        json={"reason_code": "DETECTION_REPORT"},
     )
     assert cross_tenant_access.status_code == 404
     assert await pg_database._fetch_value(
@@ -1866,6 +1879,49 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
         "qualification_valid_until=current_date+365,submitted_at=now(),reviewed_at=now(),"
         f"updated_at=now(),version=2 WHERE therapist_id='{therapist_id}'; COMMIT;"
     )
+    snapshot_sql = (
+        "SELECT count(*) FROM public.batch_b_private_file_access_snapshot_v1("
+        f"'{file_id}',{{actor}},'{{context}}')"
+    )
+    platform_user_id = await pg_database._fetch_value(
+        'SELECT id FROM public."user" WHERE id=$1 AND role=\'super_admin\' '
+        "AND status='active'",
+        actor_user_id + 300,
+    )
+    assert platform_user_id is not None
+    clinical_matrix = (
+        (actor_user_id, "FAMILY"),
+        (therapist_user_id, "THERAPIST"),
+        (platform_user_id, "PLATFORM"),
+    )
+    for matrix_actor, prefix in clinical_matrix:
+        for suffix in ("AUTHORIZE", "CONTENT"):
+            assert await slice4_clinical_reader_database._fetch_value(
+                snapshot_sql.format(
+                    actor=matrix_actor,
+                    context=f"{prefix}_{suffix}",
+                )
+            ) == 1
+            assert await slice4_clinical_reader_database._fetch_value(
+                snapshot_sql.format(
+                    actor=199642,
+                    context=f"{prefix}_{suffix}",
+                )
+            ) == 0
+    for suffix in ("AUTHORIZE", "CONTENT"):
+        assert await slice4_institution_reader_database._fetch_value(
+            snapshot_sql.format(
+                actor=institution_user_id,
+                context=f"INSTITUTION_{suffix}",
+            )
+        ) == 1
+        assert await slice4_institution_reader_database._fetch_value(
+            snapshot_sql.format(
+                actor=199642,
+                context=f"INSTITUTION_{suffix}",
+            )
+        ) == 0
+
     therapist_authorization = {
         "Authorization": f"Bearer {create_access_token({'sub': str(therapist_user_id), 'role': 'therapist'})}"
     }

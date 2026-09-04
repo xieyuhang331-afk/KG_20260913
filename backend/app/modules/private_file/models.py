@@ -16,6 +16,25 @@ class PrivateFileModel(Base):
         CheckConstraint("declared_mime_type IN ('application/pdf','image/jpeg','image/png','application/zip')", name="mime_type"),
         CheckConstraint("status IN ('UPLOAD_INITIATED','PENDING_SCAN','CLEAN','REJECTED','SCAN_FAILED','DELETED')", name="status"),
         CheckConstraint("scan_attempt_count BETWEEN 0 AND 4 AND scan_version>=1", name="scan_attempt"),
+        CheckConstraint("upload_version>=1", name="upload_version"),
+        CheckConstraint(
+            "(upload_lease_token IS NULL)=(upload_lease_until IS NULL)",
+            name="upload_lease_pair",
+        ),
+        CheckConstraint(
+            "((actual_size IS NULL AND actual_mime_type IS NULL AND actual_sha256 IS NULL) "
+            "OR (actual_size IS NOT NULL AND actual_mime_type IS NOT NULL "
+            "AND actual_sha256 IS NOT NULL AND upload_lease_token IS NULL "
+            "AND upload_lease_until IS NULL AND upload_operation_ref_digest IS NULL))",
+            name="upload_evidence",
+        ),
+        CheckConstraint(
+            "(upload_lease_token IS NULL OR (status='UPLOAD_INITIATED' "
+            "AND actual_size IS NULL AND actual_mime_type IS NULL "
+            "AND actual_sha256 IS NULL AND "
+            "upload_operation_ref_digest ~ '^[0-9a-f]{64}$'))",
+            name="upload_lease_state",
+        ),
         CheckConstraint("(scan_lease_token IS NULL)=(scan_lease_until IS NULL)", name="scan_lease_pair"),
         CheckConstraint(
             "((status='UPLOAD_INITIATED' AND scan_attempt_count=0 "
@@ -67,3 +86,33 @@ class PrivateFileModel(Base):
     scan_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     scan_operation_ref_digest: Mapped[str | None] = mapped_column(String(64))
     scan_version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="1")
+    upload_lease_token: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    upload_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    upload_operation_ref_digest: Mapped[str | None] = mapped_column(String(64))
+    upload_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+
+
+class PrivateFileDownloadAccessModel(Base):
+    __tablename__ = "private_file_download_access"
+    __table_args__ = ({"schema": "public"},)
+
+    access_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    private_file_id: Mapped[str] = mapped_column(
+        ForeignKey("public.private_file.file_id"), nullable=False
+    )
+    actor_user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id"), nullable=False
+    )
+    access_scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_digest: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True
+    )
+    authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_evidence_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="1")

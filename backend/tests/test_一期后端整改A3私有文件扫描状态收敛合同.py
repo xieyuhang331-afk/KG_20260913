@@ -21,7 +21,7 @@ def _source(value: object) -> str:
 def test_A3_R01_OBJECT_MISSING首次立即终态且不由Celery重试():
     source = _source(service.record_scan)
     assert "OBJECT_MISSING" in source, "A3_R01_OBJECT_MISSING_TERMINAL_MISSING"
-    assert "FileNotFoundError" in source, "A3_R01_OBJECT_MISSING_BOUNDARY_MISSING"
+    assert "except PrivateFileConflict" in source, "A3_R01_OBJECT_MISSING_BOUNDARY_MISSING"
 
 
 def test_A3_R04_transient总尝试与退避由闭合常量冻结():
@@ -98,10 +98,10 @@ def test_A3_R19三任务中央路由与beat全部固定private_file队列():
 
 def test_A3_Metadata只加安全字段且no_store():
     metadata_source = _source(service.metadata)
-    api_source = _source(__import__("app.modules.private_file.api", fromlist=["router"]).get_file)
+    api_module = __import__("app.modules.private_file.api", fromlist=["router"])
     for token in ("failure_code", "retryable", "next_poll_after_seconds"):
         assert token in metadata_source
-    assert "no-store" in api_source
+    assert api_module._PRIVATE_HEADERS["Cache-Control"] == "no-store, private, max-age=0"
 
 
 def test_A3_SCAN_FAILED一期不暴露重扫入口():
@@ -522,6 +522,13 @@ async def test_A3_I1_claim_ACK未确认时scanner必须零调用(monkeypatch):
             scanner_calls["count"] += 1
             return "CLEAN"
 
+    class _Store:
+        async def stat(self, object_key):
+            raise AssertionError(object_key)
+
+        async def materialize_for_scan(self, object_key):
+            raise AssertionError(object_key)
+
     monkeypatch.setattr(service, "PrivateFileRepository", _Repo)
     monkeypatch.setattr(service, "_commit_scan_state", _commit)
     monkeypatch.setattr(service, "_acknowledge_scan_claim", _ack, raising=False)
@@ -533,7 +540,10 @@ async def test_A3_I1_claim_ACK未确认时scanner必须零调用(monkeypatch):
 
     with pytest.raises(service.HTTPException) as exc:
         await service.record_scan(
-            object(), str(preimage["file_id"]), scanner=_Scanner()
+            object(),
+            str(preimage["file_id"]),
+            scanner=_Scanner(),
+            object_store=_Store(),
         )
 
     assert exc.value.status_code == 503
@@ -543,7 +553,7 @@ async def test_A3_I1_claim_ACK未确认时scanner必须零调用(monkeypatch):
 
 def test_A3_I1_claim_ACK必须早于文件读取与scanner():
     source = _source(service.record_scan)
-    assert source.index("_acknowledge_scan_claim") < source.index("path = _path")
+    assert source.index("_acknowledge_scan_claim") < source.index("materialize_for_scan")
     assert source.index("_acknowledge_scan_claim") < source.index("scanner.scan")
 
 

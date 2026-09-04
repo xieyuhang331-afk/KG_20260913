@@ -41,12 +41,13 @@ class PrivateFileRepository:
         relation = await self.qualification_relation(file_id)
         return {**row, **relation}
 
-    async def access_snapshot(self, file_id: str):
+    async def writer_file_snapshot(self, file_id: str):
         result = await self.session.execute(select(
             PrivateFileModel.file_id, PrivateFileModel.purpose,
             PrivateFileModel.owner_user_id,
             PrivateFileModel.status, PrivateFileModel.actual_size,
-            PrivateFileModel.actual_sha256, PrivateFileModel.bound_application_id,
+            PrivateFileModel.actual_mime_type, PrivateFileModel.actual_sha256,
+            PrivateFileModel.object_key, PrivateFileModel.bound_application_id,
             PrivateFileModel.created_at,
         ).where(PrivateFileModel.file_id == file_id))
         row = result.mappings().one_or_none()
@@ -54,6 +55,43 @@ class PrivateFileRepository:
             return None
         relation = await self.qualification_relation(file_id)
         return {**row, **relation}
+
+    async def closed_access_snapshot(
+        self,
+        *,
+        file_id: str,
+        actor_user_id: int,
+        context: str,
+    ) -> dict | None:
+        result = await self.session.execute(
+            text(
+                "SELECT file_id,purpose,owner_user_id,status,actual_size,"
+                "actual_mime_type,actual_sha256,object_key,bound_application_id,"
+                "qualification_bound,reviewer_access "
+                "FROM public.batch_b_private_file_access_snapshot_v1("
+                "CAST(:file_id AS uuid),:actor_user_id,:context)"
+            ),
+            {
+                "file_id": file_id,
+                "actor_user_id": actor_user_id,
+                "context": context,
+            },
+        )
+        row = result.mappings().one_or_none()
+        return None if row is None else dict(row)
+
+    async def generated_export_file_record(self, file_id: str) -> dict | None:
+        result = await self.session.execute(select(
+            PrivateFileModel.file_id,
+            PrivateFileModel.purpose,
+            PrivateFileModel.owner_user_id,
+            PrivateFileModel.status,
+            PrivateFileModel.actual_size,
+            PrivateFileModel.actual_sha256,
+            PrivateFileModel.created_at,
+        ).where(PrivateFileModel.file_id == file_id))
+        row = result.mappings().one_or_none()
+        return None if row is None else dict(row)
 
     async def report_file_authority(
         self,
@@ -153,8 +191,95 @@ class PrivateFileRepository:
             PrivateFileModel.scan_lease_until,
             PrivateFileModel.scan_operation_ref_digest,
             PrivateFileModel.scan_version,
+            PrivateFileModel.upload_lease_token,
+            PrivateFileModel.upload_lease_until,
+            PrivateFileModel.upload_operation_ref_digest,
+            PrivateFileModel.upload_version,
         ).where(PrivateFileModel.file_id == file_id))
         return result.mappings().one_or_none()
+
+    async def claim_upload(
+        self,
+        file_id: str,
+        *,
+        owner_user_id: int,
+        lease_token: str,
+        lease_until: datetime,
+        operation_ref_digest: str,
+        now: datetime,
+    ):
+        result = await self.session.execute(
+            select(PrivateFileModel)
+            .where(PrivateFileModel.file_id == file_id)
+            .with_for_update()
+        )
+        row = result.scalar_one_or_none()
+        if row is None or row.owner_user_id != owner_user_id:
+            return None
+        if row.status != "UPLOAD_INITIATED" or row.actual_size is not None:
+            return False
+        if row.upload_lease_until is not None and row.upload_lease_until > now:
+            return False
+        row.upload_lease_token = lease_token
+        row.upload_lease_until = lease_until
+        row.upload_operation_ref_digest = operation_ref_digest
+        row.upload_version += 1
+        await self.session.flush()
+        return row
+
+    async def claimed_upload(
+        self, file_id: str, *, lease_token: str, expected_version: int
+    ):
+        result = await self.session.execute(
+            select(PrivateFileModel)
+            .where(
+                PrivateFileModel.file_id == file_id,
+                PrivateFileModel.status == "UPLOAD_INITIATED",
+                PrivateFileModel.upload_lease_token == lease_token,
+                PrivateFileModel.upload_version == expected_version,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def issue_access(self, values: Mapping[str, object]) -> dict[str, object]:
+        result = await self.session.execute(
+            text(
+                "SELECT result_code,access_version,result_digest FROM "
+                "public.batch_b_private_file_access_issue_v1("
+                "CAST(:access_id AS uuid),CAST(:private_file_id AS uuid),"
+                ":actor_user_id,:access_scope,:reason_code,:credential_digest,"
+                ":authority_digest,:content_evidence_digest,:issued_at,:expires_at)"
+            ),
+            dict(values),
+        )
+        return dict(result.mappings().one())
+
+    async def consume_access(self, values: Mapping[str, object]) -> dict[str, object]:
+        result = await self.session.execute(
+            text(
+                "SELECT result_code,access_version,result_digest FROM "
+                "public.batch_b_private_file_access_consume_v1("
+                "CAST(:access_id AS uuid),CAST(:private_file_id AS uuid),"
+                ":actor_user_id,:credential_digest,:authority_digest,"
+                ":consumed_at,:expected_version)"
+            ),
+            dict(values),
+        )
+        return dict(result.mappings().one())
+
+    async def confirm_access(self, values: Mapping[str, object]) -> dict[str, object]:
+        result = await self.session.execute(
+            text(
+                "SELECT result_code,access_version,result_digest FROM "
+                "public.batch_b_private_file_access_confirm_v1("
+                "CAST(:access_id AS uuid),CAST(:private_file_id AS uuid),"
+                ":actor_user_id,:credential_digest,:authority_digest,"
+                ":consumed_at,:expected_version)"
+            ),
+            dict(values),
+        )
+        return dict(result.mappings().one())
 
     async def claim_scan_attempt(
         self,
@@ -317,3 +442,12 @@ class PrivateFileRepository:
             if not await self.private_file_referenced(file_id):
                 safe.append(file_id)
         return tuple(safe)
+
+    async def active_upload_leases(self, *, now: datetime) -> set[str]:
+        result = await self.session.execute(
+            select(PrivateFileModel.upload_lease_token).where(
+                PrivateFileModel.upload_lease_token.is_not(None),
+                PrivateFileModel.upload_lease_until > now,
+            )
+        )
+        return {str(value) for value in result.scalars() if value is not None}

@@ -55,12 +55,31 @@ jobs:
   backend-unit:
     name: Backend Unit
     runs-on: ubuntu-latest
+    env:
+      KG_FILE_STORAGE_BACKEND: local_filesystem
     defaults:
       run:
         working-directory: backend
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare unit private storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$RUNNER_TEMP/kg-private-unit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$storage_root" in
+            "$RUNNER_TEMP"/kg-private-unit-*) ;;
+            *) echo 'Refusing an invalid unit private storage path.'; exit 1 ;;
+          esac
+          echo "::add-mask::$storage_root"
+          echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
+          if [[ -e "$storage_root" ]]; then
+            echo 'Unit private storage path was not clean before setup.'
+            exit 1
+          fi
+          install -d -m 700 "$storage_root"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -159,6 +178,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Remove unit private storage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${KG_PRIVATE_FILE_STORAGE_ROOT:-}" in
+            "$RUNNER_TEMP"/kg-private-unit-*) rm -rf -- "$KG_PRIVATE_FILE_STORAGE_ROOT" ;;
+            '') exit 0 ;;
+            *) echo 'Refusing an invalid unit private storage cleanup path.'; exit 1 ;;
+          esac
+          test ! -e "$KG_PRIVATE_FILE_STORAGE_ROOT"
+
   backend-integration:
     name: Backend Integration
     needs: repository-safety
@@ -172,6 +203,7 @@ jobs:
       KG_ALLOW_DESTRUCTIVE_TEST_DATABASE: '1'
       KG_TEST_ENVIRONMENT: ci_ephemeral
       KG_TEST_ROLE_SEPARATION: '1'
+      KG_PRIVATE_FILE_SCANNER_FACTORY: tests.test_一期切片1私有文件Celery合同:create_ci_scanner
     services:
       timescaledb:
         image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
@@ -259,6 +291,7 @@ jobs:
               "KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE": f"kg_ci_onboarding_writer_{suffix}",
               "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE": f"kg_ci_review_writer_{suffix}",
               "KG_TEST_PRIVATE_FILE_WRITER_ROLE": f"kg_ci_file_writer_{suffix}",
+              "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE": f"kg_ci_file_access_{suffix}",
               "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE": f"kg_ci_onboarding_reader_{suffix}",
               "KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE": f"kg_ci_therapist_onboarding_{suffix}",
               "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE": f"kg_ci_therapist_review_{suffix}",
@@ -476,6 +509,7 @@ jobs:
               "KG_TEST_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE",
               "KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL": "KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE",
               "KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_WRITER_ROLE",
+              "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_DATABASE_URL": "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE",
               "KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL": "KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE",
               "KG_TEST_THERAPIST_ONBOARDING_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE",
               "KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL": "KG_TEST_THERAPIST_REVIEW_WRITER_ROLE",
@@ -564,10 +598,12 @@ jobs:
           values["KG_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_ONBOARDING_WRITER_DATABASE_URL"]
           values["KG_INSTITUTION_REVIEW_WRITER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_REVIEW_WRITER_DATABASE_URL"]
           values["KG_PRIVATE_FILE_WRITER_DATABASE_URL"] = values["KG_TEST_PRIVATE_FILE_WRITER_DATABASE_URL"]
+          values["KG_PRIVATE_FILE_ACCESS_WRITER_DATABASE_URL"] = values["KG_TEST_PRIVATE_FILE_ACCESS_WRITER_DATABASE_URL"]
           values["KG_INSTITUTION_ONBOARDING_READER_DATABASE_URL"] = values["KG_TEST_INSTITUTION_ONBOARDING_READER_DATABASE_URL"]
           values["KG_INSTITUTION_ONBOARDING_WRITER_ROLE"] = values["KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE"]
           values["KG_INSTITUTION_REVIEW_WRITER_ROLE"] = values["KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE"]
           values["KG_PRIVATE_FILE_WRITER_ROLE"] = values["KG_TEST_PRIVATE_FILE_WRITER_ROLE"]
+          values["KG_PRIVATE_FILE_ACCESS_WRITER_ROLE"] = values["KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE"]
           values["KG_INSTITUTION_ONBOARDING_READER_ROLE"] = values["KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE"]
           values["KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"] = values["KG_TEST_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"]
           values["KG_THERAPIST_REVIEW_WRITER_DATABASE_URL"] = values["KG_TEST_THERAPIST_REVIEW_WRITER_DATABASE_URL"]
@@ -821,6 +857,8 @@ jobs:
             --set=institution_review_writer_password="$KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE_PASSWORD" \
             --set=private_file_writer_role="$KG_TEST_PRIVATE_FILE_WRITER_ROLE" \
             --set=private_file_writer_password="$KG_TEST_PRIVATE_FILE_WRITER_ROLE_PASSWORD" \
+            --set=private_file_access_writer_role="$KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE" \
+            --set=private_file_access_writer_password="$KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE_PASSWORD" \
             --set=institution_onboarding_reader_role="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE" \
             --set=institution_onboarding_reader_password="$KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE_PASSWORD" \
             --set=therapist_onboarding_role="$KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE" \
@@ -920,6 +958,7 @@ jobs:
           CREATE ROLE :"institution_onboarding_writer_role" LOGIN PASSWORD :'institution_onboarding_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"institution_review_writer_role" LOGIN PASSWORD :'institution_review_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"private_file_writer_role" LOGIN PASSWORD :'private_file_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+          CREATE ROLE :"private_file_access_writer_role" LOGIN PASSWORD :'private_file_access_writer_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"institution_onboarding_reader_role" LOGIN PASSWORD :'institution_onboarding_reader_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"therapist_onboarding_role" LOGIN PASSWORD :'therapist_onboarding_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
           CREATE ROLE :"therapist_review_role" LOGIN PASSWORD :'therapist_review_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -978,6 +1017,23 @@ jobs:
           REVOKE CREATE ON SCHEMA public FROM PUBLIC;
           SQL
 
+      - name: Prepare isolated private storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$RUNNER_TEMP/kg-slice7-private-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$storage_root" in
+            "$RUNNER_TEMP"/kg-slice7-private-*) ;;
+            *) echo 'Refusing an invalid private storage path.'; exit 1 ;;
+          esac
+          if [[ -e "$storage_root" ]]; then
+            echo 'Private storage path was not clean before setup.'
+            exit 1
+          fi
+          install -d -m 700 "$storage_root"
+          echo "KG_FILE_STORAGE_BACKEND=local_filesystem" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
+
       - name: Run PostgreSQL integration and migration tests
         run: >-
           python -m pytest tests/integration
@@ -994,22 +1050,11 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare isolated Slice 7 private storage
+      - name: Prepare independent Slice 7 worker
         shell: bash
         run: |
           set -euo pipefail
-          storage_root="$RUNNER_TEMP/kg-slice7-private-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          case "$storage_root" in
-            "$RUNNER_TEMP"/kg-slice7-private-*) ;;
-            *) echo 'Refusing an invalid Slice 7 private storage path.'; exit 1 ;;
-          esac
-          if [[ -e "$storage_root" ]]; then
-            echo 'Slice 7 private storage path was not clean before setup.'
-            exit 1
-          fi
-          install -d -m 700 "$storage_root"
           worker_hostname="slice7-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@$(hostname)"
-          echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
           echo 'KG_TEST_SLICE7_REAL_RABBIT=1' >>"$GITHUB_ENV"
           echo "KG_SLICE7_CI_WORKER_HOSTNAME=$worker_hostname" >>"$GITHUB_ENV"
 

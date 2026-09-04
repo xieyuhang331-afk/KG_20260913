@@ -31,6 +31,7 @@ from app.modules.member_enrollment.api import (
 )
 from app.modules.private_file.api import router as private_file_router
 from app.modules.private_file.service import authorize_generated_export_access
+from app.modules.private_file.storage import build_private_object_store
 from app.modules.therapist_qualification.api import (
     institution_router as therapist_institution_router,
     platform_router as therapist_platform_router,
@@ -67,6 +68,10 @@ def create_app() -> FastAPI:
         ],
     )
     app.state.kg_modules = get_module_registry()
+    app.state.private_object_store = build_private_object_store(
+        backend=settings.file_storage_backend,
+        root=settings.private_file_storage_root,
+    )
     app.state.slice7_export_access_authorizer = authorize_generated_export_access
     app.state.slice7_export_download_consumer = consume_personal_data_export_download
     add_request_middleware(app)

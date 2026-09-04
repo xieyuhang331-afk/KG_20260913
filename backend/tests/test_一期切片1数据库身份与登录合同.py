@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.core.config import Settings
 from app.core.database import _slice1_url
@@ -32,10 +32,12 @@ def settings(**overrides):
         institution_onboarding_writer_database_url=_database_url("ow"),
         institution_review_writer_database_url=_database_url("rw"),
         private_file_writer_database_url=_database_url("fw"),
+        private_file_access_writer_database_url=_database_url("aw"),
         institution_onboarding_reader_database_url=_database_url("rr"),
         institution_onboarding_writer_role="ow",
         institution_review_writer_role="rw",
         private_file_writer_role="fw",
+        private_file_access_writer_role="aw",
         institution_onboarding_reader_role="rr",
     )
     values.update(overrides)
@@ -46,8 +48,15 @@ def test_slice1_database_urls_and_usernames_are_strictly_isolated():
     assert _slice1_url(settings(), "onboarding_writer").startswith(
         "postgresql+asyncpg://ow:"
     )
+    assert _slice1_url(settings(), "access_writer").startswith(
+        "postgresql+asyncpg://aw:"
+    )
     with pytest.raises(RuntimeError):
         _slice1_url(settings(private_file_writer_role="rw"), "file_writer")
+    with pytest.raises(RuntimeError):
+        _slice1_url(
+            settings(private_file_access_writer_role="fw"), "access_writer"
+        )
     with pytest.raises(RuntimeError):
         _slice1_url(
             settings(
@@ -187,31 +196,47 @@ async def test_reviewer_private_file_access_requires_current_password_before_rep
         "app.modules.private_file.api.authorize_file_access",
         authorize,
     )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(private_object_store=object())
+        )
+    )
 
     with pytest.raises(HTTPException) as rejected:
         await post_file_access(
-            "file-1",
-            FileAccessRequest(
+            file_id="file-1",
+            payload=FileAccessRequest(
                 reason_code="INSTITUTION_REVIEW",
                 reauth_password="WrongPassword123!",
             ),
-            reviewer,
-            object(),
-            object(),
+            request=request,
+            response=Response(),
+            current_user=reviewer,
+            session=object(),
+            access_writer_session=object(),
+            identity_session=object(),
+            report_authority_session=object(),
+            report_institution_session=object(),
         )
     assert rejected.value.status_code == 403
     assert rejected.value.detail == "PRIVATE_FILE_REAUTH_REQUIRED"
     authorize.assert_not_awaited()
 
     response = await post_file_access(
-        "file-1",
-        FileAccessRequest(
+        file_id="file-1",
+        payload=FileAccessRequest(
             reason_code="INSTITUTION_REVIEW",
             reauth_password=current_password,
         ),
-        reviewer,
-        object(),
-        object(),
+        request=request,
+        response=Response(),
+        current_user=reviewer,
+        session=object(),
+        access_writer_session=object(),
+        identity_session=object(),
+        report_authority_session=object(),
+        report_institution_session=object(),
     )
-    assert response["data"]["access_path"].endswith("token=opaque-token")
+    assert response["data"]["content_path"] == "/api/v1/private-files/file-1/content"
+    assert response["data"]["access_credential"] == "opaque-token"
     authorize.assert_awaited_once()

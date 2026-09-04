@@ -30,6 +30,7 @@ from app.modules.private_file.service import (
     authorize_generated_export_access,
     read_authorized_content,
 )
+from app.modules.private_file.storage import LocalFilesystemAdapter
 from app.tasks.slice7_service_fulfillment_tasks import _generate_export, _recover
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
 
@@ -105,11 +106,11 @@ def test_0031到0032到0031到0032生命周期保持单一Head(pg_database) -> N
         assert "application/zip" in definitions
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
 
 
 def test_0032单一Head且对象和六身份ACL闭合(pg_database) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     actual = set(pg_database.fetch_column(
         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
         "AND (tablename LIKE ANY(ARRAY['service_%','personal_data_export_%']) "
@@ -813,21 +814,26 @@ def test_D31_D40_内部Worker生成ZIP并一次性下载且无基础表扩权(
                             await session.rollback()
                         return consumed
 
-                    content, mime_type = await read_authorized_content(
+                    stream, mime_type = await read_authorized_content(
                         file_session,
+                        None,
                         int(seeded["family_actor_id"]),
                         str(export_id),
                         token,
                         export_access_consumer=consume,
+                        object_store=LocalFilesystemAdapter(tmp_path),
                     )
+                    content = b"".join([chunk async for chunk in stream])
                     assert mime_type == "application/zip"
                     with pytest.raises(HTTPException) as replay:
                         await read_authorized_content(
                             file_session,
+                            None,
                             int(seeded["family_actor_id"]),
                             str(export_id),
                             token,
                             export_access_consumer=consume,
+                            object_store=LocalFilesystemAdapter(tmp_path),
                         )
                     assert replay.value.status_code == 403
                     return requested, content
@@ -922,6 +928,11 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
     tmp_path,
 ) -> None:
     monkeypatch.setenv("KG_PRIVATE_FILE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        real_db_client.app.state,
+        "private_object_store",
+        LocalFilesystemAdapter(tmp_path.resolve()),
+    )
     actor_id = int(slice7_seeded["family_actor_id"])
     token = create_access_token({"sub": str(actor_id), "role": "member"})
     path = "/api/v1/family/data-exports"
@@ -1002,8 +1013,10 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
     )
     revoked = real_db_client.get(
         content_path,
-        headers={"Authorization": f"Bearer {token}"},
-        params={"token": access.json()["access_token"]},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Private-File-Access": access.json()["access_token"],
+        },
     )
     assert revoked.status_code == 403
     assert pg_database.fetch_value(
@@ -1015,19 +1028,23 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
     )
     download = real_db_client.get(
         content_path,
-        headers={"Authorization": f"Bearer {token}"},
-        params={"token": access.json()["access_token"]},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Private-File-Access": access.json()["access_token"],
+        },
     )
     assert download.status_code == 200
-    assert download.headers["Cache-Control"] == "no-store"
+    assert download.headers["Cache-Control"] == "no-store, private, max-age=0"
     assert download.headers["content-type"].startswith("application/zip")
     with ZipFile(BytesIO(download.content)) as archive:
         assert archive.namelist() == ["manifest.json", "data/assessment.json"]
 
     replay = real_db_client.get(
         content_path,
-        headers={"Authorization": f"Bearer {token}"},
-        params={"token": access.json()["access_token"]},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Private-File-Access": access.json()["access_token"],
+        },
     )
     assert replay.status_code == 403
     assert pg_database.fetch_value(
@@ -1197,7 +1214,7 @@ def test_0032非空降级在任何破坏性DDL前fail_closed(pg_database) -> Non
     config = _build_alembic_config(_get_test_database_url())
     with pytest.raises(RuntimeError, match="Slice 7 downgrade requires empty module tables"):
         command.downgrade(config, "20260826_0031")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     assert pg_database.fetch_value(
         "SELECT to_regprocedure('public.slice7_export_private_file_register_v1(jsonb)')"
     ) is not None

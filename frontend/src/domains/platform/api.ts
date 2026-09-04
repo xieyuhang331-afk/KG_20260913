@@ -88,18 +88,27 @@ export const decideInstitutionReview = (id: string, payload: InstitutionReviewDe
     body: JSON.stringify(payload),
   });
 export const requestPrivateFileAccess = (fileId: string, reauthPassword: string) =>
-  apiRequest<{ access_path: string }>(`/api/v1/private-files/${fileId}/access`, {
+  apiRequest<{
+    content_path: string;
+    access_credential: string;
+    expires_at_epoch: number;
+  }>(`/api/v1/private-files/${fileId}/access`, {
     method: "POST",
     body: JSON.stringify({
       reason_code: "INSTITUTION_REVIEW",
       reauth_password: reauthPassword,
     }),
   });
-export const fetchPrivateFileContent = async (accessPath: string) => {
+export const fetchPrivateFileContent = async (contentPath: string, credential: string) => {
   const token = getAccessToken();
   const headers = new Headers();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${env.apiBaseUrl}${accessPath}`, { headers });
+  headers.set("X-Private-File-Access", credential);
+  const response = await fetch(`${env.apiBaseUrl}${contentPath}`, {
+    headers,
+    cache: "no-store",
+    referrerPolicy: "no-referrer",
+  });
   if (!response.ok) throw new Error("材料读取失败");
   return response.blob();
 };

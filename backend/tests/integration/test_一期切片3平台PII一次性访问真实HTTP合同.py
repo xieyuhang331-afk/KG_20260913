@@ -907,7 +907,7 @@ def test_0027受限Preimage权威升级降级权限完全对称(pg_database) -> 
         )
 
     assert pg_database.fetch_value(
-        "SELECT version_num='20260904_0037' FROM alembic_version"
+        "SELECT version_num='20260904_0038' FROM alembic_version"
     )
     assert pg_database.fetch_rows(
         "SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed",
@@ -942,5 +942,5 @@ def test_0027受限Preimage权威升级降级权限完全对称(pg_database) -> 
     assert_base_acl()
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
-        "SELECT version_num='20260904_0037' FROM alembic_version"
+        "SELECT version_num='20260904_0038' FROM alembic_version"
     )

@@ -182,7 +182,7 @@ def test_A2_2匿名盘点Fresh数据库只读稳定且不输出行级事实(pg_d
 
     after = _business_state_hash(pg_database)
     assert before == after
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
 
 
 def test_A2_2匿名盘点事务为RepeatableRead且禁止DML_DDL(pg_database, monkeypatch) -> None:

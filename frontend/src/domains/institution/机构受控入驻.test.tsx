@@ -554,7 +554,9 @@ describe("一期切片1机构受控入驻", () => {
       ],
     });
     vi.mocked(platformApi.requestPrivateFileAccess).mockResolvedValue({
-      access_path: "/api/v1/private-files/file-1/content?token=opaque",
+      content_path: "/api/v1/private-files/file-1/content",
+      access_credential: "opaque-private-file-credential-value",
+      expires_at_epoch: 1_800_000_000,
     });
     vi.mocked(platformApi.fetchPrivateFileContent).mockResolvedValue(new Blob(["safe"], { type: "application/pdf" }));
     const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:safe-file");
@@ -568,7 +570,8 @@ describe("一期切片1机构受控入驻", () => {
       expect(platformApi.requestPrivateFileAccess).toHaveBeenCalledWith("file-1", "StrongPassword123!"),
     );
     expect(platformApi.fetchPrivateFileContent).toHaveBeenCalledWith(
-      "/api/v1/private-files/file-1/content?token=opaque",
+      "/api/v1/private-files/file-1/content",
+      "opaque-private-file-credential-value",
     );
     expect(createObjectURL).toHaveBeenCalledOnce();
     expect(open).toHaveBeenCalledWith("blob:safe-file", "_blank", "noopener,noreferrer");

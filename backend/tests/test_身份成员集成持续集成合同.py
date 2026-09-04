@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260904_0037"
+EXPECTED_HEAD = "20260904_0038"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260904_0037; found stale revision 20260816_0020"
+    "20260904_0038; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -816,6 +816,10 @@ def test_migration_fixture_verifies_connected_role_before_privileged_actions(
         monkeypatch.setenv("KG_TEST_INSTITUTION_ONBOARDING_WRITER_ROLE", "kg_ci_onboarding_writer_test_run")
         monkeypatch.setenv("KG_TEST_INSTITUTION_REVIEW_WRITER_ROLE", "kg_ci_review_writer_test_run")
         monkeypatch.setenv("KG_TEST_PRIVATE_FILE_WRITER_ROLE", "kg_ci_private_file_writer_test_run")
+        monkeypatch.setenv(
+            "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE",
+            "kg_ci_private_file_access_test_run",
+        )
         monkeypatch.setenv("KG_TEST_INSTITUTION_ONBOARDING_READER_ROLE", "kg_ci_onboarding_reader_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_ONBOARDING_WRITER_ROLE", "kg_ci_therapist_onboarding_test_run")
         monkeypatch.setenv("KG_TEST_THERAPIST_REVIEW_WRITER_ROLE", "kg_ci_therapist_review_test_run")

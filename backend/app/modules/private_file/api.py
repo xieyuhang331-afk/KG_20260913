@@ -4,11 +4,15 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 
 from app.core.database import (
     get_db_session,
     get_institution_onboarding_reader_session,
+    get_private_file_access_writer_session,
     get_private_file_writer_session,
     get_slice4_clinical_reader_session,
     get_slice4_institution_reader_session,
@@ -17,10 +21,20 @@ from app.core.database import (
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.modules.auth.service import verify_password
-from app.modules.private_file.schemas import FileAccessRequest, UploadCompleteRequest, UploadInitiateRequest
+from app.modules.private_file.schemas import (
+    FileAccessRequest,
+    PrivateFileAccessResponse,
+    PrivateFileDeleteResult,
+    PrivateFileEnvelope,
+    PrivateFileInitiated,
+    PrivateFileMetadata,
+    PrivateFileUploadResult,
+    UploadCompleteRequest,
+    UploadInitiateRequest,
+)
 from app.modules.private_file.service import (
-    complete_upload,
     authorize_file_access,
+    complete_upload,
     delete_temporary,
     initiate_upload,
     metadata,
@@ -28,8 +42,57 @@ from app.modules.private_file.service import (
     upload_content,
 )
 
+_ACCESS_WRITER_DEPENDENCY = Depends(get_private_file_access_writer_session)
 
-router = APIRouter(prefix="/api/v1/private-files", tags=["private_file"])
+_PRIVATE_HEADERS = {
+    "Cache-Control": "no-store, private, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+class _PrivateFileRoute(APIRoute):
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def private_route_handler(request: Request):
+            try:
+                return await route_handler(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "PRIVATE_FILE_REQUEST_INVALID"},
+                    headers=_PRIVATE_HEADERS,
+                )
+            except HTTPException as exc:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers={**(exc.headers or {}), **_PRIVATE_HEADERS},
+                )
+
+        return private_route_handler
+
+
+router = APIRouter(
+    prefix="/api/v1/private-files",
+    tags=["private_file"],
+    route_class=_PrivateFileRoute,
+)
+
+
+def _set_private_headers(response: Response) -> None:
+    for name, value in _PRIVATE_HEADERS.items():
+        response.headers[name] = value
+
+
+def _object_store(request: Request):
+    store = getattr(request.app.state, "private_object_store", None)
+    if store is None:
+        raise HTTPException(503, "PRIVATE_FILE_STORAGE_UNAVAILABLE")
+    return store
 
 
 def _report_access_context(current_user: CurrentUser) -> str:
@@ -51,44 +114,76 @@ async def _safe_call(awaitable):
         raise HTTPException(503, "PRIVATE_FILE_PERSISTENCE_UNAVAILABLE") from None
 
 
-@router.post("/uploads")
-async def post_upload(payload: UploadInitiateRequest, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
+@router.post("/uploads", response_model=PrivateFileEnvelope[PrivateFileInitiated])
+async def post_upload(payload: UploadInitiateRequest, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
+    _set_private_headers(response)
     return ok_response(await _safe_call(initiate_upload(session, current_user.id, payload)))
 
 
-@router.put("/uploads/{file_id}/content")
-async def put_upload_content(file_id: str, data: bytes = Body(media_type="application/octet-stream"), current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
-    await _safe_call(upload_content(session, current_user.id, file_id, data))
+@router.put(
+    "/uploads/{file_id}/content",
+    response_model=PrivateFileEnvelope[PrivateFileUploadResult],
+    responses={413: {"description": "PRIVATE_FILE_SIZE_LIMIT_EXCEEDED"}},
+)
+async def put_upload_content(file_id: str, request: Request, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
+    _set_private_headers(response)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > 10 * 1024 * 1024:
+                raise HTTPException(413, "PRIVATE_FILE_SIZE_LIMIT_EXCEEDED")
+        except ValueError:
+            raise HTTPException(422, "PRIVATE_FILE_CONTENT_LENGTH_INVALID") from None
+    await _safe_call(upload_content(
+        session,
+        current_user.id,
+        file_id,
+        request.stream(),
+        object_store=_object_store(request),
+    ))
     return ok_response({"file_id": file_id, "uploaded": True})
 
 
-@router.post("/uploads/{file_id}/complete")
-async def post_upload_complete(file_id: str, payload: UploadCompleteRequest, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
-    result = await _safe_call(complete_upload(session, current_user.id, file_id, payload))
+@router.post("/uploads/{file_id}/complete", response_model=PrivateFileEnvelope[PrivateFileUploadResult])
+async def post_upload_complete(file_id: str, payload: UploadCompleteRequest, request: Request, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
+    _set_private_headers(response)
+    result = await _safe_call(complete_upload(
+        session,
+        current_user.id,
+        file_id,
+        payload,
+        object_store=_object_store(request),
+    ))
     from app.tasks.institution_onboarding_tasks import scan_private_file_task
-    try:
-        scan_private_file_task.delay(file_id)
-    except Exception:
-        result["dispatch_pending"] = True
+    dispatch_required = bool(result.pop("dispatch_required", False))
+    if dispatch_required:
+        try:
+            scan_private_file_task.apply_async(args=(file_id,), queue="private-file")
+        except Exception:
+            result["dispatch_pending"] = True
     return ok_response(result)
 
 
-@router.get("/{file_id}")
+@router.get("/{file_id}", response_model=PrivateFileEnvelope[PrivateFileMetadata])
 async def get_file(file_id: str, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_institution_onboarding_reader_session)):
-    response.headers["Cache-Control"] = "no-store"
+    _set_private_headers(response)
     return ok_response(await _safe_call(metadata(session, current_user.id, file_id)))
 
 
-@router.post("/{file_id}/access")
+@router.post("/{file_id}/access", response_model=PrivateFileEnvelope[PrivateFileAccessResponse])
 async def post_file_access(
     file_id: str,
     payload: FileAccessRequest,
+    request: Request,
+    response: Response,
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_institution_onboarding_reader_session),
+    access_writer_session=_ACCESS_WRITER_DEPENDENCY,
     identity_session=Depends(get_db_session),
     report_authority_session=Depends(get_slice4_clinical_reader_session),
     report_institution_session=Depends(get_slice4_institution_reader_session),
 ):
+    _set_private_headers(response)
     reviewer = current_user.role == "super_admin"
     if reviewer:
         from app.modules.institution_onboarding.service import require_current_reviewer
@@ -99,7 +194,8 @@ async def post_file_access(
             raise HTTPException(403, "PRIVATE_FILE_REAUTH_REQUIRED")
     expires = int(time.time()) + 300
     token = await _safe_call(authorize_file_access(
-        session, current_user.id, file_id, payload.reason_code, expires,
+        session, access_writer_session, current_user.id, file_id,
+        payload.reason_code, expires,
         reviewer=reviewer,
         report_authority_session=(
             report_institution_session
@@ -107,22 +203,36 @@ async def post_file_access(
             else report_authority_session
         ),
         report_access_context=_report_access_context(current_user),
+        object_store=_object_store(request),
     ))
-    return ok_response({"file_id": file_id, "access_path": f"/api/v1/private-files/{file_id}/content?token={token}", "expires_at_epoch": expires})
+    return ok_response({
+        "file_id": file_id,
+        "content_path": f"/api/v1/private-files/{file_id}/content",
+        "access_credential": token,
+        "expires_at_epoch": expires,
+    })
 
 
-@router.get("/{file_id}/content")
+@router.get(
+    "/{file_id}/content",
+    responses={200: {"content": {"application/octet-stream": {}}}},
+)
 async def get_file_content(
     file_id: str,
     request: Request,
-    token: str = Query(min_length=32, max_length=2048),
+    access_credential: str | None = Header(
+        default=None, alias="X-Private-File-Access"
+    ),
     current_user: CurrentUser = Depends(get_current_user_from_jwt),
     session=Depends(get_institution_onboarding_reader_session),
+    access_writer_session=_ACCESS_WRITER_DEPENDENCY,
     identity_session=Depends(get_db_session),
     report_authority_session=Depends(get_slice4_clinical_reader_session),
     report_institution_session=Depends(get_slice4_institution_reader_session),
     export_access_session=Depends(get_slice7_transfer_writer_session),
 ):
+    if access_credential is None:
+        raise HTTPException(403, "PRIVATE_FILE_ACCESS_INVALID")
     reviewer = current_user.role == "super_admin"
     if reviewer:
         from app.modules.institution_onboarding.service import require_current_reviewer
@@ -144,8 +254,9 @@ async def get_file_content(
             },
         ))
 
-    data, mime_type = await _safe_call(read_authorized_content(
-        session, current_user.id, file_id, token, reviewer=reviewer,
+    stream, mime_type = await _safe_call(read_authorized_content(
+        session, access_writer_session, current_user.id, file_id,
+        access_credential, reviewer=reviewer,
         report_authority_session=(
             report_institution_session
             if current_user.role in {"org_admin", "org_operator"}
@@ -153,15 +264,26 @@ async def get_file_content(
         ),
         report_access_context=_report_access_context(current_user),
         export_access_consumer=consume_export_access,
+        object_store=_object_store(request),
     ))
-    return Response(
-        content=data,
+    return StreamingResponse(
+        stream,
         media_type=mime_type,
-        headers={"Cache-Control": "no-store"} if mime_type == "application/zip" else None,
+        headers={
+            **_PRIVATE_HEADERS,
+            "Content-Disposition": "attachment",
+            "Vary": "Authorization, X-Private-File-Access",
+        },
     )
 
 
-@router.delete("/{file_id}")
-async def delete_file(file_id: str, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
-    await _safe_call(delete_temporary(session, current_user.id, file_id))
+@router.delete("/{file_id}", response_model=PrivateFileEnvelope[PrivateFileDeleteResult])
+async def delete_file(file_id: str, request: Request, response: Response, current_user: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_private_file_writer_session)):
+    _set_private_headers(response)
+    await _safe_call(delete_temporary(
+        session,
+        current_user.id,
+        file_id,
+        object_store=_object_store(request),
+    ))
     return ok_response({"file_id": file_id, "deleted": True})
