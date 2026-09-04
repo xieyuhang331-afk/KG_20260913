@@ -57,13 +57,28 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KG_FILE_STORAGE_BACKEND: local_filesystem
-      KG_PRIVATE_FILE_STORAGE_ROOT: ${{ runner.temp }}/kg-private-unit-${{ github.run_id }}-${{ github.run_attempt }}
     defaults:
       run:
         working-directory: backend
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare unit private storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$RUNNER_TEMP/kg-private-unit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$storage_root" in
+            "$RUNNER_TEMP"/kg-private-unit-*) ;;
+            *) echo 'Refusing an invalid unit private storage path.'; exit 1 ;;
+          esac
+          echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
+          if [[ -e "$storage_root" ]]; then
+            echo 'Unit private storage path was not clean before setup.'
+            exit 1
+          fi
+          install -d -m 700 "$storage_root"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -169,6 +184,7 @@ jobs:
           set -euo pipefail
           case "${KG_PRIVATE_FILE_STORAGE_ROOT:-}" in
             "$RUNNER_TEMP"/kg-private-unit-*) rm -rf -- "$KG_PRIVATE_FILE_STORAGE_ROOT" ;;
+            '') exit 0 ;;
             *) echo 'Refusing an invalid unit private storage cleanup path.'; exit 1 ;;
           esac
           test ! -e "$KG_PRIVATE_FILE_STORAGE_ROOT"

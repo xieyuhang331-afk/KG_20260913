@@ -158,6 +158,30 @@ def test_Batch_B正式Integration的private_file_Worker只装配冻结CI扫描�
     ) in integration_job
 
 
+def test_Batch_B_BackendUnit私有目录只能在Checkout后由RunnerTemp安全准备() -> None:
+    workflow = _read(WORKFLOW)
+    unit_job = workflow.split("  backend-unit:", 1)[1].split(
+        "\n  backend-integration:", 1
+    )[0]
+    assert "${{ runner.temp }}" not in unit_job
+    checkout = unit_job.index("      - name: Checkout")
+    prepare = unit_job.index("      - name: Prepare unit private storage")
+    first_python_test = unit_job.index(
+        "      - name: Enforce Python lock and Ruff no-new-debt gates"
+    )
+    assert checkout < prepare < first_python_test
+    for token in (
+        'storage_root="$RUNNER_TEMP/kg-private-unit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+        '"$RUNNER_TEMP"/kg-private-unit-*',
+        'echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"',
+        'install -d -m 700 "$storage_root"',
+        "if: always()",
+        "'') exit 0 ;;",
+        'rm -rf -- "$KG_PRIVATE_FILE_STORAGE_ROOT"',
+    ):
+        assert token in unit_job, f"BATCH_B_UNIT_STORAGE_CONTRACT_MISSING_{token}"
+
+
 def test_Batch_B_0038闭合函数无JSON且仅授予access_writer执行() -> None:
     source = _read(MIGRATION)
     for name in (
