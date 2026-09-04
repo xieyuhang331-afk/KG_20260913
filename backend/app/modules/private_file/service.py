@@ -7,10 +7,11 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,10 @@ from app.modules.private_file.domain import (
     PrivateFile,
     PrivateFileConflict,
     PrivateFileStatus,
+    PRIVATE_FILE_SCAN_LEASE,
+    PRIVATE_FILE_SCAN_MAX_ATTEMPTS,
+    PrivateFileScanFailure,
+    private_file_scan_retry_delay,
     validate_generated_export_archive,
 )
 from app.modules.private_file.models import PrivateFileModel
@@ -38,18 +43,46 @@ class PrivateFileScanUnavailable(RuntimeError):
     pass
 
 
+_SCAN_SNAPSHOT_FIELDS = (
+    "file_id",
+    "status",
+    "actual_size",
+    "actual_mime_type",
+    "actual_sha256",
+    "scanned_at",
+    "deleted_at",
+    "scan_attempt_count",
+    "scan_last_error_code",
+    "scan_next_retry_at",
+    "scan_lease_token",
+    "scan_lease_until",
+    "scan_operation_ref_digest",
+    "scan_version",
+)
+
+
 async def _safe_rollback(session) -> None:
+    cancellation: asyncio.CancelledError | None = None
     rollback_task = asyncio.create_task(session.rollback())
     try:
         await asyncio.shield(rollback_task)
-    except asyncio.CancelledError:
-        try:
+    except asyncio.CancelledError as exc:
+        cancellation = exc
+        with suppress(BaseException):
             await rollback_task
-        except Exception:
-            await session.close()
-        raise
     except Exception:
-        await session.close()
+        pass
+    close_task = asyncio.create_task(session.close())
+    try:
+        await asyncio.shield(close_task)
+    except asyncio.CancelledError as exc:
+        cancellation = cancellation or exc
+        with suppress(BaseException):
+            await close_task
+    except Exception:
+        pass
+    if cancellation is not None:
+        raise cancellation
 
 
 async def _commit_private_file(session, file_id: str, expected: dict) -> None:
@@ -77,6 +110,113 @@ async def _commit_private_file(session, file_id: str, expected: dict) -> None:
         raise
     except Exception:
         raise HTTPException(503, PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN) from None
+
+
+def _exact_scan_snapshot(value) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {name: value[name] for name in _SCAN_SNAPSHOT_FIELDS}
+
+
+async def _confirm_scan_commit_outcome(
+    bind,
+    file_id: str,
+    *,
+    preimage: dict[str, object],
+    postimage: dict[str, object],
+) -> str:
+    try:
+        async with AsyncSession(bind=bind, expire_on_commit=False) as confirmation:
+            persisted = _exact_scan_snapshot(
+                await PrivateFileRepository(confirmation).persistence_snapshot(file_id)
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return "UNKNOWN"
+    if persisted == postimage:
+        return "COMMITTED"
+    if persisted == preimage:
+        return "NOT_COMMITTED"
+    return "UNKNOWN"
+
+
+async def _isolate_scan_commit_unknown(bind, file_id: str) -> bool:
+    isolation = AsyncSession(bind=bind, expire_on_commit=False)
+    postimage: dict[str, object] | None = None
+    try:
+        row = await PrivateFileRepository(isolation).isolate_scan_commit_unknown(
+            file_id, now=datetime.now(UTC)
+        )
+        if row is None:
+            await _safe_rollback(isolation)
+            return False
+        postimage = _exact_scan_snapshot(
+            await PrivateFileRepository(isolation).persistence_snapshot(file_id)
+        )
+        assert postimage is not None
+        try:
+            await isolation.commit()
+            await isolation.close()
+            return True
+        except asyncio.CancelledError:
+            await _safe_rollback(isolation)
+            raise
+        except Exception:
+            await _safe_rollback(isolation)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        with suppress(BaseException):
+            await _safe_rollback(isolation)
+        return False
+    try:
+        async with AsyncSession(bind=bind, expire_on_commit=False) as confirmation:
+            persisted = _exact_scan_snapshot(
+                await PrivateFileRepository(confirmation).persistence_snapshot(file_id)
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return False
+    return persisted == postimage
+
+
+async def _commit_scan_state(
+    session,
+    file_id: str,
+    *,
+    preimage: dict[str, object],
+    postimage: dict[str, object],
+) -> str:
+    bind = session.bind
+    cancellation: asyncio.CancelledError | None = None
+    try:
+        await session.commit()
+        return "COMMITTED"
+    except asyncio.CancelledError as exc:
+        cancellation = exc
+        with suppress(asyncio.CancelledError):
+            await _safe_rollback(session)
+    except Exception:
+        await _safe_rollback(session)
+    if bind is None:
+        outcome = "UNKNOWN"
+    else:
+        outcome = await _confirm_scan_commit_outcome(
+            bind, file_id, preimage=preimage, postimage=postimage
+        )
+        if outcome == "UNKNOWN":
+            try:
+                await _isolate_scan_commit_unknown(bind, file_id)
+            except asyncio.CancelledError:
+                if cancellation is None:
+                    raise
+            except Exception:
+                pass
+    if cancellation is not None:
+        raise cancellation
+    return outcome
 
 
 def _storage_root() -> Path:
@@ -289,33 +429,161 @@ async def complete_upload(session, user_id: int, file_id: str, payload: UploadCo
 async def record_scan(
     session, file_id: str, *, scanner: PrivateFileScanner
 ) -> dict:
-    repo = PrivateFileRepository(session); row = await repo.get(file_id, for_update=True)
-    if row is None: raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
-    path = _path(row.object_key); data = await asyncio.to_thread(path.read_bytes)
-    if row.status != "PENDING_SCAN":
-        raise HTTPException(409, "PRIVATE_FILE_STATE_CONFLICT")
-    if row.actual_size != len(data) or not hmac.compare_digest(
-        row.actual_sha256 or "", hashlib.sha256(data).hexdigest()
-    ):
-        raise HTTPException(409, "PRIVATE_FILE_EVIDENCE_MISMATCH")
+    now = datetime.now(UTC)
+    lease_token = str(uuid4())
+    operation_ref_digest = hashlib.sha256(
+        f"A3_SCAN_CLAIM_V1\x1f{file_id}\x1f{lease_token}".encode()
+    ).hexdigest()
+    claim: dict[str, object] | None = None
+    for _ in range(2):
+        repo = PrivateFileRepository(session)
+        persisted = await repo.persistence_snapshot(file_id)
+        if persisted is None:
+            raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+        preimage = _exact_scan_snapshot(persisted)
+        assert preimage is not None
+        row = await repo.claim_scan_attempt(
+            file_id,
+            lease_token=lease_token,
+            operation_ref_digest=operation_ref_digest,
+            now=now,
+            lease_until=now + PRIVATE_FILE_SCAN_LEASE,
+        )
+        if row is None:
+            await session.rollback()
+            return {"file_id": file_id, "status": str(persisted["status"]), "claimed": False}
+        frozen_claim = {
+            "file_id": file_id,
+            "object_key": row.object_key,
+            "actual_size": row.actual_size,
+            "actual_mime_type": row.actual_mime_type,
+            "actual_sha256": row.actual_sha256,
+            "attempt_count": row.scan_attempt_count + 1,
+            "lease_token": lease_token,
+            "scan_version": row.scan_version,
+        }
+        postimage = _exact_scan_snapshot(await repo.persistence_snapshot(file_id))
+        assert postimage is not None
+        outcome = await _commit_scan_state(
+            session, file_id, preimage=preimage, postimage=postimage
+        )
+        if outcome == "COMMITTED":
+            claim = frozen_claim
+            break
+        if outcome == "UNKNOWN":
+            raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
+    if claim is None:
+        raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
+
+    path = _path(str(claim["object_key"]))
     try:
-        result = await scanner.scan(path, mime_type=row.actual_mime_type)
+        data = await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError:
+        return await _finalize_scan_attempt(
+            session,
+            claim,
+            status="SCAN_FAILED",
+            failure=PrivateFileScanFailure.OBJECT_MISSING,
+        )
+    if claim["actual_size"] != len(data) or not hmac.compare_digest(
+        str(claim["actual_sha256"] or ""), hashlib.sha256(data).hexdigest()
+    ):
+        return await _finalize_scan_attempt(
+            session,
+            claim,
+            status="SCAN_FAILED",
+            failure=PrivateFileScanFailure.EVIDENCE_MISMATCH,
+        )
+    try:
+        result = await scanner.scan(path, mime_type=str(claim["actual_mime_type"]))
     except asyncio.CancelledError:
-        await _safe_rollback(session)
         raise
-    except (PrivateFileScannerUnavailable, TimeoutError) as exc:
-        await _safe_rollback(session)
-        raise PrivateFileScanUnavailable(PRIVATE_FILE_SCANNER_UNAVAILABLE) from None
-    except Exception as exc:
-        del exc
-        await _safe_rollback(session)
-        raise PrivateFileScanUnavailable(PRIVATE_FILE_SCANNER_UNAVAILABLE) from None
+    except (PrivateFileScannerUnavailable, TimeoutError):
+        return await _finalize_scan_attempt(
+            session,
+            claim,
+            status="PENDING_SCAN",
+            failure=PrivateFileScanFailure.SCAN_SERVICE_UNAVAILABLE,
+        )
+    except Exception:
+        return await _finalize_scan_attempt(
+            session,
+            claim,
+            status="PENDING_SCAN",
+            failure=PrivateFileScanFailure.SCAN_SERVICE_UNAVAILABLE,
+        )
     if result not in {"CLEAN", "REJECTED"}:
-        await _safe_rollback(session)
-        raise PrivateFileScanUnavailable(PRIVATE_FILE_SCANNER_UNAVAILABLE)
-    value = _domain(row); now = datetime.now(timezone.utc); value.record_scan(result, now=now); row.status = value.status.value; row.scanned_at = now
-    await _commit_private_file(session, row.file_id, {"status": row.status, "scanned_at": row.scanned_at})
-    return {"file_id": row.file_id, "status": row.status}
+        return await _finalize_scan_attempt(
+            session,
+            claim,
+            status="PENDING_SCAN",
+            failure=PrivateFileScanFailure.SCAN_SERVICE_UNAVAILABLE,
+        )
+    return await _finalize_scan_attempt(session, claim, status=result)
+
+
+async def _finalize_scan_attempt(
+    session,
+    claim: dict[str, object],
+    *,
+    status: str,
+    failure: PrivateFileScanFailure | None = None,
+) -> dict:
+    attempt_count = int(claim["attempt_count"])
+    retry_after = (
+        private_file_scan_retry_delay(attempt_count)
+        if status == "PENDING_SCAN"
+        else None
+    )
+    if status == "PENDING_SCAN" and retry_after is None:
+        status = "SCAN_FAILED"
+    now = datetime.now(UTC)
+    for _ in range(2):
+        repo = PrivateFileRepository(session)
+        persisted = await repo.persistence_snapshot(str(claim["file_id"]))
+        if persisted is None:
+            raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+        preimage = _exact_scan_snapshot(persisted)
+        assert preimage is not None
+        row = await repo.get_claimed_scan(
+            str(claim["file_id"]),
+            lease_token=str(claim["lease_token"]),
+            expected_version=int(claim["scan_version"]),
+        )
+        if row is None:
+            await session.rollback()
+            return {
+                "file_id": str(claim["file_id"]),
+                "status": str(persisted["status"]),
+                "claimed": False,
+            }
+        row.status = status
+        row.scan_attempt_count = attempt_count
+        row.scan_last_error_code = failure.value if failure is not None else None
+        row.scan_next_retry_at = (
+            now + timedelta(seconds=retry_after)
+            if status == "PENDING_SCAN" and retry_after is not None
+            else None
+        )
+        row.scan_lease_token = None
+        row.scan_lease_until = None
+        row.scan_version += 1
+        if status in {"CLEAN", "REJECTED", "SCAN_FAILED"}:
+            row.scanned_at = now
+        await session.flush()
+        postimage = _exact_scan_snapshot(await repo.persistence_snapshot(row.file_id))
+        assert postimage is not None
+        outcome = await _commit_scan_state(
+            session, row.file_id, preimage=preimage, postimage=postimage
+        )
+        if outcome == "COMMITTED":
+            result = {"file_id": row.file_id, "status": status, "claimed": True}
+            if status == "PENDING_SCAN" and retry_after is not None:
+                result["retry_after"] = retry_after
+            return result
+        if outcome == "UNKNOWN":
+            raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
+    raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
 
 
 async def mark_scan_failed(session, file_id: str) -> dict:
@@ -327,6 +595,11 @@ async def mark_scan_failed(session, file_id: str) -> dict:
     if row.status != "PENDING_SCAN":
         raise HTTPException(409, "PRIVATE_FILE_STATE_CONFLICT")
     row.status = "SCAN_FAILED"
+    row.scan_last_error_code = PrivateFileScanFailure.SCAN_SERVICE_UNAVAILABLE.value
+    row.scan_next_retry_at = None
+    row.scan_lease_token = None
+    row.scan_lease_until = None
+    row.scan_version += 1
     row.scanned_at = datetime.now(timezone.utc)
     await _commit_private_file(session, row.file_id, {"status": row.status, "scanned_at": row.scanned_at})
     return {"file_id": row.file_id, "status": row.status}
@@ -335,7 +608,25 @@ async def mark_scan_failed(session, file_id: str) -> dict:
 async def metadata(session, user_id: int, file_id: str) -> dict:
     row = await PrivateFileRepository(session).metadata(file_id)
     if row is None or row["owner_user_id"] != user_id: raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
-    return {"file_id": row["file_id"], "purpose": row["purpose"], "size": row["declared_size"], "mime_type": row["declared_mime_type"], "status": row["status"], "bound": row["bound_application_id"] is not None}
+    now = datetime.now(UTC)
+    next_retry_at = row["scan_next_retry_at"]
+    next_poll = None
+    if row["status"] == "PENDING_SCAN" and next_retry_at is not None:
+        next_poll = max(0, int((next_retry_at - now).total_seconds() + 0.999))
+    return {
+        "file_id": row["file_id"],
+        "purpose": row["purpose"],
+        "size": row["declared_size"],
+        "mime_type": row["declared_mime_type"],
+        "status": row["status"],
+        "bound": row["bound_application_id"] is not None,
+        "failure_code": row["scan_last_error_code"],
+        "retryable": (
+            row["status"] == "PENDING_SCAN"
+            and row["scan_attempt_count"] < PRIVATE_FILE_SCAN_MAX_ATTEMPTS
+        ),
+        "next_poll_after_seconds": next_poll,
+    }
 
 
 def _access_secret() -> bytes:
@@ -564,9 +855,28 @@ async def delete_temporary(session, user_id: int, file_id: str) -> None:
     if row.bound_application_id is not None or (snapshot and snapshot["qualification_bound"]):
         raise HTTPException(409, "PRIVATE_FILE_BOUND")
     path = _path(row.object_key)
-    row.status = "DELETED"; row.deleted_at = datetime.now(timezone.utc)
-    await _commit_private_file(session, row.file_id, {"status": row.status, "deleted_at": row.deleted_at})
-    if path.exists(): await asyncio.to_thread(path.unlink)
+    if row.status == "DELETED":
+        if path.exists():
+            await asyncio.to_thread(path.unlink)
+        return
+    row.status = "DELETED"
+    row.deleted_at = datetime.now(UTC)
+    row.scan_next_retry_at = None
+    row.scan_lease_token = None
+    row.scan_lease_until = None
+    row.scan_operation_ref_digest = None
+    row.scan_version += 1
+    await _commit_private_file(session, row.file_id, {
+        "status": row.status,
+        "deleted_at": row.deleted_at,
+        "scan_next_retry_at": None,
+        "scan_lease_token": None,
+        "scan_lease_until": None,
+        "scan_operation_ref_digest": None,
+        "scan_version": row.scan_version,
+    })
+    if path.exists():
+        await asyncio.to_thread(path.unlink)
 
 
 async def cleanup_orphan_private_file(session, file_id: str) -> bool:
@@ -579,6 +889,10 @@ async def cleanup_orphan_private_file(session, file_id: str) -> bool:
             await asyncio.to_thread(path.unlink)
             return True
         return False
+    if row.status == "PENDING_SCAN":
+        return False
+    if await PrivateFileRepository(session).private_file_referenced(file_id):
+        return False
     snapshot = await PrivateFileRepository(session).access_snapshot(file_id)
     if snapshot is not None and snapshot["qualification_bound"]:
         return False
@@ -587,7 +901,20 @@ async def cleanup_orphan_private_file(session, file_id: str) -> bool:
         return False
     row.status = "DELETED"
     row.deleted_at = datetime.now(timezone.utc)
-    await _commit_private_file(session, row.file_id, {"status": row.status, "deleted_at": row.deleted_at})
+    row.scan_next_retry_at = None
+    row.scan_lease_token = None
+    row.scan_lease_until = None
+    row.scan_operation_ref_digest = None
+    row.scan_version += 1
+    await _commit_private_file(session, row.file_id, {
+        "status": row.status,
+        "deleted_at": row.deleted_at,
+        "scan_next_retry_at": None,
+        "scan_lease_token": None,
+        "scan_lease_until": None,
+        "scan_operation_ref_digest": None,
+        "scan_version": row.scan_version,
+    })
     if path.exists():
         await asyncio.to_thread(path.unlink)
     return True

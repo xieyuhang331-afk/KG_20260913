@@ -88,7 +88,7 @@ def test_0022对象与五身份最小权限(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260903_0036"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
     assert pg_database.fetch_value(
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name=ANY($$%s$$::text[])"
@@ -469,7 +469,7 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260903_0036"
+    ) == "20260904_0037"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -501,7 +501,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260903_0036"
+    ) == "20260904_0037"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from app.tasks.celery_app import PRIVATE_FILE_QUEUE, PRIVATE_FILE_SCAN_TASK_NAME, celery_app, get_declared_queues
+from app.tasks.celery_app import (
+    PRIVATE_FILE_CLEANUP_TASK_NAME,
+    PRIVATE_FILE_QUEUE,
+    PRIVATE_FILE_RECOVER_TASK_NAME,
+    PRIVATE_FILE_SCAN_TASK_NAME,
+    celery_app,
+    get_declared_queues,
+)
 from app.tasks import institution_onboarding_tasks as tasks
 
 
@@ -26,6 +33,8 @@ def create_ci_scanner():
 def test_私有文件扫描使用独立队列且JSON序列化():
     assert PRIVATE_FILE_QUEUE in get_declared_queues()
     assert celery_app.conf.task_routes[PRIVATE_FILE_SCAN_TASK_NAME] == {"queue": PRIVATE_FILE_QUEUE}
+    assert celery_app.conf.task_routes[PRIVATE_FILE_RECOVER_TASK_NAME] == {"queue": PRIVATE_FILE_QUEUE}
+    assert celery_app.conf.task_routes[PRIVATE_FILE_CLEANUP_TASK_NAME] == {"queue": PRIVATE_FILE_QUEUE}
     assert celery_app.conf.task_serializer == "json"
     assert celery_app.conf.task_acks_late is True
     assert celery_app.conf.task_reject_on_worker_lost is True
@@ -49,8 +58,10 @@ def test_生产Worker通过显式Port工厂装配扫描器且缺失配置时fail
 def test_恢复任务与Outbox投递均注册为周期任务入口():
     source = open(tasks.__file__, encoding="utf-8").read()
     assert "dispatch_institution_outbox_task.s()" in source
-    assert "recover_pending_scan_tasks.s()" in source
-    assert "cleanup_orphan_private_files.s()" in source
+    assert "private-file-scan-recovery" in celery_app.conf.beat_schedule
+    assert "private-file-orphan-cleanup" in celery_app.conf.beat_schedule
+    assert celery_app.conf.beat_schedule["private-file-scan-recovery"]["options"] == {"queue": PRIVATE_FILE_QUEUE}
+    assert celery_app.conf.beat_schedule["private-file-orphan-cleanup"]["options"] == {"queue": PRIVATE_FILE_QUEUE}
     assert "@celery_app.on_after_finalize.connect" in source
     assert 'name="phase1.institution.approved"' in source
     assert "_consume_institution_approved_event" in source

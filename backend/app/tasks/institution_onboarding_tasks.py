@@ -5,7 +5,7 @@ import hashlib
 import importlib
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from app.core.database import dispose_slice1_runtime, get_slice1_session_factory
@@ -17,13 +17,14 @@ from app.modules.private_file.ports import PrivateFileScannerUnavailable
 from app.modules.private_file.repository import PrivateFileRepository
 from app.modules.system.models import PLATFORM_ORG_TABLE
 from app.modules.tenant.models import TENANT_TABLE
-from app.modules.private_file.service import (
-    PrivateFileScanUnavailable,
-    cleanup_orphan_private_file,
-    mark_scan_failed,
-    record_scan,
+from app.modules.private_file.service import cleanup_orphan_private_file, record_scan
+from app.tasks.celery_app import (
+    PRIVATE_FILE_CLEANUP_TASK_NAME,
+    PRIVATE_FILE_QUEUE,
+    PRIVATE_FILE_RECOVER_TASK_NAME,
+    PRIVATE_FILE_SCAN_TASK_NAME,
+    celery_app,
 )
-from app.tasks.celery_app import PRIVATE_FILE_SCAN_TASK_NAME, celery_app
 
 
 for _table_spec in (PLATFORM_ORG_TABLE, TENANT_TABLE, USER_TABLE):
@@ -92,11 +93,11 @@ async def scan_private_file(session, file_id: str, *, scanner) -> dict:
 
 @celery_app.task(
     bind=True, name=PRIVATE_FILE_SCAN_TASK_NAME, acks_late=True,
-    reject_on_worker_lost=True, max_retries=3,
+    reject_on_worker_lost=True, queue=PRIVATE_FILE_QUEUE,
 )
 def scan_private_file_task(self, file_id: str):
     try:
-        return _run_worker_uow("file_writer", lambda: _run_scan(file_id))
+        result = _run_worker_uow("file_writer", lambda: _run_scan(file_id))
     except HTTPException as exc:
         code = exc.detail if exc.detail in {
             "PRIVATE_FILE_NOT_FOUND", "PRIVATE_FILE_STATE_CONFLICT",
@@ -105,17 +106,14 @@ def scan_private_file_task(self, file_id: str):
             "PRIVATE_FILE_COMMIT_ROLLED_BACK",
         } else "PRIVATE_FILE_WORKER_REJECTED"
         raise PrivateFileWorkerRejected(code) from None
-    except PrivateFileScanUnavailable as exc:
-        if self.request.retries >= self.max_retries:
-            try:
-                return _run_worker_uow("file_writer", lambda: _mark_failed(file_id))
-            except Exception:
-                raise PrivateFileWorkerRejected(
-                    "PRIVATE_FILE_WORKER_UNAVAILABLE"
-                ) from None
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
     except Exception:
         raise PrivateFileWorkerRejected("PRIVATE_FILE_WORKER_UNAVAILABLE") from None
+    retry_after = result.get("retry_after")
+    if type(retry_after) is int:
+        scan_private_file_task.apply_async(
+            args=(file_id,), countdown=retry_after, queue=PRIVATE_FILE_QUEUE
+        )
+    return result
 
 
 async def _run_scan(file_id: str) -> dict:
@@ -125,13 +123,11 @@ async def _run_scan(file_id: str) -> dict:
         return await scan_private_file(session, file_id, scanner=scanner)
 
 
-async def _mark_failed(file_id: str) -> dict:
-    factory = get_slice1_session_factory("file_writer")
-    async with factory() as session:
-        return await mark_scan_failed(session, file_id)
-
-
-@celery_app.task(name="phase1.private_file.recover_pending", acks_late=True, queue="private-file")
+@celery_app.task(
+    name=PRIVATE_FILE_RECOVER_TASK_NAME,
+    acks_late=True,
+    queue=PRIVATE_FILE_QUEUE,
+)
 def recover_pending_scan_tasks(limit: int = 100) -> int:
     try:
         return _run_worker_uow("file_writer", lambda: _recover_pending(limit))
@@ -142,13 +138,20 @@ def recover_pending_scan_tasks(limit: int = 100) -> int:
 async def _recover_pending(limit: int) -> int:
     factory = get_slice1_session_factory("file_writer")
     async with factory() as session:
-        file_ids = await PrivateFileRepository(session).pending_scan_ids(limit=limit)
+        file_ids = await PrivateFileRepository(session).recover_pending_scan_ids(
+            now=datetime.now(UTC), limit=limit
+        )
+        await session.commit()
     for file_id in file_ids:
-        scan_private_file_task.delay(file_id)
+        scan_private_file_task.apply_async(args=(file_id,), queue=PRIVATE_FILE_QUEUE)
     return len(file_ids)
 
 
-@celery_app.task(name="phase1.private_file.cleanup_orphans", acks_late=True, queue="private-file")
+@celery_app.task(
+    name=PRIVATE_FILE_CLEANUP_TASK_NAME,
+    acks_late=True,
+    queue=PRIVATE_FILE_QUEUE,
+)
 def cleanup_orphan_private_files(limit: int = 100) -> int:
     try:
         return _run_worker_uow("file_writer", lambda: _cleanup_orphans(limit))
@@ -467,12 +470,4 @@ def _schedule_slice1_recovery(sender, **kwargs):
     sender.add_periodic_task(
         30.0, dispatch_institution_outbox_task.s(),
         name="phase1-institution-outbox-recovery",
-    )
-    sender.add_periodic_task(
-        60.0, recover_pending_scan_tasks.s(),
-        name="phase1-private-file-scan-recovery",
-    )
-    sender.add_periodic_task(
-        300.0, cleanup_orphan_private_files.s(),
-        name="phase1-private-file-orphan-cleanup",
     )

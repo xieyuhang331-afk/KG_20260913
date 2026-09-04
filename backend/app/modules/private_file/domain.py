@@ -5,6 +5,7 @@ import hashlib
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timedelta
 from enum import StrEnum
 from uuid import UUID
 from zipfile import BadZipFile, ZipFile
@@ -20,6 +21,28 @@ class PrivateFileStatus(StrEnum):
     CLEAN = "CLEAN"
     REJECTED = "REJECTED"
     SCAN_FAILED = "SCAN_FAILED"
+
+
+PRIVATE_FILE_SCAN_MAX_ATTEMPTS = 4
+PRIVATE_FILE_SCAN_RETRY_DELAYS = (5, 30, 120)
+PRIVATE_FILE_SCAN_LEASE = timedelta(minutes=5)
+
+
+class PrivateFileScanFailure(StrEnum):
+    OBJECT_MISSING = "OBJECT_MISSING"
+    EVIDENCE_MISMATCH = "EVIDENCE_MISMATCH"
+    SCAN_SERVICE_UNAVAILABLE = "SCAN_SERVICE_UNAVAILABLE"
+    WORKER_LOST = "WORKER_LOST"
+    SCAN_STATE_UNKNOWN = "SCAN_STATE_UNKNOWN"
+    COMMIT_OUTCOME_UNKNOWN = "COMMIT_OUTCOME_UNKNOWN"
+
+
+def private_file_scan_retry_delay(attempt_count: int) -> int | None:
+    if type(attempt_count) is not int or not 1 <= attempt_count <= 4:
+        raise PrivateFileConflict("PRIVATE_FILE_SCAN_ATTEMPT_INVALID")
+    if attempt_count == PRIVATE_FILE_SCAN_MAX_ATTEMPTS:
+        return None
+    return PRIVATE_FILE_SCAN_RETRY_DELAYS[attempt_count - 1]
 
 
 @dataclass(frozen=True, slots=True)
