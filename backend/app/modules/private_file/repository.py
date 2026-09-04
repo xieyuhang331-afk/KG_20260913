@@ -176,6 +176,7 @@ class PrivateFileRepository:
             row is None
             or row.status != "PENDING_SCAN"
             or row.scan_attempt_count >= 4
+            or row.scan_last_error_code == "COMMIT_OUTCOME_UNKNOWN"
             or (
                 row.scan_next_retry_at is not None
                 and row.scan_next_retry_at > now
@@ -183,11 +184,12 @@ class PrivateFileRepository:
             or (row.scan_lease_until is not None and row.scan_lease_until > now)
         ):
             return None
-        row.scan_last_error_code = None
+        row.scan_last_error_code = "COMMIT_OUTCOME_UNKNOWN"
         row.scan_next_retry_at = None
         row.scan_lease_token = lease_token
         row.scan_lease_until = lease_until
         row.scan_operation_ref_digest = operation_ref_digest
+        row.scan_attempt_count += 1
         row.scan_version += 1
         await self.session.flush()
         return row
@@ -228,6 +230,7 @@ class PrivateFileRepository:
         row.scan_next_retry_at = None
         row.scan_lease_token = None
         row.scan_lease_until = None
+        row.scan_operation_ref_digest = None
         row.scanned_at = now
         row.scan_version += 1
         await self.session.flush()
@@ -258,8 +261,16 @@ class PrivateFileRepository:
         rows = tuple(result.scalars())
         recoverable: list[str] = []
         for row in rows:
+            if row.scan_last_error_code == "COMMIT_OUTCOME_UNKNOWN":
+                row.status = "SCAN_FAILED"
+                row.scan_next_retry_at = None
+                row.scan_lease_token = None
+                row.scan_lease_until = None
+                row.scan_operation_ref_digest = None
+                row.scanned_at = now
+                row.scan_version += 1
+                continue
             if row.scan_lease_token is not None:
-                row.scan_attempt_count += 1
                 row.scan_lease_token = None
                 row.scan_lease_until = None
                 row.scan_version += 1

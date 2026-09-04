@@ -10,7 +10,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypeVar
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -37,6 +37,8 @@ PRIVATE_FILE_PERSISTENCE_UNAVAILABLE = "PRIVATE_FILE_PERSISTENCE_UNAVAILABLE"
 PRIVATE_FILE_SCANNER_UNAVAILABLE = "PRIVATE_FILE_SCANNER_UNAVAILABLE"
 PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN = "PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN"
 PRIVATE_FILE_COMMIT_ROLLED_BACK = "PRIVATE_FILE_COMMIT_ROLLED_BACK"
+
+_T = TypeVar("_T")
 
 
 class PrivateFileScanUnavailable(RuntimeError):
@@ -83,6 +85,24 @@ async def _safe_rollback(session) -> None:
         pass
     if cancellation is not None:
         raise cancellation
+
+
+async def _finish_scan_safety_step(
+    awaitable: Awaitable[_T],
+) -> tuple[_T | None, asyncio.CancelledError | None, bool]:
+    """Finish an independent safety step before restoring caller cancellation."""
+    task = asyncio.create_task(awaitable)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(task), cancellation, True
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if not task.done():
+                continue
+            if task.cancelled():
+                return None, cancellation, False
+            return task.result(), cancellation, True
 
 
 async def _commit_private_file(session, file_id: str, expected: dict) -> None:
@@ -196,27 +216,117 @@ async def _commit_scan_state(
         return "COMMITTED"
     except asyncio.CancelledError as exc:
         cancellation = exc
-        with suppress(asyncio.CancelledError):
-            await _safe_rollback(session)
+        _, cleanup_cancellation, _ = await _finish_scan_safety_step(
+            _safe_rollback(session)
+        )
+        cancellation = cancellation or cleanup_cancellation
     except Exception:
-        await _safe_rollback(session)
+        _, cleanup_cancellation, _ = await _finish_scan_safety_step(
+            _safe_rollback(session)
+        )
+        cancellation = cancellation or cleanup_cancellation
     if bind is None:
         outcome = "UNKNOWN"
     else:
-        outcome = await _confirm_scan_commit_outcome(
-            bind, file_id, preimage=preimage, postimage=postimage
+        confirmed, confirmation_cancellation, confirmation_completed = (
+            await _finish_scan_safety_step(
+                _confirm_scan_commit_outcome(
+                    bind, file_id, preimage=preimage, postimage=postimage
+                )
+            )
         )
+        cancellation = cancellation or confirmation_cancellation
+        outcome = confirmed if confirmation_completed else "UNKNOWN"
         if outcome == "UNKNOWN":
             try:
-                await _isolate_scan_commit_unknown(bind, file_id)
-            except asyncio.CancelledError:
-                if cancellation is None:
-                    raise
+                _, isolation_cancellation, _ = await _finish_scan_safety_step(
+                    _isolate_scan_commit_unknown(bind, file_id)
+                )
+                cancellation = cancellation or isolation_cancellation
             except Exception:
                 pass
     if cancellation is not None:
         raise cancellation
     return outcome
+
+
+async def _acknowledge_scan_claim(
+    session, claim: dict[str, object]
+) -> int | None:
+    for _ in range(2):
+        repo = PrivateFileRepository(session)
+        persisted = await repo.persistence_snapshot(str(claim["file_id"]))
+        if persisted is None:
+            return None
+        preimage = _exact_scan_snapshot(persisted)
+        assert preimage is not None
+        row = await repo.get_claimed_scan(
+            str(claim["file_id"]),
+            lease_token=str(claim["lease_token"]),
+            expected_version=int(claim["scan_version"]),
+        )
+        if (
+            row is None
+            or row.scan_last_error_code != "COMMIT_OUTCOME_UNKNOWN"
+        ):
+            await session.rollback()
+            return None
+        row.scan_last_error_code = None
+        row.scan_version += 1
+        await session.flush()
+        postimage = _exact_scan_snapshot(
+            await repo.persistence_snapshot(str(claim["file_id"]))
+        )
+        assert postimage is not None
+        outcome = await _commit_scan_state(
+            session,
+            str(claim["file_id"]),
+            preimage=preimage,
+            postimage=postimage,
+        )
+        if outcome == "COMMITTED":
+            return int(postimage["scan_version"])
+        if outcome == "UNKNOWN":
+            return None
+    return None
+
+
+async def _guard_scan_finalize(
+    session, claim: dict[str, object]
+) -> int | None:
+    for _ in range(2):
+        repo = PrivateFileRepository(session)
+        persisted = await repo.persistence_snapshot(str(claim["file_id"]))
+        if persisted is None:
+            return None
+        preimage = _exact_scan_snapshot(persisted)
+        assert preimage is not None
+        row = await repo.get_claimed_scan(
+            str(claim["file_id"]),
+            lease_token=str(claim["lease_token"]),
+            expected_version=int(claim["scan_version"]),
+        )
+        if row is None or row.scan_last_error_code is not None:
+            await session.rollback()
+            return None
+        row.scan_last_error_code = "COMMIT_OUTCOME_UNKNOWN"
+        row.scan_version += 1
+        await session.flush()
+        postimage = _exact_scan_snapshot(
+            await repo.persistence_snapshot(str(claim["file_id"]))
+        )
+        assert postimage is not None
+        outcome = await _commit_scan_state(
+            session,
+            str(claim["file_id"]),
+            preimage=preimage,
+            postimage=postimage,
+        )
+        if outcome == "COMMITTED":
+            return int(postimage["scan_version"])
+        if outcome == "UNKNOWN":
+            return None
+    return None
 
 
 def _storage_root() -> Path:
@@ -458,7 +568,7 @@ async def record_scan(
             "actual_size": row.actual_size,
             "actual_mime_type": row.actual_mime_type,
             "actual_sha256": row.actual_sha256,
-            "attempt_count": row.scan_attempt_count + 1,
+            "attempt_count": row.scan_attempt_count,
             "lease_token": lease_token,
             "scan_version": row.scan_version,
         }
@@ -468,6 +578,12 @@ async def record_scan(
             session, file_id, preimage=preimage, postimage=postimage
         )
         if outcome == "COMMITTED":
+            acknowledged_version = await _acknowledge_scan_claim(
+                session, frozen_claim
+            )
+            if acknowledged_version is None:
+                raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
+            frozen_claim["scan_version"] = acknowledged_version
             claim = frozen_claim
             break
         if outcome == "UNKNOWN":
@@ -538,6 +654,26 @@ async def _finalize_scan_attempt(
     if status == "PENDING_SCAN" and retry_after is None:
         status = "SCAN_FAILED"
     now = datetime.now(UTC)
+    persisted = await PrivateFileRepository(session).persistence_snapshot(
+        str(claim["file_id"])
+    )
+    if persisted is None:
+        raise HTTPException(404, "PRIVATE_FILE_NOT_FOUND")
+    if (
+        persisted["status"] != "PENDING_SCAN"
+        or persisted["scan_lease_token"] != claim["lease_token"]
+        or persisted["scan_version"] != claim["scan_version"]
+    ):
+        await session.rollback()
+        return {
+            "file_id": str(claim["file_id"]),
+            "status": str(persisted["status"]),
+            "claimed": False,
+        }
+    guarded_version = await _guard_scan_finalize(session, claim)
+    if guarded_version is None:
+        raise HTTPException(503, "PRIVATE_FILE_SCAN_STATE_UNKNOWN")
+    claim["scan_version"] = guarded_version
     for _ in range(2):
         repo = PrivateFileRepository(session)
         persisted = await repo.persistence_snapshot(str(claim["file_id"]))
@@ -624,6 +760,7 @@ async def metadata(session, user_id: int, file_id: str) -> dict:
         "retryable": (
             row["status"] == "PENDING_SCAN"
             and row["scan_attempt_count"] < PRIVATE_FILE_SCAN_MAX_ATTEMPTS
+            and row["scan_last_error_code"] != "COMMIT_OUTCOME_UNKNOWN"
         ),
         "next_poll_after_seconds": next_poll,
     }

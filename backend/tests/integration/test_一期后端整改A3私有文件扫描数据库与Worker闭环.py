@@ -216,6 +216,24 @@ def test_A3_I3_file_writer直接SQL不能制造非法scan状态(
         + "'",
     )
     try:
+        lease_token = str(uuid4())
+        private_file_writer_database.execute(
+            "UPDATE public.private_file SET scan_attempt_count=4,"
+            f"scan_lease_token='{lease_token}',"
+            "scan_lease_until=clock_timestamp()+interval '5 minutes',"
+            f"scan_operation_ref_digest='{'3' * 64}' "
+            f"WHERE file_id='{file_id}'"
+        )
+        assert pg_database.fetch_value(
+            "SELECT status='PENDING_SCAN' AND scan_attempt_count=4 "
+            "AND scan_lease_token IS NOT NULL FROM public.private_file "
+            f"WHERE file_id='{file_id}'"
+        )
+        private_file_writer_database.execute(
+            "UPDATE public.private_file SET scan_attempt_count=0,"
+            "scan_lease_token=NULL,scan_lease_until=NULL,"
+            f"scan_operation_ref_digest=NULL WHERE file_id='{file_id}'"
+        )
         for values in invalid_updates:
             with pytest.raises(CheckViolationError):
                 private_file_writer_database.execute(
@@ -436,10 +454,37 @@ async def test_A3_missing_mismatch_transient_recovery_cleanup真实数据库闭�
                 now=datetime.now(UTC), limit=10
             )
             await session.commit()
-        assert file_ids[3] not in recovered
+        assert recovered.count(file_ids[3]) == 1
+        recovered_row = await pg_database._fetch_rows(
+            "SELECT status,scan_attempt_count,scan_lease_token,"
+            "scan_operation_ref_digest FROM public.private_file WHERE file_id=$1",
+            file_ids[3],
+        )
+        assert len(recovered_row) == 1
+        assert recovered_row[0]["status"] == "PENDING_SCAN"
+        assert recovered_row[0]["scan_attempt_count"] == 3
+        assert recovered_row[0]["scan_lease_token"] is None
+        assert recovered_row[0]["scan_operation_ref_digest"] is None
+
+        async with session_factory() as session:
+            fourth = await record_scan(
+                session, file_ids[3], scanner=_UnavailableScanner()
+            )
+        assert fourth["status"] == "SCAN_FAILED"
         assert await pg_database._fetch_value(
-            "SELECT scan_last_error_code FROM public.private_file WHERE file_id=$1", file_ids[3]
-        ) == "WORKER_LOST"
+            "SELECT scan_attempt_count=4 AND scan_last_error_code="
+            "'SCAN_SERVICE_UNAVAILABLE' FROM public.private_file WHERE file_id=$1",
+            file_ids[3],
+        )
+        fifth_scanner = _CountingCleanScanner()
+        async with session_factory() as session:
+            fifth = await record_scan(session, file_ids[3], scanner=fifth_scanner)
+        assert fifth == {
+            "file_id": file_ids[3],
+            "status": "SCAN_FAILED",
+            "claimed": False,
+        }
+        assert fifth_scanner.calls == 0
 
         await pg_database._fetch_value(
             "UPDATE public.private_file SET expires_at=clock_timestamp()-interval '1 second' "
@@ -513,7 +558,7 @@ async def test_A3_R06同一file并发scan仅一个数据库claim(pg_database, mo
         scanner.release.set()
         assert (await first_task)["status"] == "CLEAN"
         assert await pg_database._fetch_value(
-            "SELECT scan_attempt_count=1 AND scan_version=3 "
+            "SELECT scan_attempt_count=1 AND scan_version=5 "
             "AND status='CLEAN' FROM public.private_file WHERE file_id=$1",
             file_id,
         )
@@ -543,7 +588,7 @@ async def test_A3_I1_claim_finalize未知或取消均隔离且recover零投递(
         engine, class_=AsyncSession, expire_on_commit=False
     )
     owner_user_id: int | None = None
-    file_ids = [str(uuid4()) for _ in range(3)]
+    file_ids = [str(uuid4()) for _ in range(5)]
     content = b"%PDF-A3-COMMIT-UNKNOWN"
     digest = hashlib.sha256(content).hexdigest()
 
@@ -586,30 +631,86 @@ async def test_A3_I1_claim_finalize未知或取消均隔离且recover零投递(
                 await record_scan(session, file_ids[1], scanner=_CountingCleanScanner())
 
         async with session_factory() as raw_session:
-            session = _CommitFailureProxy(raw_session, fail_on=2, cancelled=False)
+            session = _CommitFailureProxy(raw_session, fail_on=4, cancelled=False)
             with pytest.raises(HTTPException) as finalize_unknown:
                 await record_scan(session, file_ids[2], scanner=_CountingCleanScanner())
         assert finalize_unknown.value.detail == "PRIVATE_FILE_SCAN_STATE_UNKNOWN"
 
+        async def _isolation_unconfirmed(bind, file_id):
+            del bind, file_id
+            return False
+
+        monkeypatch.setattr(
+            private_file_service,
+            "_isolate_scan_commit_unknown",
+            _isolation_unconfirmed,
+        )
+        scanner = _CountingCleanScanner()
+        async with session_factory() as raw_session:
+            session = _CommitFailureProxy(raw_session, fail_on=2, cancelled=False)
+            with pytest.raises(HTTPException) as ack_unknown:
+                await record_scan(session, file_ids[3], scanner=scanner)
+        assert ack_unknown.value.detail == "PRIVATE_FILE_SCAN_STATE_UNKNOWN"
+        assert scanner.calls == 0
+
+        guarded = await pg_database._fetch_rows(
+            "SELECT status,scan_last_error_code,scan_lease_token,scan_version "
+            f"FROM public.private_file WHERE file_id='{file_ids[3]}'"
+        )
+        assert len(guarded) == 1
+        assert guarded[0]["status"] == "PENDING_SCAN"
+        assert guarded[0]["scan_last_error_code"] == "COMMIT_OUTCOME_UNKNOWN"
+        assert guarded[0]["scan_lease_token"] is not None
+        guarded_version = guarded[0]["scan_version"]
+
+        finalize_scanner = _CountingCleanScanner()
+        async with session_factory() as raw_session:
+            session = _CommitFailureProxy(raw_session, fail_on=4, cancelled=False)
+            with pytest.raises(HTTPException) as fenced_finalize_unknown:
+                await record_scan(
+                    session, file_ids[4], scanner=finalize_scanner
+                )
+        assert fenced_finalize_unknown.value.detail == "PRIVATE_FILE_SCAN_STATE_UNKNOWN"
+        assert finalize_scanner.calls == 1
+        finalize_guarded = await pg_database._fetch_rows(
+            "SELECT status,scan_last_error_code,scan_lease_token,scan_version "
+            f"FROM public.private_file WHERE file_id='{file_ids[4]}'"
+        )
+        assert len(finalize_guarded) == 1
+        assert finalize_guarded[0]["status"] == "PENDING_SCAN"
+        assert (
+            finalize_guarded[0]["scan_last_error_code"]
+            == "COMMIT_OUTCOME_UNKNOWN"
+        )
+        assert finalize_guarded[0]["scan_lease_token"] is not None
+        finalize_guarded_version = finalize_guarded[0]["scan_version"]
+
+        async with session_factory() as session:
+            recovered = await PrivateFileRepository(session).recover_pending_scan_ids(
+                now=datetime.now(UTC) + timedelta(minutes=10), limit=10
+            )
+            await session.commit()
+        assert not set(file_ids).intersection(recovered)
+
         rows = await pg_database._fetch_rows(
-            "SELECT status,scan_last_error_code,scan_next_retry_at,scan_lease_token,"
-            "scanned_at FROM public.private_file WHERE object_key LIKE "
+            "SELECT file_id,status,scan_last_error_code,scan_next_retry_at,scan_lease_token,"
+            "scan_operation_ref_digest,scan_version,scanned_at "
+            "FROM public.private_file WHERE object_key LIKE "
             "'slice1/a3-unknown/%' ORDER BY file_id"
         )
-        assert len(rows) == 3
+        assert len(rows) == 5
         assert all(row["status"] == "SCAN_FAILED" for row in rows)
         assert all(
             row["scan_last_error_code"] == "COMMIT_OUTCOME_UNKNOWN" for row in rows
         )
         assert all(row["scan_next_retry_at"] is None for row in rows)
         assert all(row["scan_lease_token"] is None for row in rows)
+        assert all(row["scan_operation_ref_digest"] is None for row in rows)
         assert all(row["scanned_at"] is not None for row in rows)
-        async with session_factory() as session:
-            recovered = await PrivateFileRepository(session).recover_pending_scan_ids(
-                now=datetime.now(UTC), limit=10
-            )
-            await session.commit()
-        assert not set(file_ids).intersection(recovered)
+        fenced = next(row for row in rows if str(row["file_id"]) == file_ids[3])
+        assert fenced["scan_version"] == guarded_version + 1
+        finalized = next(row for row in rows if str(row["file_id"]) == file_ids[4])
+        assert finalized["scan_version"] == finalize_guarded_version + 1
     finally:
         try:
             await pg_database._execute(
