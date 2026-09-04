@@ -5,7 +5,9 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 
 from app.core.database import (
     get_db_session,
@@ -40,7 +42,6 @@ from app.modules.private_file.service import (
     upload_content,
 )
 
-router = APIRouter(prefix="/api/v1/private-files", tags=["private_file"])
 _ACCESS_WRITER_DEPENDENCY = Depends(get_private_file_access_writer_session)
 
 _PRIVATE_HEADERS = {
@@ -50,6 +51,36 @@ _PRIVATE_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
 }
+
+
+class _PrivateFileRoute(APIRoute):
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def private_route_handler(request: Request):
+            try:
+                return await route_handler(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "PRIVATE_FILE_REQUEST_INVALID"},
+                    headers=_PRIVATE_HEADERS,
+                )
+            except HTTPException as exc:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers={**(exc.headers or {}), **_PRIVATE_HEADERS},
+                )
+
+        return private_route_handler
+
+
+router = APIRouter(
+    prefix="/api/v1/private-files",
+    tags=["private_file"],
+    route_class=_PrivateFileRoute,
+)
 
 
 def _set_private_headers(response: Response) -> None:

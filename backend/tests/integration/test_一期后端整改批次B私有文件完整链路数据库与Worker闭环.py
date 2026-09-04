@@ -79,6 +79,20 @@ class _CleanScanner:
         return "CLEAN"
 
 
+class _MutatingStatStore:
+    def __init__(self, delegate, mutation):
+        self._delegate = delegate
+        self._mutation = mutation
+
+    async def stat(self, object_key: str):
+        evidence = await self._delegate.stat(object_key)
+        await self._mutation()
+        return evidence
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+
 def test_B_R31_0038对象函数与专用角色最小权限真实PostgreSQL(pg_database):
     assert MIGRATION.exists(), "B_R31_0038_MIGRATION_MISSING"
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
@@ -433,6 +447,70 @@ async def test_B_R33_流式上传complete幂等与一次性Header凭证真实数
             ) is None
 
         expires_at = int(time.time()) + 120
+
+        async def clear_actual_evidence():
+            await pg_database._fetch_value(
+                "UPDATE public.private_file SET actual_size=NULL,"
+                "actual_mime_type=NULL,actual_sha256=NULL "
+                "WHERE file_id=$1 RETURNING true",
+                file_id,
+            )
+
+        async def drift_actual_digest():
+            await pg_database._fetch_value(
+                "UPDATE public.private_file SET actual_sha256=repeat('f',64) "
+                "WHERE file_id=$1 RETURNING true",
+                file_id,
+            )
+
+        async def restore_actual_evidence():
+            await pg_database._fetch_value(
+                "UPDATE public.private_file SET actual_size=$2,"
+                "actual_mime_type='application/pdf',actual_sha256=$3 "
+                "WHERE file_id=$1 RETURNING true",
+                file_id,
+                len(content),
+                digest,
+            )
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as issue_not_available:
+                await authorize_file_access(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    "OWNER_DOWNLOAD",
+                    expires_at,
+                    object_store=_MutatingStatStore(store, clear_actual_evidence),
+                )
+        assert issue_not_available.value.status_code == 404
+        assert issue_not_available.value.detail == "PRIVATE_FILE_NOT_FOUND"
+        await restore_actual_evidence()
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as issue_evidence_mismatch:
+                await authorize_file_access(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    "OWNER_DOWNLOAD",
+                    expires_at,
+                    object_store=_MutatingStatStore(store, drift_actual_digest),
+                )
+        assert issue_evidence_mismatch.value.status_code == 409
+        assert (
+            issue_evidence_mismatch.value.detail
+            == "PRIVATE_FILE_EVIDENCE_MISMATCH"
+        )
+        await restore_actual_evidence()
+        assert await pg_database._fetch_value(
+            "SELECT count(*)=0 FROM public.private_file_download_access "
+            "WHERE private_file_id=$1",
+            file_id,
+        )
+
         async with reader_sessions() as reader, access_sessions() as access_writer:
             credential = await authorize_file_access(
                 reader,
@@ -445,6 +523,164 @@ async def test_B_R33_流式上传complete幂等与一次性Header凭证真实数
             )
         assert credential.count(".") == 2
         assert file_id not in credential
+
+        replay_access_id = str(uuid4())
+        replay_issued_at = datetime.now(UTC)
+        replay_values = {
+            "access_id": replay_access_id,
+            "private_file_id": file_id,
+            "actor_user_id": user_id,
+            "access_scope": "OWNER",
+            "reason_code": "OWNER_DOWNLOAD",
+            "credential_digest": "1" * 64,
+            "authority_digest": "2" * 64,
+            "content_evidence_digest": hashlib.sha256(
+                (
+                    f"BATCH_B_PRIVATE_FILE_CONTENT_V1;{file_id};{len(content)};"
+                    f"application/pdf;{digest}"
+                ).encode()
+            ).hexdigest(),
+            "issued_at": replay_issued_at,
+            "expires_at": replay_issued_at + timedelta(seconds=120),
+        }
+        async with access_sessions() as access_writer:
+            first_issue = await PrivateFileRepository(access_writer).issue_access(
+                replay_values
+            )
+            await access_writer.commit()
+        await clear_actual_evidence()
+        async with access_sessions() as access_writer:
+            replay_issue = await PrivateFileRepository(access_writer).issue_access(
+                replay_values
+            )
+            await access_writer.commit()
+        assert first_issue["result_code"] == replay_issue["result_code"] == "ISSUED"
+        assert first_issue["result_digest"] == replay_issue["result_digest"]
+        await restore_actual_evidence()
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            unavailable_credential = await authorize_file_access(
+                reader,
+                access_writer,
+                user_id,
+                file_id,
+                "OWNER_DOWNLOAD",
+                expires_at,
+                object_store=store,
+            )
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as consume_not_available:
+                await read_authorized_content(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    unavailable_credential,
+                    object_store=_MutatingStatStore(store, clear_actual_evidence),
+                )
+        assert consume_not_available.value.status_code == 404
+        assert consume_not_available.value.detail == "PRIVATE_FILE_NOT_FOUND"
+        unavailable_access_id = unavailable_credential.split(".", 1)[0]
+        assert await pg_database._fetch_value(
+            "SELECT consumed_at IS NULL AND version=1 "
+            "FROM public.private_file_download_access WHERE access_id=$1",
+            unavailable_access_id,
+        )
+        await restore_actual_evidence()
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            mismatch_credential = await authorize_file_access(
+                reader,
+                access_writer,
+                user_id,
+                file_id,
+                "OWNER_DOWNLOAD",
+                expires_at,
+                object_store=store,
+            )
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as consume_evidence_mismatch:
+                await read_authorized_content(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    mismatch_credential,
+                    object_store=_MutatingStatStore(store, drift_actual_digest),
+                )
+        assert consume_evidence_mismatch.value.status_code == 409
+        assert (
+            consume_evidence_mismatch.value.detail
+            == "PRIVATE_FILE_EVIDENCE_MISMATCH"
+        )
+        mismatch_access_id = mismatch_credential.split(".", 1)[0]
+        assert await pg_database._fetch_value(
+            "SELECT consumed_at IS NULL AND version=1 "
+            "FROM public.private_file_download_access WHERE access_id=$1",
+            mismatch_access_id,
+        )
+        await restore_actual_evidence()
+
+        access_id, access_version, access_secret = credential.split(".", 2)
+        forged_secret = ("A" if access_secret[0] != "A" else "B") + access_secret[1:]
+        forged_credential = f"{access_id}.{access_version}.{forged_secret}"
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as forged_error:
+                await read_authorized_content(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    forged_credential,
+                    object_store=store,
+                )
+        assert forged_error.value.status_code == 403
+        assert forged_error.value.detail == "PRIVATE_FILE_ACCESS_INVALID"
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            expired_credential = await authorize_file_access(
+                reader,
+                access_writer,
+                user_id,
+                file_id,
+                "OWNER_DOWNLOAD",
+                int(time.time()) + 120,
+                object_store=store,
+            )
+        expired_access_id = expired_credential.split(".", 1)[0]
+        await pg_database._fetch_value(
+            "UPDATE public.private_file_download_access "
+            "SET issued_at=clock_timestamp()-interval '2 minutes',"
+            "expires_at=clock_timestamp()-interval '1 minute' "
+            "WHERE access_id=$1 RETURNING true",
+            expired_access_id,
+        )
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as expired_error:
+                await read_authorized_content(
+                    reader,
+                    access_writer,
+                    user_id,
+                    file_id,
+                    expired_credential,
+                    object_store=store,
+                )
+        assert expired_error.value.status_code == 403
+        assert expired_error.value.detail == "PRIVATE_FILE_ACCESS_INVALID"
+
+        async with reader_sessions() as reader, access_sessions() as access_writer:
+            with pytest.raises(HTTPException) as cross_subject_error:
+                await read_authorized_content(
+                    reader,
+                    access_writer,
+                    other_user_id,
+                    file_id,
+                    credential,
+                    object_store=store,
+                )
+        assert cross_subject_error.value.status_code == 404
+        assert cross_subject_error.value.detail == "PRIVATE_FILE_NOT_FOUND"
+
         async with reader_sessions() as reader, access_sessions() as access_writer:
             stream, mime_type = await read_authorized_content(
                 reader,
@@ -467,10 +703,10 @@ async def test_B_R33_流式上传complete幂等与一次性Header凭证真实数
                     credential,
                     object_store=store,
                 )
-        assert replay_error.value.status_code == 503
-        assert replay_error.value.detail == "PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN"
+        assert replay_error.value.status_code == 403
+        assert replay_error.value.detail == "PRIVATE_FILE_ACCESS_INVALID"
         assert await pg_database._fetch_value(
-            "SELECT count(*)=1 AND bool_and(consumed_at IS NOT NULL) "
+            "SELECT count(*)=5 AND count(*) FILTER (WHERE consumed_at IS NOT NULL)=1 "
             "FROM public.private_file_download_access WHERE private_file_id=$1",
             file_id,
         )

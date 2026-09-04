@@ -5,7 +5,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
+from app.core.database import (
+    get_db_session,
+    get_institution_onboarding_reader_session,
+    get_private_file_access_writer_session,
+    get_private_file_writer_session,
+    get_slice4_clinical_reader_session,
+    get_slice4_institution_reader_session,
+    get_slice7_transfer_writer_session,
+)
+from app.core.security import CurrentUser, get_current_user_from_jwt
+from app.modules.private_file import api as private_file_api
 from app.modules.private_file import service
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -410,6 +423,7 @@ async def test_Batch_B一次性消费commit取消必须独立确认后传播原�
         async def consume_access(self, values):
             del values
             calls.append("consume")
+            return {"result_code": "CONSUMED"}
 
         async def confirm_access(self, values):
             del values
@@ -438,3 +452,256 @@ def test_Batch_B_0038_downgrade显式撤销access_writer_schema_usage() -> None:
     migration = _read(MIGRATION)
     downgrade = migration.split("def downgrade() -> None:", 1)[1]
     assert 'REVOKE USAGE ON SCHEMA public FROM "{access_writer}"' in downgrade
+
+
+def test_Batch_B_access函数使用闭合返回码而非异常文本分类() -> None:
+    migration = _read(MIGRATION)
+    issue = migration.split(
+        "CREATE FUNCTION public.batch_b_private_file_access_issue_v1", 1
+    )[1].split("$function$", 2)[1]
+    consume = migration.split(
+        "CREATE FUNCTION public.batch_b_private_file_access_consume_v1", 1
+    )[1].split("$function$", 2)[1]
+
+    for result_code in ("ISSUED", "NOT_AVAILABLE", "EVIDENCE_MISMATCH"):
+        assert f"'{result_code}'::VARCHAR" in issue
+    assert issue.index("SELECT * INTO stored") < issue.index(
+        "SELECT * INTO file_row"
+    )
+    assert "RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_NOT_AVAILABLE'" not in issue
+    for result_code in (
+        "CONSUMED",
+        "ACCESS_INVALID",
+        "NOT_AVAILABLE",
+        "EVIDENCE_MISMATCH",
+    ):
+        assert f"'{result_code}'::VARCHAR" in consume
+    assert "RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_INVALID'" not in consume
+    assert "RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_ALREADY_CONSUMED'" not in consume
+    assert "parse" not in _read(SERVICE).lower().split("async def _issue_access", 1)[1].split(
+        "async def _closed_access_snapshot", 1
+    )[0]
+
+
+class _AccessResultSession:
+    bind = object()
+
+    def __init__(self) -> None:
+        self.commit_calls = 0
+        self.rollback_calls = 0
+        self.close_calls = 0
+
+    async def commit(self) -> None:
+        self.commit_calls += 1
+
+    async def rollback(self) -> None:
+        self.rollback_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "result_code", "status_code", "detail"),
+    [
+        ("issue", "NOT_AVAILABLE", 404, "PRIVATE_FILE_NOT_FOUND"),
+        ("issue", "EVIDENCE_MISMATCH", 409, "PRIVATE_FILE_EVIDENCE_MISMATCH"),
+        ("consume", "ACCESS_INVALID", 403, "PRIVATE_FILE_ACCESS_INVALID"),
+        ("consume", "NOT_AVAILABLE", 404, "PRIVATE_FILE_NOT_FOUND"),
+        ("consume", "EVIDENCE_MISMATCH", 409, "PRIVATE_FILE_EVIDENCE_MISMATCH"),
+    ],
+)
+async def test_Batch_B显式access失败码不进入commit确认(
+    monkeypatch,
+    operation: str,
+    result_code: str,
+    status_code: int,
+    detail: str,
+) -> None:
+    session = _AccessResultSession()
+    confirmation_calls = 0
+
+    class Repo:
+        def __init__(self, current) -> None:
+            del current
+
+        async def issue_access(self, values):
+            del values
+            return {"result_code": result_code}
+
+        async def consume_access(self, values):
+            del values
+            return {"result_code": result_code}
+
+    async def confirm(*args, **kwargs):
+        nonlocal confirmation_calls
+        del args, kwargs
+        confirmation_calls += 1
+        return {"result_code": "UNKNOWN"}
+
+    monkeypatch.setattr(service, "PrivateFileRepository", Repo)
+    monkeypatch.setattr(service, "_confirm_access_commit_outcome", confirm)
+
+    with pytest.raises(HTTPException) as raised:
+        if operation == "issue":
+            await service._issue_access(session, {"access_id": "synthetic"})
+        else:
+            await service._consume_access(session, {"access_id": "synthetic"})
+
+    assert raised.value.status_code == status_code
+    assert raised.value.detail == detail
+    assert session.commit_calls == 0
+    assert session.rollback_calls == 1
+    assert session.close_calls == 1
+    assert confirmation_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["issue", "consume"])
+async def test_Batch_B显式access失败清理取消优先且只执行一次(
+    monkeypatch, operation: str
+) -> None:
+    primary = asyncio.CancelledError("BATCH_B_ACCESS_CLEANUP_CANCELLED")
+    confirmation_calls = 0
+
+    class Session(_AccessResultSession):
+        async def rollback(self) -> None:
+            self.rollback_calls += 1
+            raise primary
+
+    class Repo:
+        def __init__(self, current) -> None:
+            del current
+
+        async def issue_access(self, values):
+            del values
+            return {"result_code": "NOT_AVAILABLE"}
+
+        async def consume_access(self, values):
+            del values
+            return {"result_code": "ACCESS_INVALID"}
+
+    async def confirm(*args, **kwargs):
+        nonlocal confirmation_calls
+        del args, kwargs
+        confirmation_calls += 1
+        return {"result_code": "UNKNOWN"}
+
+    session = Session()
+    monkeypatch.setattr(service, "PrivateFileRepository", Repo)
+    monkeypatch.setattr(service, "_confirm_access_commit_outcome", confirm)
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        if operation == "issue":
+            await service._issue_access(session, {"access_id": "synthetic"})
+        else:
+            await service._consume_access(session, {"access_id": "synthetic"})
+
+    assert raised.value is primary
+    assert session.commit_calls == 0
+    assert session.rollback_calls == 1
+    assert session.close_calls == 1
+    assert confirmation_calls == 0
+
+
+def _private_file_test_app(monkeypatch, *, auth_error: HTTPException | None = None) -> FastAPI:
+    app = FastAPI()
+    app.include_router(private_file_api.router)
+    app.state.private_object_store = SimpleNamespace()
+
+    async def current_user():
+        if auth_error is not None:
+            raise auth_error
+        return CurrentUser(id=1, role="member")
+
+    async def session():
+        return SimpleNamespace()
+
+    app.dependency_overrides[get_current_user_from_jwt] = current_user
+    for dependency in (
+        get_db_session,
+        get_institution_onboarding_reader_session,
+        get_private_file_access_writer_session,
+        get_private_file_writer_session,
+        get_slice4_clinical_reader_session,
+        get_slice4_institution_reader_session,
+        get_slice7_transfer_writer_session,
+    ):
+        app.dependency_overrides[dependency] = session
+    return app
+
+
+def _assert_private_error(response, *, status_code: int, detail: str) -> None:
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    for name, value in private_file_api._PRIVATE_HEADERS.items():
+        assert response.headers[name] == value
+
+
+def test_Batch_B_private_file路由422删除原始input并返回全部私有头(
+    monkeypatch, caplog
+) -> None:
+    sentinel = "pw://x"
+    with TestClient(_private_file_test_app(monkeypatch)) as client:
+        response = client.post(
+            "/api/v1/private-files/00000000-0000-0000-0000-000000000001/access",
+            json={"reason_code": "OWNER_DOWNLOAD", "reauth_password": sentinel},
+        )
+
+    _assert_private_error(
+        response, status_code=422, detail="PRIVATE_FILE_REQUEST_INVALID"
+    )
+    assert sentinel not in response.text
+    assert sentinel not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("status_code", "detail"),
+    [
+        (401, "Invalid or expired token"),
+        (403, "PRIVATE_FILE_ACCESS_INVALID"),
+        (404, "PRIVATE_FILE_NOT_FOUND"),
+        (409, "PRIVATE_FILE_EVIDENCE_MISMATCH"),
+        (413, "PRIVATE_FILE_SIZE_LIMIT_EXCEEDED"),
+        (503, "PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN"),
+    ],
+)
+def test_Batch_B_private_file全部HTTP错误保持私有头且不泄漏底层输入(
+    monkeypatch, status_code: int, detail: str
+) -> None:
+    sentinel = "postgresql://synthetic-user:synthetic-secret@localhost/synthetic"
+    if status_code == 401:
+        app = _private_file_test_app(
+            monkeypatch, auth_error=HTTPException(status_code, detail)
+        )
+        method, path, kwargs = "get", "/api/v1/private-files/synthetic", {}
+    elif status_code == 403:
+        app = _private_file_test_app(monkeypatch)
+        method, path, kwargs = (
+            "get",
+            "/api/v1/private-files/00000000-0000-0000-0000-000000000001/content",
+            {},
+        )
+    elif status_code == 413:
+        app = _private_file_test_app(monkeypatch)
+        method, path, kwargs = (
+            "put",
+            "/api/v1/private-files/uploads/00000000-0000-0000-0000-000000000001/content",
+            {"content": b"", "headers": {"Content-Length": str(10 * 1024 * 1024 + 1)}},
+        )
+    else:
+        app = _private_file_test_app(monkeypatch)
+
+        async def fail(*args, **kwargs):
+            del args, kwargs
+            raise HTTPException(status_code, detail)
+
+        monkeypatch.setattr(private_file_api, "metadata", fail)
+        method, path, kwargs = "get", "/api/v1/private-files/synthetic", {}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = getattr(client, method)(path, **kwargs)
+
+    _assert_private_error(response, status_code=status_code, detail=detail)
+    assert sentinel not in response.text

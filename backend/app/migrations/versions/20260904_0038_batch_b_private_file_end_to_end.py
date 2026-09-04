@@ -268,19 +268,6 @@ BEGIN
      OR p_expires_at<=p_issued_at OR p_expires_at>p_issued_at+interval '300 seconds' THEN
     RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_INPUT_INVALID';
   END IF;
-  SELECT * INTO file_row FROM public.private_file file
-   WHERE file.file_id=p_private_file_id FOR SHARE;
-  IF NOT FOUND OR file_row.status<>'CLEAN' OR file_row.actual_size IS NULL
-     OR file_row.actual_mime_type IS NULL OR file_row.actual_sha256 IS NULL THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_NOT_AVAILABLE';
-  END IF;
-  calculated_content_digest:=encode(sha256(convert_to(
-    'BATCH_B_PRIVATE_FILE_CONTENT_V1;'||file_row.file_id::text||';'||
-    file_row.actual_size::text||';'||file_row.actual_mime_type||';'||
-    file_row.actual_sha256,'UTF8')),'hex');
-  IF calculated_content_digest<>p_content_evidence_digest THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_EVIDENCE_MISMATCH';
-  END IF;
   SELECT * INTO stored FROM public.private_file_download_access access
    WHERE access.access_id=p_access_id FOR UPDATE;
   IF FOUND THEN
@@ -294,6 +281,23 @@ BEGIN
     END IF;
     RETURN QUERY SELECT 'ISSUED'::VARCHAR,stored.version,
       encode(sha256(convert_to('BATCH_B_ACCESS_RESULT_V1;'||stored.access_id::text||';'||stored.version::text,'UTF8')),'hex')::VARCHAR;
+    RETURN;
+  END IF;
+  SELECT * INTO file_row FROM public.private_file file
+   WHERE file.file_id=p_private_file_id FOR SHARE;
+  IF NOT FOUND OR file_row.status<>'CLEAN' OR file_row.actual_size IS NULL
+     OR file_row.actual_mime_type IS NULL OR file_row.actual_sha256 IS NULL THEN
+    RETURN QUERY SELECT 'NOT_AVAILABLE'::VARCHAR,0::BIGINT,
+      encode(sha256(convert_to('BATCH_B_ACCESS_NOT_AVAILABLE_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
+  END IF;
+  calculated_content_digest:=encode(sha256(convert_to(
+    'BATCH_B_PRIVATE_FILE_CONTENT_V1;'||file_row.file_id::text||';'||
+    file_row.actual_size::text||';'||file_row.actual_mime_type||';'||
+    file_row.actual_sha256,'UTF8')),'hex');
+  IF calculated_content_digest<>p_content_evidence_digest THEN
+    RETURN QUERY SELECT 'EVIDENCE_MISMATCH'::VARCHAR,0::BIGINT,
+      encode(sha256(convert_to('BATCH_B_ACCESS_EVIDENCE_MISMATCH_V1','UTF8')),'hex')::VARCHAR;
     RETURN;
   END IF;
   INSERT INTO public.private_file_download_access(
@@ -417,11 +421,18 @@ BEGIN
   END IF;
   SELECT * INTO stored FROM public.private_file_download_access access
    WHERE access.access_id=p_access_id FOR UPDATE;
-  IF NOT FOUND OR stored.private_file_id<>p_private_file_id
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT 'ACCESS_INVALID'::VARCHAR,0::BIGINT,
+      encode(sha256(convert_to('BATCH_B_ACCESS_INVALID_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
+  END IF;
+  IF stored.private_file_id<>p_private_file_id
      OR stored.actor_user_id<>p_actor_user_id
      OR stored.credential_digest<>p_credential_digest
      OR stored.authority_digest<>p_authority_digest THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_INVALID';
+    RETURN QUERY SELECT 'ACCESS_INVALID'::VARCHAR,stored.version,
+      encode(sha256(convert_to('BATCH_B_ACCESS_INVALID_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
   END IF;
   IF stored.consumed_at IS NOT NULL THEN
     IF stored.consumed_at=p_consumed_at AND stored.version=p_expected_version+1 THEN
@@ -429,24 +440,32 @@ BEGIN
         encode(sha256(convert_to('BATCH_B_ACCESS_RESULT_V1;'||stored.access_id::text||';'||stored.version::text,'UTF8')),'hex')::VARCHAR;
       RETURN;
     END IF;
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_ALREADY_CONSUMED';
+    RETURN QUERY SELECT 'ACCESS_INVALID'::VARCHAR,stored.version,
+      encode(sha256(convert_to('BATCH_B_ACCESS_INVALID_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
   END IF;
   IF stored.version<>p_expected_version OR p_consumed_at<stored.issued_at
      OR p_consumed_at>stored.expires_at THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_ACCESS_INVALID';
+    RETURN QUERY SELECT 'ACCESS_INVALID'::VARCHAR,stored.version,
+      encode(sha256(convert_to('BATCH_B_ACCESS_INVALID_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
   END IF;
   SELECT * INTO file_row FROM public.private_file file
    WHERE file.file_id=p_private_file_id FOR SHARE;
   IF NOT FOUND OR file_row.status<>'CLEAN' OR file_row.actual_size IS NULL
      OR file_row.actual_mime_type IS NULL OR file_row.actual_sha256 IS NULL THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_NOT_AVAILABLE';
+    RETURN QUERY SELECT 'NOT_AVAILABLE'::VARCHAR,stored.version,
+      encode(sha256(convert_to('BATCH_B_ACCESS_NOT_AVAILABLE_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
   END IF;
   calculated_content_digest:=encode(sha256(convert_to(
     'BATCH_B_PRIVATE_FILE_CONTENT_V1;'||file_row.file_id::text||';'||
     file_row.actual_size::text||';'||file_row.actual_mime_type||';'||
     file_row.actual_sha256,'UTF8')),'hex');
   IF calculated_content_digest<>stored.content_evidence_digest THEN
-    RAISE EXCEPTION 'BATCH_B_PRIVATE_FILE_EVIDENCE_MISMATCH';
+    RETURN QUERY SELECT 'EVIDENCE_MISMATCH'::VARCHAR,stored.version,
+      encode(sha256(convert_to('BATCH_B_ACCESS_EVIDENCE_MISMATCH_V1','UTF8')),'hex')::VARCHAR;
+    RETURN;
   END IF;
   UPDATE public.private_file_download_access access
      SET consumed_at=p_consumed_at,version=access.version+1

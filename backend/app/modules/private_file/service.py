@@ -1169,6 +1169,34 @@ def _access_authority_digest(
     ).hexdigest()
 
 
+async def _rollback_access_result(session, *, unavailable_code: str) -> None:
+    cancellation: asyncio.CancelledError | None = None
+    failed = False
+    for operation in (session.rollback, session.close):
+        try:
+            await operation()
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except Exception:
+            failed = True
+    if cancellation is not None:
+        raise cancellation
+    if failed:
+        raise HTTPException(503, unavailable_code) from None
+
+
+def _raise_access_result(result_code: object, *, unavailable_code: str) -> None:
+    mapping = {
+        "ACCESS_INVALID": (403, "PRIVATE_FILE_ACCESS_INVALID"),
+        "NOT_AVAILABLE": (404, "PRIVATE_FILE_NOT_FOUND"),
+        "EVIDENCE_MISMATCH": (409, "PRIVATE_FILE_EVIDENCE_MISMATCH"),
+    }
+    mapped = mapping.get(str(result_code))
+    if mapped is None:
+        raise HTTPException(503, unavailable_code)
+    raise HTTPException(mapped[0], mapped[1])
+
+
 def _parse_access_credential(credential: str) -> tuple[str, int, str]:
     try:
         access_id, raw_version, secret = credential.split(".", 2)
@@ -1183,12 +1211,25 @@ def _parse_access_credential(credential: str) -> tuple[str, int, str]:
 
 async def _issue_access(session, values: dict[str, object]) -> dict[str, object]:
     bind = session.bind
+    explicit_result = False
     try:
         result = await PrivateFileRepository(session).issue_access(values)
+        if result.get("result_code") != "ISSUED":
+            explicit_result = True
+            await _rollback_access_result(
+                session, unavailable_code="PRIVATE_FILE_ACCESS_UNAVAILABLE"
+            )
+            _raise_access_result(
+                result.get("result_code"),
+                unavailable_code="PRIVATE_FILE_ACCESS_UNAVAILABLE",
+            )
         await session.commit()
         return result
     except asyncio.CancelledError:
-        await _safe_rollback(session)
+        if not explicit_result:
+            await _safe_rollback(session)
+        raise
+    except HTTPException:
         raise
     except Exception:
         await _safe_rollback(session)
@@ -1197,9 +1238,19 @@ async def _issue_access(session, values: dict[str, object]) -> dict[str, object]
     try:
         async with AsyncSession(bind=bind, expire_on_commit=False) as retry:
             result = await PrivateFileRepository(retry).issue_access(values)
+            if result.get("result_code") != "ISSUED":
+                await _rollback_access_result(
+                    retry, unavailable_code="PRIVATE_FILE_ACCESS_UNAVAILABLE"
+                )
+                _raise_access_result(
+                    result.get("result_code"),
+                    unavailable_code="PRIVATE_FILE_ACCESS_UNAVAILABLE",
+                )
             await retry.commit()
             return result
     except asyncio.CancelledError:
+        raise
+    except HTTPException:
         raise
     except Exception:
         raise HTTPException(503, "PRIVATE_FILE_ACCESS_UNAVAILABLE") from None
@@ -1208,16 +1259,30 @@ async def _issue_access(session, values: dict[str, object]) -> dict[str, object]
 async def _consume_access(session, values: dict[str, object]) -> None:
     bind = session.bind
     cancellation: asyncio.CancelledError | None = None
+    explicit_result = False
     try:
-        await PrivateFileRepository(session).consume_access(values)
+        result = await PrivateFileRepository(session).consume_access(values)
+        if result.get("result_code") != "CONSUMED":
+            explicit_result = True
+            await _rollback_access_result(
+                session, unavailable_code="PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN"
+            )
+            _raise_access_result(
+                result.get("result_code"),
+                unavailable_code="PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN",
+            )
         await session.commit()
         return
     except asyncio.CancelledError as exc:
+        if explicit_result:
+            raise
         cancellation = exc
         _, cleanup_cancellation, _ = await _finish_safety_step(
             _safe_rollback(session)
         )
         cancellation = cancellation or cleanup_cancellation
+    except HTTPException:
+        raise
     except Exception:
         _, cleanup_cancellation, _ = await _finish_safety_step(
             _safe_rollback(session)
@@ -1246,9 +1311,19 @@ async def _consume_access(session, values: dict[str, object]) -> None:
         raise HTTPException(503, "PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN")
     try:
         async with AsyncSession(bind=bind, expire_on_commit=False) as retry:
-            await PrivateFileRepository(retry).consume_access(values)
+            result = await PrivateFileRepository(retry).consume_access(values)
+            if result.get("result_code") != "CONSUMED":
+                await _rollback_access_result(
+                    retry, unavailable_code="PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN"
+                )
+                _raise_access_result(
+                    result.get("result_code"),
+                    unavailable_code="PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN",
+                )
             await retry.commit()
     except asyncio.CancelledError:
+        raise
+    except HTTPException:
         raise
     except Exception:
         raise HTTPException(503, "PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN") from None
