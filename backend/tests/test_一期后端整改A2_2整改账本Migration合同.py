@@ -59,7 +59,7 @@ def test_A2_2_L_0035从0034派生且保持单一Head() -> None:
     assert module.down_revision == "20260901_0034"
     assert module.branch_labels is None
     assert module.depends_on is None
-    assert _revision_heads() == {"20260904_0037"}
+    assert _revision_heads() == {"20260904_0038"}
 
 
 def test_A2_2_L_四类账本与状态版本摘要约束闭合() -> None:

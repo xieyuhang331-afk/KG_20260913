@@ -129,6 +129,7 @@ PHASE1_SLICE1_TABLES = {
     "public.institution_invitation", "public.institution_onboarding_account",
     "public.institution_application", "public.institution_application_revision",
     "public.institution_license", "public.private_file",
+    "public.private_file_download_access",
     "public.institution_onboarding_idempotency", "public.institution_onboarding_audit",
     "public.institution_onboarding_outbox",
     "public.institution_onboarding_delivery",

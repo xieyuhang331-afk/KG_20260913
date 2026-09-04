@@ -47,10 +47,25 @@ def test_D12_D15_报告原件读取每次复核currentness与permission且证据
 
 def test_PrivateFile生产访问必须调用Slice4受限权威并写访问审计():
     import inspect
+    from pathlib import Path
+
     from app.modules.private_file import service
 
     authorize = inspect.getsource(service.authorize_file_access)
     content = inspect.getsource(service.read_authorized_content)
+    closed_snapshot = inspect.getsource(service._closed_access_snapshot)
     for source in (authorize, content):
-        assert "report_file_authority" in source
-    assert "REPORT_ORIGINAL_ACCESSED" in content
+        assert "_closed_access_snapshot(" in source
+    assert ".closed_access_snapshot(" in closed_snapshot
+    migrations = Path(service.__file__).parents[2] / "migrations" / "versions"
+    batch_b = (
+        migrations / "20260904_0038_batch_b_private_file_end_to_end.py"
+    ).read_text(encoding="utf-8")
+    slice4 = (
+        migrations / "20260823_0028_phase1_slice4_health_record_assessment_readiness.py"
+    ).read_text(encoding="utf-8")
+    assert "public.slice4_report_file_authority_v1(" in batch_b
+    assert "value_context LIKE '%_CONTENT'" in slice4
+    assert "REPORT_ORIGINAL_ACCESSED" in slice4
+    assert 'report_access = access_scope == "REPORT"' in content
+    assert "await report_authority_session.commit()" in content

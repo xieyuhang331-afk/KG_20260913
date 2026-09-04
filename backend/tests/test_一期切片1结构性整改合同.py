@@ -81,8 +81,11 @@ def test_I2_文件按确定顺序锁定并在锁后重验全部绑定条件():
 def test_I3_短时访问token存在验签和受控内容端点():
     api = _source(PRIVATE_API)
     service = _source(PRIVATE_SERVICE)
-    assert '@router.get("/{file_id}/content")' in api
-    assert "verify_access_token" in service
+    assert '"/{file_id}/content"' in api
+    content = api.split("async def get_file_content", 1)[1].split("@router", 1)[0]
+    assert 'alias="X-Private-File-Access"' in content
+    assert "Query(" not in content
+    assert "_consume_access" in service
     assert "read_authorized_content" in service
     assert "hmac.compare_digest" in service
 

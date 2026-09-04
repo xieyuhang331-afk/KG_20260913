@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,7 +73,7 @@ async def _seed_closure_sources(application_database) -> None:
 
 
 def test_0020对象与四身份最小权限(pg_database, application_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     assert pg_database.fetch_value("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('institution_invitation','institution_onboarding_account','institution_application','institution_application_revision','institution_license','private_file','institution_onboarding_idempotency','institution_onboarding_audit','institution_onboarding_outbox','institution_onboarding_delivery')") == 10
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
@@ -120,6 +120,7 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
     from app.modules.institution_onboarding.service import activate, create_invitation, get_application, resend_invitation, resubmit_application, review_decision, revoke_invitation, save_draft, submit_application, utcnow
     from app.modules.private_file.schemas import UploadCompleteRequest, UploadInitiateRequest
     from app.modules.private_file.service import authorize_file_access, complete_upload, initiate_upload, read_authorized_content, upload_content
+    from app.modules.private_file.storage import LocalFilesystemAdapter
     from app.tasks import institution_onboarding_tasks as slice1_tasks
 
     class CleanTestScanner:
@@ -399,13 +400,31 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
             assert scanned["status"] == "CLEAN"
         finally:
             slice1_tasks.reset_private_file_scanner_for_test()
-    expires_at = 2_000_000_000
-    async with file_writer() as session:
-        token = await authorize_file_access(session, user_id, upload["file_id"], "REVIEW", expires_at)
+    expires_at = int(datetime.now(UTC).timestamp()) + 300
     reader = get_slice1_session_factory("reader")
-    async with reader() as session:
-        loaded, mime_type = await read_authorized_content(session, user_id, upload["file_id"], token)
-        assert loaded == content and mime_type == "application/pdf"
+    access_writer = get_slice1_session_factory("access_writer")
+    store = LocalFilesystemAdapter(tmp_path)
+    async with reader() as session, access_writer() as access_session:
+        token = await authorize_file_access(
+            session,
+            access_session,
+            user_id,
+            upload["file_id"],
+            "OWNER_DOWNLOAD",
+            expires_at,
+            object_store=store,
+        )
+    async with reader() as session, access_writer() as access_session:
+        stream, mime_type = await read_authorized_content(
+            session,
+            access_session,
+            user_id,
+            upload["file_id"],
+            token,
+            object_store=store,
+        )
+        loaded = b"".join([chunk async for chunk in stream])
+    assert loaded == content and mime_type == "application/pdf"
 
     _mark_stage("DRAFT")
     async with writer() as session:

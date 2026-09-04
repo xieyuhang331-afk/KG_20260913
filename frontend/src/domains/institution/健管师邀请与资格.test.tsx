@@ -25,6 +25,8 @@ function LocationProbe() {
   return <output data-testid="location">{location.search}</output>;
 }
 
+const nearExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
 const invitation = {
   invitation_id: "00000000-0000-7000-8000-000000000101",
   masked_phone: "*******0001",
@@ -45,7 +47,7 @@ const profile: TherapistProfile = {
   service_tags: ["HYPERTENSION"],
   capacity_limit: 30,
   active_case_count: 3,
-  qualification_valid_until: "2026-09-01",
+  qualification_valid_until: nearExpiryDate,
   current_revision_no: 2,
   version: 4,
   updated_at: "2026-08-17T12:00:00+08:00",
@@ -57,7 +59,7 @@ const qualification: TherapistQualification = {
   masked_certificate_no: "****0001",
   issuer_name: "合成资质机构",
   valid_from: "2025-09-01",
-  valid_until: "2026-09-01",
+  valid_until: nearExpiryDate,
   derived_review_status: "APPROVED",
   attachment_count: 2,
   version_no: 2,

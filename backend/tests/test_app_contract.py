@@ -56,7 +56,7 @@ class BackendAppContractTests(unittest.TestCase):
 
         self.assertEqual(settings.database_driver, "postgresql+asyncpg")
         self.assertEqual(settings.async_runtime, "Celery + RabbitMQ")
-        self.assertEqual(settings.file_storage_backend, "MinIO")
+        self.assertEqual(settings.file_storage_backend, "local_filesystem")
         self.assertEqual(
             settings.celery_queues,
             ("ai", "judgment", "ocr", "report", "settlement", "notification"),

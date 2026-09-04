@@ -50,7 +50,7 @@ def private_file_writer_database(pg_database):
 
 
 def test_A3_0037字段回填约束与引用authority真实PostgreSQL(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     columns = set(pg_database.fetch_column(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema='public' AND table_name='private_file'"
@@ -167,7 +167,7 @@ def test_A3_I2_downgrade非静默期拒绝且任何DDL与授权均不变化(pg_d
             command.downgrade(config, "20260903_0036")
         assert pg_database.fetch_value(
             "SELECT version_num FROM alembic_version"
-        ) == "20260904_0037"
+        ) == "20260904_0038"
         assert tuple(pg_database.fetch_column(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema='public' AND table_name='private_file' "
@@ -281,7 +281,7 @@ def test_Z_A3_Migration升级降级重升级不访问文件或修改业务行(pg
             )
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0037"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
     rows = pg_database.fetch_rows(
         "SELECT status,scan_attempt_count,scan_last_error_code,"
         "scan_next_retry_at IS NOT NULL AS retry_scheduled "
