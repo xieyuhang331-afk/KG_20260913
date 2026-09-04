@@ -73,6 +73,7 @@ jobs:
             "$RUNNER_TEMP"/kg-private-unit-*) ;;
             *) echo 'Refusing an invalid unit private storage path.'; exit 1 ;;
           esac
+          echo "::add-mask::$storage_root"
           echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
           if [[ -e "$storage_root" ]]; then
             echo 'Unit private storage path was not clean before setup.'
