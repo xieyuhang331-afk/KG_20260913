@@ -470,19 +470,21 @@ def _slice1_url(settings: Settings, kind: str) -> str:
         "onboarding_writer": settings.institution_onboarding_writer_database_url,
         "review_writer": settings.institution_review_writer_database_url,
         "file_writer": settings.private_file_writer_database_url,
+        "access_writer": settings.private_file_access_writer_database_url,
         "reader": settings.institution_onboarding_reader_database_url,
     }
     roles = {
         "onboarding_writer": settings.institution_onboarding_writer_role,
         "review_writer": settings.institution_review_writer_role,
         "file_writer": settings.private_file_writer_role,
+        "access_writer": settings.private_file_access_writer_role,
         "reader": settings.institution_onboarding_reader_role,
     }
     try:
         parsed = {name: make_url(value) for name, value in urls.items() if value}
         users = [value.username for value in parsed.values()]
         valid = (
-            kind in urls and len(parsed) == 4 and len(users) == 4 and len(set(users)) == 4
+            kind in urls and len(parsed) == 5 and len(users) == 5 and len(set(users)) == 5
             and all(value.drivername == "postgresql+asyncpg" and value.username and value.password for value in parsed.values())
             and all((value.host, value.port, value.database) == (settings.database_host, settings.database_port, settings.database_name) for value in parsed.values())
             and all(parsed[name].username == roles[name] for name in urls)
@@ -496,7 +498,7 @@ def _slice1_url(settings: Settings, kind: str) -> str:
 
 
 def get_slice1_session_factory(kind: str):
-    if kind not in {"onboarding_writer", "review_writer", "file_writer", "reader"}:
+    if kind not in {"onboarding_writer", "review_writer", "file_writer", "access_writer", "reader"}:
         raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
     entry = _SLICE1_RUNTIMES.get(kind)
     if entry is None:
@@ -510,7 +512,7 @@ def get_slice1_session_factory(kind: str):
 
 
 async def dispose_slice1_runtime(kind: str) -> None:
-    if kind not in {"onboarding_writer", "review_writer", "file_writer", "reader"}:
+    if kind not in {"onboarding_writer", "review_writer", "file_writer", "access_writer", "reader"}:
         raise RuntimeError(_SLICE1_RUNTIME_ERROR) from None
     entry = _SLICE1_RUNTIMES.pop(kind, None)
     if entry is not None:
@@ -534,6 +536,11 @@ async def get_institution_review_writer_session():
 
 async def get_private_file_writer_session():
     async for session in _slice1_session("file_writer"):
+        yield session
+
+
+async def get_private_file_access_writer_session():
+    async for session in _slice1_session("access_writer"):
         yield session
 
 
