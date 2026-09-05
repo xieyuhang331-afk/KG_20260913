@@ -10,9 +10,10 @@ from enum import Enum
 import hashlib
 import hmac
 import json
-import os
 from typing import Awaitable, Callable, Mapping
 from uuid import UUID
+
+from app.core.认证配置校验 import purpose_signing_key
 
 from .domain import (
     MilestoneCode,
@@ -43,10 +44,10 @@ def _base64url(value: bytes) -> str:
 
 
 def _page_cursor_key() -> bytes:
-    value = os.getenv("KG_JWT_SECRET_KEY")
-    if value is None or not value.strip():
-        raise ServiceFulfillmentError("DEPENDENCY_UNAVAILABLE")
-    return value.encode("utf-8")
+    try:
+        return purpose_signing_key("KG_SLICE7_CURSOR_SIGNING_KEY")
+    except ValueError:
+        raise ServiceFulfillmentError("DEPENDENCY_UNAVAILABLE") from None
 
 
 def _page_filters(value: Mapping[str, str | None] | None) -> dict[str, str | None]:

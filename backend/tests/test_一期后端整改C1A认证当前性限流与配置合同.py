@@ -39,6 +39,9 @@ def access_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("KG_JWT_SECRET_KEY", secrets.token_urlsafe(32))
     monkeypatch.setenv("KG_JWT_ALGORITHM", "HS256")
     monkeypatch.setenv("KG_AUTH_RATE_LIMIT_HMAC_KEY", secrets.token_urlsafe(32))
+    for name in ("KG_SLICE5_CURSOR_SIGNING_KEY", "KG_SLICE7_CURSOR_SIGNING_KEY",
+                 "KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY", "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY"):
+        monkeypatch.setenv(name, secrets.token_urlsafe(48))
     monkeypatch.setenv("KG_ENV", "test")
     monkeypatch.setenv("KG_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
     monkeypatch.setenv("KG_FILE_STORAGE_BACKEND", "local_filesystem")
@@ -841,6 +844,10 @@ os.environ.update({
     "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
     "KG_JWT_SECRET_KEY": secrets.token_urlsafe(32),
     "KG_AUTH_RATE_LIMIT_HMAC_KEY": secrets.token_urlsafe(32),
+    "KG_SLICE5_CURSOR_SIGNING_KEY": secrets.token_urlsafe(48),
+    "KG_SLICE7_CURSOR_SIGNING_KEY": secrets.token_urlsafe(48),
+    "KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY": secrets.token_urlsafe(48),
+    "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48),
     "KG_FILE_STORAGE_BACKEND": "local_filesystem",
 })
 secret = secrets.token_urlsafe(32)

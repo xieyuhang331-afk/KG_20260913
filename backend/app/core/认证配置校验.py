@@ -6,6 +6,13 @@ from urllib.parse import urlsplit
 
 from app.core.config import get_settings
 
+_SIGNING_PURPOSES = (
+    "KG_SLICE5_CURSOR_SIGNING_KEY",
+    "KG_SLICE7_CURSOR_SIGNING_KEY",
+    "KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY",
+    "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY",
+)
+
 
 def _secret(value: str | None) -> bytes:
     if (not isinstance(value, str) or value != value.strip() or len(value.encode()) < 32
@@ -13,6 +20,13 @@ def _secret(value: str | None) -> bytes:
             or value.lower().startswith(("changeme", "replace-me", "your-secret", "example-secret"))):
         raise ValueError("Invalid configured material")
     return value.encode("utf-8")
+
+
+def purpose_signing_key(name: str) -> bytes:
+    """Read one closed purpose only; never fall back to another credential."""
+    if name not in _SIGNING_PURPOSES:
+        raise ValueError("Invalid configured material")
+    return _secret(os.getenv(name))
 
 
 def validated_auth_settings(*, worker: bool = False, broker_url: str | None = None):
@@ -27,6 +41,7 @@ def validated_auth_settings(*, worker: bool = False, broker_url: str | None = No
         if type(ttl) is not int or not 15 <= ttl <= 120:
             raise ValueError("Invalid lifetime")
         materials = [_secret(settings.jwt_secret_key), _secret(settings.auth_rate_limit_hmac_key)]
+        materials.extend(purpose_signing_key(name) for name in _SIGNING_PURPOSES)
         _secret(settings.database_password)
         if settings.database_driver != "postgresql+asyncpg" or not 1 <= settings.database_port <= 65535:
             raise ValueError("Invalid database configuration")

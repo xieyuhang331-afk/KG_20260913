@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from inspect import signature
 from io import BytesIO
+from secrets import token_urlsafe
 from types import SimpleNamespace
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -136,7 +137,7 @@ def test_D33_D37_内部ZIP拒绝伪装空包及超限内容() -> None:
 def test_D35_D39_导出Token绑定一次性凭据标识且篡改过期拒绝(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", "slice7-test-signing-key")
+    monkeypatch.setenv("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", token_urlsafe(48))
     token = issue_access_token(
         file_id=str(UUID7),
         user_id=7,

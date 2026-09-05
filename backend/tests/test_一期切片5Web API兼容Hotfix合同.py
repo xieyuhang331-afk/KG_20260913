@@ -65,6 +65,8 @@ def _platform_rule_client(monkeypatch) -> TestClient:
     app.dependency_overrides[get_current_user_from_jwt] = expert
     app.dependency_overrides[get_slice5_rule_governance_writer_session] = writer
     monkeypatch.setenv("KG_JWT_SECRET_KEY", "slice5-hotfix-synthetic-key-0000000000000000")
+    monkeypatch.setenv("KG_SLICE5_CURSOR_SIGNING_KEY", "slice5-cursor-synthetic-key-0000000000000000")
+    monkeypatch.setenv("KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY", "slice5-reference-synthetic-key-0000000000000")
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -323,7 +325,7 @@ def test_R13_R15_签名游标不可解析并绑定范围(monkeypatch) -> None:
     encoder = getattr(service, "encode_slice5_cursor", None)
     decoder = getattr(service, "decode_slice5_cursor", None)
     assert encoder is not None and decoder is not None
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "slice5-hotfix-synthetic-key-0000000000000000")
+    monkeypatch.setenv("KG_SLICE5_CURSOR_SIGNING_KEY", "slice5-cursor-synthetic-key-0000000000000000")
     cursor_id = UUID("018f0000-0000-7000-8000-000000000001")
     scope = {
         "kind": "high-risk-task",
