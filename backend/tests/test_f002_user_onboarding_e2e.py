@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -21,13 +22,20 @@ def _client(monkeypatch):
         yield FakeSession()
 
     app.dependency_overrides[get_db_session] = fake_session
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 def _jwt_headers(role: str = "member", *, user_id: int = 1001) -> dict:
     from app.core.security import create_access_token
 
-    token = create_access_token({"sub": str(user_id), "role": role})
+    actor_id = {
+        "org_admin": 1101, "super_admin": 1102, "province_admin": 1103, "city_admin": 1104,
+    }.get(role, user_id)
+    claims = {"sub": str(actor_id), "role": role}
+    claims.update({
+        1103: {"province": "ZJ"}, 1104: {"province": "ZJ", "city": "HZ"},
+    }.get(actor_id, {}))
+    token = create_access_token(claims)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -51,6 +59,7 @@ def _profile_payload() -> dict:
 
 @pytest.fixture
 def e2e_state(monkeypatch):
+    from app.core.config import get_settings
     from app.modules.auth.schemas import UserRegisterResponse
     from app.modules.tenant.schemas import (
         ActiveTenantListItem,
@@ -161,7 +170,32 @@ def e2e_state(monkeypatch):
     monkeypatch.setattr("app.modules.user_health.api.create_health_profile", create_profile)
     monkeypatch.setattr("app.modules.user_health.api.get_health_profile", get_profile)
     monkeypatch.setattr("app.modules.tenant.api.list_active_tenants", list_active_tenants)
-    return state
+    staff = {
+        user_id: {"id": user_id, "role": role, "status": "active", "tenant_id": None}
+        for user_id, role in (
+            (1101, "org_admin"), (1102, "super_admin"),
+            (1103, "province_admin"), (1104, "city_admin"),
+        )
+    }
+
+    async def read_authority(user_id):
+        # Read the registration store, not the JWT; staff are separate fixed actors.
+        row = state["users"].get(user_id, staff.get(user_id))
+        if row is None:
+            return None
+        return SimpleNamespace(
+            id=row["id"], role=row["role"], status=row["status"],
+            tenant_id=row["tenant_id"], tenant_org_id=None,
+            exited_at=None, deletion_requested_at=None,
+        )
+
+    monkeypatch.setattr("app.core.认证当前性._read_authority", read_authority)
+    monkeypatch.setenv("KG_AUTH_CONTEXT_MAP", (
+        '{"1103":{"province":"ZJ"},"1104":{"province":"ZJ","city":"HZ"}}'
+    ))
+    get_settings.cache_clear()
+    yield state
+    get_settings.cache_clear()
 
 
 def test_f002_user_onboarding_happy_path(monkeypatch, e2e_state):

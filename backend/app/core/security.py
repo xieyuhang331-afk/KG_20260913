@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass
+import binascii
 import hmac
 import json
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, Request
 
 from app.core.config import get_settings
-
 
 SUPPORTED_ROLES = {
     "super_admin",
@@ -38,7 +40,10 @@ class CurrentUser:
 
 
 def _jwt_error() -> HTTPException:
-    return HTTPException(status_code=401, detail="Invalid or expired token")
+    return HTTPException(
+        status_code=401, detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
+    )
 
 
 def _base64url_encode(value: bytes) -> str:
@@ -46,8 +51,10 @@ def _base64url_encode(value: bytes) -> str:
 
 
 def _base64url_decode(value: str) -> bytes:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("Invalid token encoding")
     padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+    return base64.b64decode((value + padding).encode("ascii"), altchars=b"-_", validate=True)
 
 
 def _json_dumps(value: dict[str, Any]) -> str:
@@ -59,7 +66,9 @@ def _epoch_seconds(value: datetime | int | float) -> int:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return int(value.timestamp())
-    return int(value)
+    if type(value) is not int:
+        raise ValueError("Invalid token timestamp")
+    return value
 
 
 def _sign_jwt(signing_input: str, secret_key: str) -> str:
@@ -80,12 +89,16 @@ def create_access_token(claims: dict[str, Any]) -> str:
     payload = dict(claims)
     payload.setdefault("iss", "kanglin")
     payload.setdefault("typ", "access")
+    payload.setdefault("aud", "kanglin-phase1-api")
     payload.setdefault("iat", int(now.timestamp()))
+    payload.setdefault("nbf", payload["iat"])
+    payload.setdefault("jti", str(uuid4()))
     payload.setdefault(
         "exp",
         int((now + timedelta(minutes=settings.jwt_access_token_expire_minutes)).timestamp()),
     )
     payload["iat"] = _epoch_seconds(payload["iat"])
+    payload["nbf"] = _epoch_seconds(payload["nbf"])
     payload["exp"] = _epoch_seconds(payload["exp"])
 
     header = {"alg": settings.jwt_algorithm, "typ": "JWT"}
@@ -96,16 +109,58 @@ def create_access_token(claims: dict[str, Any]) -> str:
     return f"{signing_input}.{signature}"
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate token field")
+        result[key] = value
+    return result
+
+
+def _validate_access_profile(payload: dict[str, Any], lifetime_minutes: int) -> None:
+    if (payload.get("iss") != "kanglin" or payload.get("aud") != "kanglin-phase1-api"
+            or payload.get("typ") != "access"):
+        raise _jwt_error()
+    subject = payload.get("sub")
+    role = payload.get("role")
+    if (type(subject) is not str or re.fullmatch(r"[1-9][0-9]{0,18}", subject) is None
+            or int(subject) > 9223372036854775807
+            or type(role) is not str or role not in SUPPORTED_ROLES):
+        raise _jwt_error()
+    for field in ("iat", "nbf", "exp"):
+        if type(payload.get(field)) is not int or payload[field] < 0:
+            raise _jwt_error()
+    now = int(datetime.now(UTC).timestamp())
+    issued, not_before, expires = payload["iat"], payload["nbf"], payload["exp"]
+    if (type(lifetime_minutes) is not int or not 15 <= lifetime_minutes <= 120
+            or not 0 < expires - issued <= lifetime_minutes * 60
+            or not issued <= not_before < expires
+            or issued > now + 5 or not_before > now + 5 or expires <= now - 5):
+        raise _jwt_error()
+    identifier = payload.get("jti")
+    try:
+        parsed = UUID(identifier) if type(identifier) is str else None
+    except (ValueError, AttributeError):
+        raise _jwt_error() from None
+    if parsed is None or parsed.version != 4 or str(parsed) != identifier:
+        raise _jwt_error()
+
+
 def decode_access_token(token: str) -> dict[str, Any]:
     settings = get_settings()
+    if settings.jwt_algorithm != "HS256" or not isinstance(token, str) or len(token) > 8192:
+        raise _jwt_error()
     try:
         encoded_header, encoded_payload, signature = token.split(".", 2)
-        header = json.loads(_base64url_decode(encoded_header))
-        payload = json.loads(_base64url_decode(encoded_payload))
-    except Exception as exc:
-        raise _jwt_error() from exc
+        header = json.loads(_base64url_decode(encoded_header), object_pairs_hook=_unique_json_object)
+        payload = json.loads(_base64url_decode(encoded_payload), object_pairs_hook=_unique_json_object)
+        _base64url_decode(signature)
+    except (ValueError, UnicodeError, binascii.Error, RecursionError):
+        raise _jwt_error() from None
 
-    if header.get("alg") != settings.jwt_algorithm or header.get("typ") != "JWT":
+    if (not isinstance(header, dict) or not isinstance(payload, dict)
+            or header.get("alg") != "HS256" or header.get("typ") != "JWT"):
         raise _jwt_error()
 
     expected_signature = _sign_jwt(
@@ -115,12 +170,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
     if not hmac.compare_digest(signature, expected_signature):
         raise _jwt_error()
 
-    try:
-        expires_at = int(payload["exp"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise _jwt_error() from exc
-    if int(datetime.now(timezone.utc).timestamp()) >= expires_at:
-        raise _jwt_error()
+    _validate_access_profile(payload, settings.jwt_access_token_expire_minutes)
 
     return payload
 
@@ -181,17 +231,20 @@ def build_current_user_from_claims(claims: dict[str, Any]) -> CurrentUser:
 
 def build_current_user_from_authorization_header(authorization: str | None) -> CurrentUser:
     if authorization is None or authorization == "":
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or token == "":
-        raise HTTPException(status_code=401, detail="Authentication required")
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
 
     return build_current_user_from_claims(decode_access_token(token))
 
 
 async def get_current_user_from_jwt(request: Request) -> CurrentUser:
-    return build_current_user_from_authorization_header(request.headers.get("authorization"))
+    from app.core.认证当前性 import verify_current_user
+
+    current_user = build_current_user_from_authorization_header(request.headers.get("authorization"))
+    return await verify_current_user(current_user)
 
 
 def _parse_required_int(value: str | None) -> int:

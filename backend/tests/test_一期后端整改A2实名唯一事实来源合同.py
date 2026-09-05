@@ -14,6 +14,23 @@ VALID_ID_LOWER = "11010519491231002x"
 MASKED_ID = "110105********002X"
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_current_authority(monkeypatch):
+    from app.core import 认证当前性 as authority
+
+    async def read(user_id):
+        if user_id != 42:
+            return None
+        return SimpleNamespace(
+            id=42, role="member", tenant_id=None, tenant_org_id=None,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+
+    # Keep JWT verification and currentness active; this file has synthetic
+    # business sessions and must not connect to a real authority database.
+    monkeypatch.setattr(authority, "_read_authority", read)
+
+
 def _jwt_headers(*, user_id: int = 42, role: str = "member") -> dict[str, str]:
     from app.core.security import create_access_token
 

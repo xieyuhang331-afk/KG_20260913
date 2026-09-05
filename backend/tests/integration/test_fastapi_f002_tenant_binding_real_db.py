@@ -138,11 +138,15 @@ def test_f002_real_db_tenant_binding_idor_is_blocked(real_db_client, pg_database
 def test_f002_real_db_non_member_cannot_bind_tenant(real_db_client, pg_database):
     _seed_tenants(pg_database)
     user = _register(real_db_client, "13800139307")
+    pg_database.execute(
+        'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+        "(81011,'13900081011','synthetic','org_admin','active')"
+    )
 
     response = real_db_client.post(
         f"/api/v1/users/{user['id']}/tenant-binding",
         json={"tenant_id": _tenant_id(pg_database, "TASK8ACTIVE")},
-        headers=_headers(role="org_admin", user_id=user["id"]),
+        headers=_headers(role="org_admin", user_id=81011),
     )
 
     assert response.status_code == 410

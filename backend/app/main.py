@@ -2,48 +2,67 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.core.config import get_settings
 from app.core.database import dispose_database_runtimes
 from app.core.middleware import add_request_middleware
 from app.core.responses import ok_response
+from app.core.认证配置校验 import validated_auth_settings
+from app.core.认证限流 import AuthRateLimiter
 from app.modules.auth.api import auth_router
 from app.modules.auth.api import router as user_auth_router
-from app.modules.health_analysis.api import internal_router as health_analysis_internal_router
+from app.modules.health_analysis.api import (
+    internal_router as health_analysis_internal_router,
+)
 from app.modules.health_analysis.api import router as health_analysis_router
 from app.modules.health_assessment.api import (
     routers as slice5_routers,
+)
+from app.modules.health_assessment.api import (
     strip_slice5_validation_responses,
 )
 from app.modules.health_plan.api import (
     routers as slice6_routers,
+)
+from app.modules.health_plan.api import (
     strip_slice6_validation_responses,
 )
-from app.modules.service_fulfillment.api import (
-    consume_personal_data_export_download,
-    routers as slice7_routers,
-    strip_slice7_validation_responses,
-)
-from app.modules.organization.api import router as organization_router
 from app.modules.institution_onboarding.api import onboarding_router, platform_router
 from app.modules.member_enrollment.api import (
     routers as member_enrollment_routers,
+)
+from app.modules.member_enrollment.api import (
     strip_member_enrollment_validation_responses,
 )
+from app.modules.organization.api import router as organization_router
 from app.modules.private_file.api import router as private_file_router
 from app.modules.private_file.service import authorize_generated_export_access
 from app.modules.private_file.storage import build_private_object_store
+from app.modules.registry import get_module_registry
+from app.modules.review.api import router as review_router
+from app.modules.service_fulfillment.api import (
+    consume_personal_data_export_download,
+    strip_slice7_validation_responses,
+)
+from app.modules.service_fulfillment.api import (
+    routers as slice7_routers,
+)
+from app.modules.tenant.api import router as tenant_router
 from app.modules.therapist_qualification.api import (
     institution_router as therapist_institution_router,
+)
+from app.modules.therapist_qualification.api import (
     platform_router as therapist_platform_router,
+)
+from app.modules.therapist_qualification.api import (
     strip_therapist_validation_responses,
     therapist_router,
 )
-from app.modules.registry import get_module_registry
-from app.modules.review.api import router as review_router
-from app.modules.tenant.api import router as tenant_router
 from app.modules.user_health.api import (
     formal_routers as slice4_formal_routers,
+)
+from app.modules.user_health.api import (
     router as user_health_router,
+)
+from app.modules.user_health.api import (
     strip_slice4_validation_responses,
 )
 
@@ -57,7 +76,7 @@ async def lifespan(_: FastAPI):
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
+    settings = validated_auth_settings()
     app = FastAPI(
         title=settings.service_name,
         version=settings.version,
@@ -68,6 +87,7 @@ def create_app() -> FastAPI:
         ],
     )
     app.state.kg_modules = get_module_registry()
+    app.state.auth_rate_limiter = AuthRateLimiter(settings.auth_rate_limit_hmac_key.encode("utf-8"))
     app.state.private_object_store = build_private_object_store(
         backend=settings.file_storage_backend,
         root=settings.private_file_storage_root,

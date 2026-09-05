@@ -193,6 +193,7 @@ class Slice5Route(APIRoute):
                 return JSONResponse(
                     status_code=_STATUS[code],
                     content={"code": code, "message": "request rejected"},
+                    headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if _STATUS[code] == 401 else {"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
                 )
             except Exception as exc:
                 code = _safe_error_code(exc)
@@ -201,6 +202,7 @@ class Slice5Route(APIRoute):
                 return JSONResponse(
                     status_code=_STATUS[code],
                     content={"code": code, "message": "request rejected"},
+                    headers={"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
                 )
 
         return handler
@@ -410,6 +412,20 @@ def strip_slice5_validation_responses(schema: dict[str, object]) -> dict[str, ob
     for (method, path), codes in SLICE5_ROUTE_ERROR_CODES.items():
         operation = paths.get(path, {}).get(method.lower())
         if isinstance(operation, dict):
+            for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+                response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
+                media = response.setdefault("content", {}).setdefault("application/json", {
+                    "schema": {"type": "object", "required": ["code", "message"], "properties": {
+                        "code": {"type": "string"}, "message": {"type": "string"},
+                    }},
+                })
+                media.setdefault("examples", {})["authentication"] = {
+                    "value": {"code": auth_code, "message": "request rejected"},
+                }
+                headers = response.setdefault("headers", {})
+                headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                if status == "401":
+                    headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
             operation["x-symbolic-error-codes"] = list(codes)
     return schema
 

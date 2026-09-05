@@ -1254,6 +1254,9 @@ async def test_Slice4四个只读接口真实HTTP错误边界与正向响应保�
             await dispose_projection_runtime(kind)
 
     institution_user_id = actor_user_id + 200
+    institution_org_id = await pg_database._fetch_value(
+        "SELECT org_id FROM public.tenant WHERE id=$1", tenant_id
+    )
     institution_headers = {
         "Authorization": "Bearer "
         + create_access_token(
@@ -1261,6 +1264,7 @@ async def test_Slice4四个只读接口真实HTTP错误边界与正向响应保�
                 "sub": str(institution_user_id),
                 "role": "org_admin",
                 "tenant_id": tenant_id,
+                "org_id": institution_org_id,
             }
         )
     }
@@ -1311,7 +1315,7 @@ async def test_Slice4四个只读接口真实HTTP错误边界与正向响应保�
     cross_tenant_headers = {
         "Authorization": "Bearer "
         + create_access_token(
-            {"sub": "199672", "role": "org_admin", "tenant_id": 199670}
+            {"sub": "199672", "role": "org_admin", "tenant_id": 199670, "org_id": 199671}
         )
     }
     for route in routes:
@@ -1788,7 +1792,12 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
         99640,
     )
     institution_authorization = {
-        "Authorization": f"Bearer {create_access_token({'sub': str(institution_user_id), 'role': 'org_admin', 'tenant_id': 99640})}"
+        "Authorization": "Bearer " + create_access_token({
+            "sub": str(institution_user_id), "role": "org_admin", "tenant_id": 99640,
+            "org_id": await pg_database._fetch_value(
+                "SELECT org_id FROM public.tenant WHERE id=$1", 99640
+            ),
+        })
     }
     institution_access = real_db_client.post(
         f"/api/v1/private-files/{file_id}/access",
@@ -1821,7 +1830,7 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
         "VALUES (199642,'00000009999','test-only','org_admin','active',199640);"
     )
     cross_tenant_authorization = {
-        "Authorization": f"Bearer {create_access_token({'sub': '199642', 'role': 'org_admin', 'tenant_id': 199640})}"
+        "Authorization": f"Bearer {create_access_token({'sub': '199642', 'role': 'org_admin', 'tenant_id': 199640, 'org_id': 199641})}"
     }
     cross_tenant_access = real_db_client.post(
         f"/api/v1/private-files/{file_id}/access",
@@ -1923,7 +1932,12 @@ async def test_D11_PG06_本人正式HTTP创建报告重放并可读取非空列�
         ) == 0
 
     therapist_authorization = {
-        "Authorization": f"Bearer {create_access_token({'sub': str(therapist_user_id), 'role': 'therapist'})}"
+        "Authorization": "Bearer " + create_access_token({
+            "sub": str(therapist_user_id), "role": "therapist",
+            "tenant_id": await pg_database._fetch_value(
+                'SELECT tenant_id FROM public."user" WHERE id=$1', therapist_user_id
+            ),
+        })
     }
     fact = real_db_client.post(
         f"/api/v1/therapist/service-cases/{case_id}/health-indicators",

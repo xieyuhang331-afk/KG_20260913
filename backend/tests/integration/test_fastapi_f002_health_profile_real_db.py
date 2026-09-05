@@ -165,5 +165,7 @@ def test_f002_real_db_health_profile_user_not_found_returns_404(real_db_client):
         headers=_member_headers(99999999),
     )
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "User not found"
+    assert response.status_code == 401
+    assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert response.headers["Cache-Control"] == "no-store"

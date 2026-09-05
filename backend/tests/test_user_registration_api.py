@@ -33,7 +33,7 @@ class UserRegistrationApiTests(unittest.TestCase):
             yield FakeSession()
 
         app.dependency_overrides[get_db_session] = fake_session
-        return TestClient(app)
+        return TestClient(app, client=("127.0.0.1", 50000))
 
     def test_router_registers_post_user_register(self):
         response = self._client().get("/openapi.json")
@@ -130,7 +130,7 @@ class UserRegistrationApiTests(unittest.TestCase):
             patch("app.modules.auth.service.user_exists_by_phone", new=AsyncMock(return_value=False)),
             patch("app.modules.auth.service.create_user_record", new=AsyncMock(side_effect=integrity_error)),
         ):
-            response = TestClient(app).post("/api/v1/users/register", json=self._payload())
+            response = TestClient(app, client=("127.0.0.1", 50000)).post("/api/v1/users/register", json=self._payload())
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "User already exists")

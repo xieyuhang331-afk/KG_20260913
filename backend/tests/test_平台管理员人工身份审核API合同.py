@@ -3,11 +3,38 @@ from __future__ import annotations
 from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
+
+import pytest
 
 from fastapi.testclient import TestClient
 
 
 ROUTE = "/api/v1/reviews/users/1042/identity/approve"
+
+
+@pytest.fixture(autouse=True)
+def fixed_authority(monkeypatch):
+    from app.core.config import get_settings
+
+    rows = {
+        user_id: SimpleNamespace(
+            id=user_id, role=role, tenant_id=tenant_id, tenant_org_id=None,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+        for user_id, role, tenant_id in (
+            (17, "super_admin", None), (18, "province_admin", None),
+            (19, "city_admin", None), (20, "org_admin", None),
+            (21, "member", None), (117, "super_admin", 3),
+        )
+    }
+    monkeypatch.setattr("app.core.认证当前性._read_authority", AsyncMock(side_effect=rows.get))
+    monkeypatch.setenv("KG_AUTH_CONTEXT_MAP", (
+        '{"18":{"province":"ZJ"},"19":{"province":"ZJ","city":"HZ"}}'
+    ))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _headers(
@@ -20,6 +47,13 @@ def _headers(
     from app.core.security import create_access_token
 
     claims = {"sub": subject, "role": role}
+    if subject == "17":
+        claims["sub"] = {
+            "province_admin": "18", "city_admin": "19", "org_admin": "20", "member": "21",
+        }.get(role, "117" if tenant_id == 3 else "17")
+    claims.update({
+        "18": {"province": "ZJ"}, "19": {"province": "ZJ", "city": "HZ"},
+    }.get(claims["sub"], {}))
     if tenant_id is not None:
         claims["tenant_id"] = tenant_id
     if org_id is not None:
@@ -183,6 +217,11 @@ def test_人工身份审核要求有效JWT():
 
 
 def test_人工身份审核只允许无TenantOrgScope的super_admin():
+    from fastapi import HTTPException
+
+    from app.core.security import CurrentUser
+    from app.modules.review.api import _require_platform_identity_reviewer
+
     service = _Service()
     for headers in (
         _headers("province_admin"),
@@ -190,13 +229,24 @@ def test_人工身份审核只允许无TenantOrgScope的super_admin():
         _headers("org_admin"),
         _headers("member"),
         _headers("super_admin", tenant_id=3),
-        _headers("super_admin", org_id=9),
     ):
         response = _client(service).post(
             ROUTE, json=_payload(), headers=headers
         )
         assert response.status_code == 403
         assert response.json()["detail"] == "Forbidden"
+    malformed = _client(service).post(
+        ROUTE, json=_payload(), headers=_headers("super_admin", org_id=9),
+    )
+    assert malformed.status_code == 401
+    assert malformed.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    assert malformed.headers["WWW-Authenticate"] == "Bearer"
+    assert malformed.headers["Cache-Control"] == "no-store"
+    # Direct guard unit proof; the malformed HTTP request never reaches this guard.
+    with pytest.raises(HTTPException) as exc:
+        _require_platform_identity_reviewer(CurrentUser(id=17, role="super_admin", org_id=9))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Forbidden"
     assert service.calls == []
 
 

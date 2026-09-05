@@ -575,36 +575,33 @@ def test_家庭会员接受邀请真实ASGI与Currentness负向零副作用(
     )
 
     member_user_id = int(seeded["member_user_id"])
-    pg_database.execute(
-        f'UPDATE public."user" SET status=\'disabled\' WHERE id={member_user_id}'
+    original_status = pg_database.fetch_value(
+        f'SELECT status FROM public."user" WHERE id={member_user_id}'
     )
-    disabled_list = real_db_client.get(
-        "/api/v1/family/member-enrollments",
-        headers=member_authorization,
-    )
-    _assert_safe_failure_without_mutation(
-        disabled_list,
-        status_code=403,
-        error_code="ACTOR_CURRENTNESS_FORBIDDEN",
-        before=unchanged,
-        pg_database=pg_database,
-        invitation_id=invitation_id,
-    )
-    disabled_detail = real_db_client.get(
-        f"/api/v1/family/member-enrollments/{enrollment_id}",
-        headers=member_authorization,
-    )
-    _assert_safe_failure_without_mutation(
-        disabled_detail,
-        status_code=403,
-        error_code="ACTOR_CURRENTNESS_FORBIDDEN",
-        before=unchanged,
-        pg_database=pg_database,
-        invitation_id=invitation_id,
-    )
-    pg_database.execute(
-        f'UPDATE public."user" SET status=\'active\' WHERE id={member_user_id}'
-    )
+    try:
+        pg_database.execute(
+            f'UPDATE public."user" SET status=\'disabled\' WHERE id={member_user_id}'
+        )
+        for path in (
+            "/api/v1/family/member-enrollments",
+            f"/api/v1/family/member-enrollments/{enrollment_id}",
+        ):
+            disabled = real_db_client.get(path, headers=member_authorization)
+            _assert_safe_failure_without_mutation(
+                disabled,
+                status_code=401,
+                error_code="ACCESS_TOKEN_STALE",
+                before=unchanged,
+                pg_database=pg_database,
+                invitation_id=invitation_id,
+            )
+            assert disabled.headers["WWW-Authenticate"] == "Bearer"
+            assert disabled.headers["Cache-Control"] == "no-store"
+    finally:
+        pg_database.execute(
+            'UPDATE public."user" SET status=\'' + original_status.replace("'", "''")
+            + f'\' WHERE id={member_user_id}'
+        )
 
     pg_database.execute(
         "UPDATE identity.member SET status='archived' "

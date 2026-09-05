@@ -7,6 +7,18 @@ import traceback
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings_cache(monkeypatch):
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
 def _runtime(monkeypatch, writer_url: str | None):
     from app.core import config, database
 
@@ -200,7 +212,15 @@ def test_Application与WriterRuntime关闭时均Dispose且新生命周期不复�
 
 
 def test_FastAPI关闭时Dispose数据库Runtime(monkeypatch):
+    import secrets
+
     from fastapi.testclient import TestClient
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("KG_DATABASE_PASSWORD", secrets.token_urlsafe(40))
+    monkeypatch.setenv("KG_JWT_SECRET_KEY", secrets.token_urlsafe(48))
+    monkeypatch.setenv("KG_AUTH_RATE_LIMIT_HMAC_KEY", secrets.token_urlsafe(48))
+    get_settings.cache_clear()
     from app import main
 
     calls = []
@@ -214,8 +234,11 @@ def test_FastAPI关闭时Dispose数据库Runtime(monkeypatch):
         dispose_database_runtimes,
         raising=False,
     )
-    with TestClient(main.create_app()) as client:
-        assert client.get("/health").status_code == 200
+    try:
+        with TestClient(main.create_app()) as client:
+            assert client.get("/health").status_code == 200
+    finally:
+        get_settings.cache_clear()
     assert calls == ["disposed"]
 
 

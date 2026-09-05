@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
+from app.modules.tenant.models import Tenant
 
 
 def _ensure_mapped() -> None:
@@ -26,6 +27,19 @@ async def get_user_by_id(session, user_id: int):
     _ensure_mapped()
     result = await session.execute(select(User).where(User.id == user_id).limit(1))
     return result.scalar_one_or_none()
+
+
+async def get_user_currentness(session, user_id: int):
+    """Read only the authority fields required to invalidate a stale access token."""
+    _ensure_mapped()
+    result = await session.execute(
+        select(
+            User.id, User.role, User.tenant_id, User.status,
+            User.exited_at, User.deletion_requested_at,
+            Tenant.org_id.label("tenant_org_id"),
+        ).outerjoin(Tenant, Tenant.id == User.tenant_id).where(User.id == user_id)
+    )
+    return result.one_or_none()
 
 
 async def get_user_for_tenant_binding_update(session, user_id: int):

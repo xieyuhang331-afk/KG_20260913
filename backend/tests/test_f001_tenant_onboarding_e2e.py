@@ -2,7 +2,7 @@ import unittest
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -201,6 +201,34 @@ class InMemoryF001Store:
 
 
 class F001TenantOnboardingE2ETests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in (
+                (1, "super_admin"), (2, "province_admin"), (3, "city_admin"),
+                (100, "org_admin"), (121, "org_admin"), (122, "org_admin"),
+                (130, "org_admin"), (140, "org_admin"), (200, "member"),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority", new=AsyncMock(side_effect=rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"1":{},"2":{"province":"ZJ"},"3":{"province":"ZJ","city":"HZ"},'
+            '"100":{"org_id":20},"121":{"org_id":21},"122":{"org_id":22},"130":{"org_id":30}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _payload(self, *, credit_code="91330100MA00000123", province="ZJ", city="HZ"):
         return {
             "name": f"Kanglin {city} Store",
@@ -236,6 +264,11 @@ class F001TenantOnboardingE2ETests(unittest.TestCase):
         from app.core.security import create_access_token
 
         claims = {"sub": str(user_id), "role": role}
+        if role == "org_admin" and user_id == 100:
+            # Each organization scenario has its own pre-existing authority actor.
+            claims["sub"] = str({20: 100, 21: 121, 22: 122, 30: 130, None: 140}[org_id])
+        elif role == "member" and user_id == 100:
+            claims["sub"] = "200"
         if org_id is not None:
             claims["org_id"] = org_id
         if province is not None:
@@ -483,7 +516,7 @@ class F001TenantOnboardingE2ETests(unittest.TestCase):
             )
             member_status = client.get(
                 f"/api/v1/tenants/{own_tenant_id}/application-status",
-                headers=self._headers("member", user_id=100, org_id=20),
+                headers=self._headers("member", user_id=100),
             )
 
         self.assertEqual(own_status.status_code, 200)

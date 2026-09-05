@@ -2,13 +2,36 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def fixed_authority(monkeypatch):
+    from app.core.config import get_settings
+
+    rows = {
+        user_id: SimpleNamespace(
+            id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+        for user_id, role in ((17, "super_admin"), (18, "province_admin"))
+    }
+    monkeypatch.setattr("app.core.认证当前性._read_authority", AsyncMock(side_effect=rows.get))
+    monkeypatch.setenv("KG_AUTH_CONTEXT_MAP", '{"18":{"province":"ZJ"}}')
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _headers(role="super_admin"):
     from app.core.security import create_access_token
-    token = create_access_token({"sub": "17", "role": role})
+    claims = {"sub": "17", "role": role}
+    if role == "province_admin":
+        claims.update(sub="18", province="ZJ")
+    token = create_access_token(claims)
     return {"Authorization": f"Bearer {token}"}
 
 

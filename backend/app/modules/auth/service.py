@@ -38,6 +38,10 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${iterations}${salt}${digest}"
 
 
+# Not an account credential: keeps unknown subjects on the same PBKDF2 path.
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+
+
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         algorithm, iterations_raw, salt, expected_digest = password_hash.split("$", 3)
@@ -116,7 +120,11 @@ async def get_therapist_account_for_login(session, user_id: int):
 
 async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
     user = await get_user_by_phone(session, payload.phone)
-    if user is None or not verify_password(payload.password, user.password_hash):
+    password_valid = verify_password(payload.password, user.password_hash if user is not None else _DUMMY_PASSWORD_HASH)
+    if user is None or not password_valid:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if getattr(user, "exited_at", None) is not None or getattr(user, "deletion_requested_at", None) is not None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if user.status != "active":
         raise HTTPException(status_code=403, detail="User is not active")

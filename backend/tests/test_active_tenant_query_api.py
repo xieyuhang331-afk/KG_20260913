@@ -1,15 +1,46 @@
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 
 class ActiveTenantQueryApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in (
+                (1001, "member"), (1101, "org_admin"), (1102, "super_admin"),
+                (1103, "province_admin"), (1104, "city_admin"),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority", new=AsyncMock(side_effect=rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"1103":{"province":"ZJ"},"1104":{"province":"ZJ","city":"HZ"}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _jwt_headers(self, role: str = "member", *, user_id: int = 1001) -> dict:
         from app.core.security import create_access_token
 
-        token = create_access_token({"sub": str(user_id), "role": role})
+        claims = {"sub": str(user_id), "role": role}
+        claims.update({
+            1103: {"province": "ZJ"}, 1104: {"province": "ZJ", "city": "HZ"},
+        }.get(user_id, {}))
+        token = create_access_token(claims)
         return {"Authorization": f"Bearer {token}"}
 
     def _client(self):
@@ -127,7 +158,10 @@ class ActiveTenantQueryApiTests(unittest.TestCase):
                 service_mock = AsyncMock()
 
                 with patch("app.modules.tenant.api.list_active_tenants", new=service_mock):
-                    response = client.get("/api/v1/tenants/active", headers=self._jwt_headers(role))
+                    response = client.get("/api/v1/tenants/active", headers=self._jwt_headers(role, user_id={
+                        "org_admin": 1101, "super_admin": 1102,
+                        "province_admin": 1103, "city_admin": 1104,
+                    }[role]))
 
                 self.assertEqual(response.status_code, 403)
                 service_mock.assert_not_awaited()

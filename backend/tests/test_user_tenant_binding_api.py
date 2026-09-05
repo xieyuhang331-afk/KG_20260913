@@ -1,9 +1,38 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 
 class UserTenantBindingApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        self.authority_rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in (
+                (1001, "member"), (1101, "org_admin"), (1102, "super_admin"),
+                (1103, "province_admin"), (1104, "city_admin"), (1105, "therapist"),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority",
+            new=AsyncMock(side_effect=self.authority_rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"1103":{"province":"ZJ"},"1104":{"province":"ZJ","city":"HZ"}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _jwt_headers(
         self,
         *,
@@ -14,6 +43,9 @@ class UserTenantBindingApiTests(unittest.TestCase):
         from app.core.security import create_access_token
 
         claims = {"sub": str(user_id), "role": role}
+        claims.update({
+            1103: {"province": "ZJ"}, 1104: {"province": "ZJ", "city": "HZ"},
+        }.get(user_id, {}))
         if tenant_id is not None:
             claims["tenant_id"] = tenant_id
         token = create_access_token(claims)
@@ -42,6 +74,7 @@ class UserTenantBindingApiTests(unittest.TestCase):
         self.assertIn("410", operation["responses"])
 
     def test_member_binds_own_tenant_successfully(self):
+        self.authority_rows[1001].tenant_id = 301
         response = self._client().post(
             "/api/v1/users/1001/tenant-binding",
             json={"tenant_id": 501},
@@ -65,7 +98,10 @@ class UserTenantBindingApiTests(unittest.TestCase):
                 response = self._client().post(
                     "/api/v1/users/1001/tenant-binding",
                     json={"tenant_id": 501},
-                    headers=self._jwt_headers(user_id=1001, role=role),
+                    headers=self._jwt_headers(user_id={
+                        "org_admin": 1101, "super_admin": 1102, "province_admin": 1103,
+                        "city_admin": 1104, "therapist": 1105,
+                    }[role], role=role),
                 )
                 self._assert_retired(response)
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
 from uuid import UUID
@@ -15,11 +16,12 @@ SUBMISSION_REF = UUID("01890f3e-7b7d-7cc3-88c8-2f5a12d29402")
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
 
 
-def _headers(user_ref=REVIEWER_REF, role="super_admin"):
+def _headers(user_ref=REVIEWER_REF, role="super_admin", *, province=None, city=None):
     from app.core.security import create_access_token
 
     token = create_access_token(
-        {"sub": str(user_ref), "role": role, "tenant_id": None, "org_id": None}
+        {"sub": str(user_ref), "role": role, "tenant_id": None, "org_id": None,
+         "province": province, "city": city}
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -125,35 +127,85 @@ def test_平台人工审核经持久发件箱完成注册闭环且稳定重放(
     ((92403, "province_admin"), (92404, "city_admin")),
 )
 def test_无权角色在WriterSession创建前拒绝(
-    real_db_client, monkeypatch, reviewer_ref, role
+    real_db_client, pg_database, monkeypatch, reviewer_ref, role
 ):
     from app.core import database
+    from app.core.config import get_settings
+
+    pg_database.execute(
+        'INSERT INTO public."user" (id, phone, password_hash, role, status) '
+        "VALUES (92403, '13900092403', 'synthetic', 'province_admin', 'active'), "
+        "(92404, '13900092404', 'synthetic', 'city_admin', 'active') "
+        "ON CONFLICT (id) DO NOTHING"
+    )
 
     monkeypatch.setattr(
         database,
         "get_verification_writer_session_factory",
         lambda: pytest.fail("Writer Session Factory must not be created"),
     )
-    response = real_db_client.post(
-        f"/api/v1/reviews/users/{USER_REF}/identity/approve",
-        headers=_headers(reviewer_ref, role),
-        json={
-            "idempotency_key": "forbidden-review",
-            "submission_version": 1,
-            "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
-        },
+    context = {
+        "92403": {"province": "Zhejiang"},
+        "92404": {"province": "Zhejiang", "city": "Hangzhou"},
+    }
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_AUTH_CONTEXT_MAP", json.dumps(context))
+        get_settings.cache_clear()
+        try:
+            response = real_db_client.post(
+                f"/api/v1/reviews/users/{USER_REF}/identity/approve",
+                headers=_headers(
+                    reviewer_ref, role, province="Zhejiang",
+                    city="Hangzhou" if role == "city_admin" else None,
+                ),
+                json={
+                    "idempotency_key": "forbidden-review",
+                    "submission_version": 1,
+                    "decision_basis_code": "APPROVED_OFFLINE_IDENTITY_CHECK",
+                },
+            )
+            assert response.status_code == 403
+            assert response.json() == {"detail": "Forbidden"}
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
+
+
+def test_自我审核由应用服务拒绝且不产生数据库写入(
+    real_db_client, pg_database, monkeypatch
+):
+    from app.modules.auth.manual_identity_review_application import (
+        PlatformAdminManualIdentityReviewService,
+        PlatformIdentitySubmissionReviewService,
     )
-    assert response.status_code == 403
-    assert response.json() == {"detail": "Forbidden"}
 
+    pg_database.execute(
+        'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+        "(92405,'13900092405','synthetic','super_admin','active')"
+    )
+    calls = {"submission_guard": 0, "transition_service": 0}
+    original_guard = PlatformIdentitySubmissionReviewService._require_reviewer
+    original_execute = PlatformAdminManualIdentityReviewService.execute
 
-def test_自我审核由应用服务拒绝且不产生数据库写入(real_db_client, pg_database):
+    def observe_guard(current_user, user_ref=None):
+        calls["submission_guard"] += 1
+        return original_guard(current_user, user_ref)
+
+    async def observe_execute(self, **kwargs):
+        calls["transition_service"] += 1
+        return await original_execute(self, **kwargs)
+
+    monkeypatch.setattr(
+        PlatformIdentitySubmissionReviewService, "_require_reviewer",
+        staticmethod(observe_guard),
+    )
+    monkeypatch.setattr(PlatformAdminManualIdentityReviewService, "execute", observe_execute)
     before = pg_database.fetch_value(
         "SELECT count(*) FROM public.registration_verified_outbox"
     )
     response = real_db_client.post(
-        f"/api/v1/reviews/users/{USER_REF}/identity/approve",
-        headers=_headers(USER_REF, "super_admin"),
+        "/api/v1/reviews/users/92405/identity/approve",
+        headers=_headers(92405),
         json={
             "idempotency_key": "self-review",
             "submission_version": 1,
@@ -162,6 +214,8 @@ def test_自我审核由应用服务拒绝且不产生数据库写入(real_db_cl
     )
     assert response.status_code == 403
     assert response.json() == {"detail": "Forbidden"}
+    # The formal submission service rejects self-review before transition execution.
+    assert calls == {"submission_guard": 1, "transition_service": 0}
     assert pg_database.fetch_value(
         "SELECT count(*) FROM public.registration_verified_outbox"
     ) == before

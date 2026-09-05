@@ -14,7 +14,7 @@ from app.modules.health_assessment.service import fail_assessment
 celery_config = importlib.import_module("app.tasks.celery_app")
 
 
-def test_slice5任务目录固定且全部路由到独立队列() -> None:
+def test_slice5任务目录固定且全部路由到独立队列(monkeypatch) -> None:
     expected = {
         "phase1.slice5.run_assessment",
         "phase1.slice5.dispatch_outbox",
@@ -23,15 +23,17 @@ def test_slice5任务目录固定且全部路由到独立队列() -> None:
     }
     assert tasks.TASK_NAMES == expected
     assert celery_config.SLICE5_ASSESSMENT_QUEUE in celery_config.get_declared_queues()
-    app = celery_config.create_celery_app(broker_url="memory://")
+    monkeypatch.delenv("KG_CELERY_BROKER_URL", raising=False)
+    app = celery_config.create_celery_app()
     assert all(
         app.conf.task_routes[name] == {"queue": celery_config.SLICE5_ASSESSMENT_QUEUE}
         for name in expected
     )
 
 
-def test_slice5恢复任务有固定节拍且禁止自动重放mutation() -> None:
-    app = celery_config.create_celery_app(broker_url="memory://")
+def test_slice5恢复任务有固定节拍且禁止自动重放mutation(monkeypatch) -> None:
+    monkeypatch.delenv("KG_CELERY_BROKER_URL", raising=False)
+    app = celery_config.create_celery_app()
     recovery = app.conf.beat_schedule["slice5-assessment-recovery"]
     dispatch = app.conf.beat_schedule["slice5-assessment-dispatch"]
     assert recovery["task"] == tasks.RECOVER_TASK

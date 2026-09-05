@@ -4,14 +4,26 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-def _headers(role: str = "member", *, user_id: int = 1001) -> dict:
+def _headers(role: str = "member", *, user_id: int | None = None) -> dict:
     from app.core.security import create_access_token
 
-    token = create_access_token({"sub": str(user_id), "role": role})
+    actor_id = {"member": 80011, "org_admin": 80012}[role] if user_id is None else user_id
+    token = create_access_token({"sub": str(actor_id), "role": role})
     return {"Authorization": f"Bearer {token}"}
 
 
 def _seed_active_tenant_test_data(pg_database):
+    pg_database.execute(
+        'INSERT INTO public."user" (id, phone, password_hash, role, status) '
+        "VALUES (80011, '13900080011', 'synthetic', 'member', 'active'), "
+        "(80012, '13900080012', 'synthetic', 'org_admin', 'active') "
+        "ON CONFLICT (id) DO NOTHING"
+    )
+    assert pg_database.fetch_value(
+        'SELECT count(*) FROM public."user" WHERE status=\'active\' '
+        "AND tenant_id IS NULL AND ((id=80011 AND role='member') "
+        "OR (id=80012 AND role='org_admin'))"
+    ) == 2
     pg_database.execute(
         """
         INSERT INTO platform_org (id, org_name, org_code, org_type)
@@ -56,6 +68,14 @@ def test_f002_real_db_member_lists_only_active_tenants(real_db_client, pg_databa
     assert "TASK7ACTIVENB" in codes
     assert "TASK7PENDING" not in codes
     assert "TASK7REJECTED" not in codes
+
+    missing_actor = real_db_client.get(
+        "/api/v1/tenants/active", headers=_headers(user_id=80013)
+    )
+    assert missing_actor.status_code == 401
+    assert missing_actor.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    assert missing_actor.headers["WWW-Authenticate"] == "Bearer"
+    assert missing_actor.headers["Cache-Control"] == "no-store"
 
 
 def test_f002_real_db_active_tenant_filters_and_pagination(real_db_client, pg_database):

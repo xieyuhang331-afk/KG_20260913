@@ -22,7 +22,7 @@ class AuthLoginApiTests(unittest.TestCase):
             yield FakeSession()
 
         app.dependency_overrides[get_db_session] = fake_session
-        return TestClient(app, raise_server_exceptions=raise_server_exceptions)
+        return TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=raise_server_exceptions)
 
     def _user(
         self,

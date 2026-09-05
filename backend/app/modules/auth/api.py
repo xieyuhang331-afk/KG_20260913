@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from email.message import Message
+from json import JSONDecodeError
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from pydantic import ValidationError
 
 from app.core.database import get_db_session
 from app.core.responses import ok_response
 from app.core.security import (
     CurrentUser,
-    build_current_user_from_authorization_header,
     get_current_user_from_jwt,
 )
 from app.modules.auth.schemas import (
@@ -66,6 +70,72 @@ _NO_STORE_RESPONSE = {
         }
     }
 }
+
+
+_AUTH_INPUT_INVALID_RESPONSE = {
+    **_NO_STORE_RESPONSE,
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object", "additionalProperties": False,
+                "required": ["code", "message"],
+                "properties": {
+                    "code": {"type": "string", "enum": ["AUTH_INPUT_INVALID"]},
+                    "message": {"type": "string", "enum": ["request rejected"]},
+                },
+            },
+        },
+    },
+}
+
+
+def _auth_input_invalid():
+    return JSONResponse(
+        status_code=422, content={"code": "AUTH_INPUT_INVALID", "message": "request rejected"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+class _AuthInputRoute(APIRoute):
+    request_model: type[AuthLoginRequest] | type[UserRegisterRequest]
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            # Match the locked FastAPI JSON content-type contract. Starlette
+            # caches body/json; the original route retains normal dependencies
+            # and validates the same model, without a second admission/session.
+            content_type = Message()
+            content_type["content-type"] = request.headers.get("content-type", "")
+            subtype = content_type.get_content_subtype()
+            try:
+                if content_type.get_content_maintype() == "application" and (
+                    subtype == "json" or subtype.endswith("+json")
+                ):
+                    try:
+                        body = await request.json()
+                    except (ValueError, RecursionError):
+                        return _auth_input_invalid()
+                else:
+                    body = await request.body()
+                self.request_model.model_validate(body)
+            except (JSONDecodeError, UnicodeDecodeError, ValidationError):
+                return _auth_input_invalid()
+            try:
+                return await original(request)
+            except RequestValidationError:
+                return _auth_input_invalid()
+
+        return handler
+
+
+class _LoginInputRoute(_AuthInputRoute):
+    request_model = AuthLoginRequest
+
+
+class _RegistrationInputRoute(_AuthInputRoute):
+    request_model = UserRegisterRequest
 
 
 _IDENTITY_INPUT_INVALID_RESPONSE = {
@@ -177,20 +247,59 @@ async def get_identity_verification_status_api(
     return ok_response(response.model_dump())
 
 
-@auth_router.post("/login")
+def _rate_limiter(request: Request):
+    limiter = getattr(request.app.state, "auth_rate_limiter", None)
+    if limiter is None:
+        raise HTTPException(503, "AUTH_RATE_LIMIT_UNAVAILABLE", headers={"Cache-Control": "no-store"})
+    return limiter
+
+
+async def _login_admission(request: Request, payload: AuthLoginRequest):
+    limiter = _rate_limiter(request)
+    reservation = limiter.reserve_login(request.client.host if request.client else None, payload.phone)
+    failed = False
+    try:
+        yield
+    except HTTPException as error:
+        failed = error.status_code in (401, 403)
+        error.headers = {**(error.headers or {}), "Cache-Control": "no-store"}
+        raise
+    finally:
+        limiter.settle_login(reservation, failed=failed)
+
+
+async def _registration_admission(request: Request, payload: UserRegisterRequest):
+    _rate_limiter(request).reserve_registration(request.client.host if request.client else None, payload.phone)
+    try:
+        yield
+    except HTTPException as error:
+        error.headers = {**(error.headers or {}), "Cache-Control": "no-store"}
+        raise
+
+
 async def login_user_api(
     payload: AuthLoginRequest,
+    response: Response,
+    admission: Annotated[None, Depends(_login_admission)],
     session=Depends(get_db_session),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     result = await login_user(session, payload)
     return ok_response(result.model_dump())
 
 
+auth_router.add_api_route(
+    "/login", login_user_api, methods=["POST"], route_class_override=_LoginInputRoute,
+    responses={422: _AUTH_INPUT_INVALID_RESPONSE, 429: _NO_STORE_RESPONSE, 503: _NO_STORE_RESPONSE},
+)
+
+
 @auth_router.get("/me")
 async def get_auth_me_api(
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    response: Response,
+    current_user: Annotated[CurrentUser, Depends(get_current_user_from_jwt)],
 ) -> dict:
-    current_user = build_current_user_from_authorization_header(authorization)
+    response.headers["Cache-Control"] = "no-store"
     result = AuthMeResponse(
         id=current_user.id,
         role=current_user.role,
@@ -202,13 +311,21 @@ async def get_auth_me_api(
     return ok_response(result.model_dump())
 
 
-@router.post("/register")
 async def register_user_api(
     payload: UserRegisterRequest,
+    response: Response,
+    admission: Annotated[None, Depends(_registration_admission)],
     session=Depends(get_db_session),
 ) -> dict:
+    response.headers["Cache-Control"] = "no-store"
     result = await register_user(session, payload)
     return ok_response(result.model_dump())
+
+
+router.add_api_route(
+    "/register", register_user_api, methods=["POST"], route_class_override=_RegistrationInputRoute,
+    responses={422: _AUTH_INPUT_INVALID_RESPONSE, 429: _NO_STORE_RESPONSE, 503: _NO_STORE_RESPONSE},
+)
 
 
 @router.post(

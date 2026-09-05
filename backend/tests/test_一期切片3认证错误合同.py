@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -10,6 +14,20 @@ from app.core.database import (
 )
 from app.core.security import create_access_token
 from app.modules.member_enrollment.api import institution_router
+
+
+@pytest.fixture(autouse=True)
+def fixed_authority(monkeypatch):
+    rows = {
+        user_id: SimpleNamespace(
+            id=user_id, role=role, tenant_id=tenant_id, tenant_org_id=org_id,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+        for user_id, role, tenant_id, org_id in (
+            (71, "org_admin", 9, 100), (72, "member", None, None),
+        )
+    }
+    monkeypatch.setattr("app.core.认证当前性._read_authority", AsyncMock(side_effect=rows.get))
 
 
 def _app_with_sessions(session_calls: list[str], *, unavailable: bool = False) -> FastAPI:
@@ -65,11 +83,13 @@ def test_缺失或无效授权固定401且不进入业务数据库() -> None:
             "message": "request rejected",
         }
         assert session_calls == []
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_有效令牌但角色不足固定403() -> None:
     session_calls: list[str] = []
-    token = create_access_token({"sub": "71", "role": "member"})
+    token = create_access_token({"sub": "72", "role": "member"})
 
     response = TestClient(_app_with_sessions(session_calls)).get(
         "/api/v1/institution/member-invitations",
@@ -97,3 +117,4 @@ def test_有效令牌后真实依赖不可用保持503() -> None:
         "message": "request rejected",
     }
     assert session_calls
+    assert response.headers["Cache-Control"] == "no-store"

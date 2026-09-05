@@ -1,11 +1,38 @@
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 
 class TenantReviewQueueApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in (
+                (100, "super_admin"), (101, "org_admin"),
+                (102, "province_admin"), (103, "city_admin"),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority", new=AsyncMock(side_effect=rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"102":{"province":"GD"},"103":{"province":"GD","city":"GZ"}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _headers(
         self,
         role: str = "super_admin",
@@ -15,7 +42,8 @@ class TenantReviewQueueApiTests(unittest.TestCase):
     ) -> dict:
         from app.core.security import create_access_token
 
-        claims = {"sub": "100", "role": role}
+        actor_ids = {"super_admin": "100", "org_admin": "101", "province_admin": "102", "city_admin": "103"}
+        claims = {"sub": actor_ids[role], "role": role}
         if province is not None:
             claims["province"] = province
         if city is not None:
@@ -128,7 +156,7 @@ class TenantReviewQueueApiTests(unittest.TestCase):
     def test_non_review_role_cannot_access_queue(self):
         response = self._client().get(
             "/api/v1/reviews/queue/tenant",
-            headers=self._headers("org_admin", province="GD", city="GZ"),
+            headers=self._headers("org_admin"),
         )
 
         self.assertEqual(response.status_code, 403)

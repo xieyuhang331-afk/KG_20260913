@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -17,6 +19,11 @@ def _headers(*, user_id: int, role: str, org_id: int | None = None) -> dict:
 
 
 def _seed_applications(pg_database) -> None:
+    pg_database.execute(
+        'INSERT INTO public."user" (id, phone, password_hash, role, status) '
+        "VALUES (86001, '13900086001', 'synthetic', 'org_admin', 'active') "
+        "ON CONFLICT (id) DO NOTHING"
+    )
     pg_database.execute(
         """
         INSERT INTO platform_org (id, org_name, org_code, org_type)
@@ -51,7 +58,23 @@ def _seed_applications(pg_database) -> None:
     )
 
 
-def test_org_admin_lists_and_filters_only_own_applications(real_db_client, pg_database):
+@pytest.fixture
+def _application_actor_context(monkeypatch):
+    from app.core.config import get_settings
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_AUTH_CONTEXT_MAP", json.dumps({"86001": {"org_id": 8601}}))
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
+
+
+def test_org_admin_lists_and_filters_only_own_applications(
+    real_db_client, pg_database, _application_actor_context
+):
     _seed_applications(pg_database)
     headers = _headers(user_id=86001, role="org_admin", org_id=8601)
 

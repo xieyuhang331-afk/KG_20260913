@@ -86,11 +86,12 @@ def test_邀请到期只转换一次并写audit_outbox() -> None:
     assert "workflow_worker" not in task_source
 
 
-def test_C1邀请过期任务固定route与60秒beat() -> None:
+def test_C1邀请过期任务固定route与60秒beat(monkeypatch) -> None:
     from app.tasks.celery_app import MEMBER_ENROLLMENT_QUEUE, create_celery_app
     from app.tasks.member_enrollment_tasks import EXPIRY_TASK
 
-    app = create_celery_app(broker_url="memory://")
+    monkeypatch.delenv("KG_CELERY_BROKER_URL", raising=False)
+    app = create_celery_app()
     assert app.conf.task_routes[EXPIRY_TASK] == {"queue": MEMBER_ENROLLMENT_QUEUE}
     entries = [
         value

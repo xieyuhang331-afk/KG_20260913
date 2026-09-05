@@ -347,13 +347,13 @@ def _family_error_catalog(*, proxy: bool) -> dict[tuple[str, str], tuple[str, ..
             "PROJECTION_READ_UNAVAILABLE", "DEPENDENCY_UNAVAILABLE",
         ),
     }
-    return {key: tuple(dict.fromkeys((*codes, *extra))) for key, codes in values.items()}
+    return {key: tuple(dict.fromkeys(("AUTHENTICATION_REQUIRED", *codes, *extra))) for key, codes in values.items()}
 
 
 def _therapist_codes(*codes: str) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(
-            (*codes, "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")
+            ("AUTHENTICATION_REQUIRED", *codes, "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")
         )
     )
 
@@ -439,13 +439,20 @@ class Slice4Route(APIRoute):
                 allowed = SLICE4_ROUTE_ERROR_CODES[key]
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
-                if key in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES and exc.status_code == 401:
-                    code = "AUTHENTICATION_REQUIRED"
+                if exc.status_code == 401:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"code": "AUTHENTICATION_REQUIRED", "message": "request rejected"},
+                        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
+                    )
+                if exc.status_code == 503 and code not in allowed:
+                    code = "DEPENDENCY_UNAVAILABLE"
                 if type(code) is not str or code not in allowed:
                     code = "INVALID_REQUEST" if "INVALID_REQUEST" in allowed else "DEPENDENCY_UNAVAILABLE"
                 return JSONResponse(
                     status_code=_CODE_STATUS[code],
                     content={"code": code, "message": "request rejected"},
+                    headers={"Cache-Control": "no-store"} if _CODE_STATUS[code] == 503 else None,
                 )
             except Exception as exc:
                 code = str(exc)
@@ -453,10 +460,12 @@ class Slice4Route(APIRoute):
                     return JSONResponse(
                         status_code=_CODE_STATUS[code],
                         content={"code": code, "message": "request rejected"},
+                        headers={"Cache-Control": "no-store"} if _CODE_STATUS[code] == 503 else None,
                     )
                 return JSONResponse(
                     status_code=503,
                     content={"code": "DEPENDENCY_UNAVAILABLE", "message": "request rejected"},
+                    headers={"Cache-Control": "no-store"},
                 )
 
         return handler
@@ -473,6 +482,20 @@ def strip_slice4_validation_responses(schema: dict[str, object]) -> dict[str, ob
         responses = operation.get("responses", {})
         if isinstance(responses, dict) and (method, path) not in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES:
             responses.pop("422", None)
+        for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+            response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
+            media = response.setdefault("content", {}).setdefault("application/json", {
+                "schema": {"type": "object", "required": ["code", "message"], "properties": {
+                    "code": {"type": "string"}, "message": {"type": "string"},
+                }},
+            })
+            media.setdefault("examples", {})["authentication"] = {
+                "value": {"code": auth_code, "message": "request rejected"},
+            }
+            headers = response.setdefault("headers", {})
+            headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+            if status == "401":
+                headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
         operation["x-symbolic-error-codes"] = list(codes)
     return schema
 
