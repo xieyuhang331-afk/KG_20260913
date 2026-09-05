@@ -160,10 +160,15 @@ def test_权限与本人边界在真实数据库保持fail_closed(real_db_client
     _mark_verified(user_a["id"])
     _mark_verified(user_b["id"])
 
+    pg_database.execute(
+        'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+        "(83941,'13900083941','synthetic','org_admin','active')"
+    )
+
     forbidden = real_db_client.put(
         "/api/v1/users/me/health-profile",
         json=_payload(),
-        headers=_headers(user_a["id"], role="org_admin"),
+        headers=_headers(83941, role="org_admin"),
     )
     assert forbidden.status_code == 403
 

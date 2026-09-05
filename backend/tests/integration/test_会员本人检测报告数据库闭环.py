@@ -102,12 +102,21 @@ def test_本人报告列表详情分页IDOR与currentness闭环(real_db_client, 
     assert pg_database.fetch_value(
         f"SELECT COUNT(*) FROM public.detection_report WHERE user_id={user['id']}"
     ) == 3
-    _set_currentness(user["id"], status="disabled")
-    unavailable = real_db_client.get("/api/v1/users/me/detection-reports", headers=headers)
-    assert (unavailable.status_code, unavailable.json()["detail"]) == (
-        403,
-        "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+    original_status = pg_database.fetch_value(
+        f'SELECT status FROM public."user" WHERE id={user["id"]}'
     )
+    try:
+        _set_currentness(user["id"], status="disabled")
+        unavailable = real_db_client.get("/api/v1/users/me/detection-reports", headers=headers)
+        assert unavailable.status_code == 401
+        assert unavailable.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        assert unavailable.headers["WWW-Authenticate"] == "Bearer"
+        assert unavailable.headers["Cache-Control"] == "no-store"
+        assert pg_database.fetch_value(
+            f"SELECT COUNT(*) FROM public.detection_report WHERE user_id={user['id']}"
+        ) == 3
+    finally:
+        _set_currentness(user["id"], status=original_status)
 
 
 def test_损坏schema_fail_closed且应用与只读角色不能写(real_db_client, pg_database) -> None:

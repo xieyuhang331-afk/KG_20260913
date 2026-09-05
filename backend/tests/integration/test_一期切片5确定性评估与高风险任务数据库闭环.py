@@ -1247,7 +1247,7 @@ def test_D10_D17_D19_D24_数据库计算最高风险并原子创建唯一任务(
 
         therapist_headers = {
             "Authorization": "Bearer "
-            + create_access_token({"sub": str(therapist_user_id), "role": "therapist"}),
+            + create_access_token({"sub": str(therapist_user_id), "role": "therapist", "tenant_id": tenant_id}),
             "Idempotency-Key": "slice5-http-assessment-start-0001",
         }
         case_version = pg_database.fetch_value(
@@ -1405,7 +1405,12 @@ def test_D10_D17_D19_D24_数据库计算最高风险并原子创建唯一任务(
         institution_headers = {
             "Authorization": "Bearer "
             + create_access_token(
-                {"sub": str(issuer_user_id), "role": "org_admin", "tenant_id": tenant_id}
+                {
+                    "sub": str(issuer_user_id), "role": "org_admin", "tenant_id": tenant_id,
+                    "org_id": pg_database.fetch_value(
+                        f"SELECT org_id FROM public.tenant WHERE id={tenant_id}"
+                    ),
+                }
             )
         }
         platform_headers = {

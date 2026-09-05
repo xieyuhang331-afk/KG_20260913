@@ -284,7 +284,7 @@ def test_每条路由冻结精确symbolic_error_code集合且运行时共用():
         ("POST", "/api/v1/platform/therapist-reviews/00000000-0000-7000-8000-000000000001/decision", 409, "THERAPIST_VERSION_CONFLICT", (409, "THERAPIST_VERSION_CONFLICT"), (400, "INVALID_REQUEST")),
         ("PUT", "/api/v1/therapist-onboarding/profile", 400, "INVALID_REQUEST", (400, "INVALID_REQUEST"), (400, "INVALID_REQUEST")),
         ("GET", "/api/v1/platform/therapist-reviews", 403, "REVIEWER_CURRENTNESS_FORBIDDEN", (403, "REVIEWER_CURRENTNESS_FORBIDDEN"), (503, "DEPENDENCY_UNAVAILABLE")),
-        ("POST", "/api/v1/platform/therapist-reviews/00000000-0000-7000-8000-000000000001/decision", 503, "COMMIT_OUTCOME_UNKNOWN", (503, "COMMIT_OUTCOME_UNKNOWN"), (400, "INVALID_REQUEST")),
+        ("POST", "/api/v1/platform/therapist-reviews/00000000-0000-7000-8000-000000000001/decision", 503, "COMMIT_OUTCOME_UNKNOWN", (503, "COMMIT_OUTCOME_UNKNOWN"), (503, "DEPENDENCY_UNAVAILABLE")),
     ),
 )
 def test_真实异常按独立目录映射且未声明code不泄漏(

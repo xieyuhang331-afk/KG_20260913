@@ -155,6 +155,7 @@ def _error_response(status_code: int, code: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={"code": code, "message": "request rejected"},
+        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if status_code == 401 else {"Cache-Control": "no-store"} if status_code == 503 else None,
     )
 
 
@@ -168,6 +169,10 @@ def _http_error_code(request: Request, exc: HTTPException, allowed: dict[int, tu
 
     status_code = 400 if exc.status_code == 422 else exc.status_code
     detail = exc.detail
+    if status_code == 401:
+        return 401, "AUTHENTICATION_REQUIRED"
+    if status_code == 503 and detail not in allowed.get(503, ()):
+        return 503, "DEPENDENCY_UNAVAILABLE"
     if (
         isinstance(detail, str)
         and detail
@@ -252,6 +257,20 @@ def strip_therapist_validation_responses(schema: dict[str, object]) -> dict[str,
                     for status in tuple(responses):
                         if status not in allowed_statuses:
                             responses.pop(status)
+                for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+                    response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
+                    media = response.setdefault("content", {}).setdefault("application/json", {
+                        "schema": {"type": "object", "required": ["code", "message"], "properties": {
+                            "code": {"type": "string"}, "message": {"type": "string"},
+                        }},
+                    })
+                    media.setdefault("examples", {})["authentication"] = {
+                        "value": {"code": auth_code, "message": "request rejected"},
+                    }
+                    headers = response.setdefault("headers", {})
+                    headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                    if status == "401":
+                        headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
                 operation["x-symbolic-error-codes"] = {
                     str(status): list(codes)
                     for status, codes in SLICE2_ROUTE_ERROR_CODES[key].items()

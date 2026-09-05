@@ -1,3 +1,4 @@
+import secrets
 from pathlib import Path
 
 import pytest
@@ -22,12 +23,20 @@ def test_TOTP_secret必须是具有最低强度的合法Base32(secret: str):
 
 
 def test_切片1精确路由已注册且无自由注册替代入口(monkeypatch):
-    monkeypatch.setenv("KG_DATABASE_PASSWORD", "test-only")
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "test-only")
+    from app.core.config import get_settings
+
     paths = set()
-    for route in create_app().routes:
-        candidates = getattr(getattr(route, "original_router", None), "routes", (route,))
-        paths.update(candidate.path for candidate in candidates if hasattr(candidate, "path"))
+    try:
+        with monkeypatch.context() as environment:
+            environment.setenv("KG_DATABASE_PASSWORD", secrets.token_urlsafe(40))
+            environment.setenv("KG_JWT_SECRET_KEY", secrets.token_urlsafe(48))
+            environment.setenv("KG_AUTH_RATE_LIMIT_HMAC_KEY", secrets.token_urlsafe(48))
+            get_settings.cache_clear()
+            for route in create_app().routes:
+                candidates = getattr(getattr(route, "original_router", None), "routes", (route,))
+                paths.update(candidate.path for candidate in candidates if hasattr(candidate, "path"))
+    finally:
+        get_settings.cache_clear()
     required = {
         "/api/v1/platform/institution-invitations",
         "/api/v1/institution-onboarding/activate",

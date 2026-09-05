@@ -198,15 +198,28 @@ def test_空态权限与currentness保持fail_closed(real_db_client, pg_database
     assert empty.status_code == 200
     assert empty.json()["data"] == {"state": "EMPTY", "items": [], "next_cursor": None}
 
+    pg_database.execute(
+        'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+        "(83951,'13900083951','synthetic','org_admin','active')"
+    )
+
     forbidden = real_db_client.get(
         "/api/v1/users/me/health-indicators/latest",
-        headers=_headers(user["id"], role="org_admin"),
+        headers=_headers(83951, role="org_admin"),
     )
     assert forbidden.status_code == 403
-    _set_currentness(user["id"], status="disabled")
-    unavailable = real_db_client.get("/api/v1/users/me/health-indicators", headers=headers)
-    assert unavailable.status_code == 409
-    assert unavailable.json()["detail"] == "HEALTH_DATA_UNAVAILABLE"
-    assert pg_database.fetch_value(
-        "SELECT COUNT(*) FROM health_indicator WHERE user_id=" + str(user["id"])
-    ) == 0
+    original_status = pg_database.fetch_value(
+        'SELECT status FROM public."user" WHERE id=' + str(user["id"])
+    )
+    try:
+        _set_currentness(user["id"], status="disabled")
+        unavailable = real_db_client.get("/api/v1/users/me/health-indicators", headers=headers)
+        assert unavailable.status_code == 401
+        assert unavailable.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        assert unavailable.headers["WWW-Authenticate"] == "Bearer"
+        assert unavailable.headers["Cache-Control"] == "no-store"
+        assert pg_database.fetch_value(
+            "SELECT COUNT(*) FROM health_indicator WHERE user_id=" + str(user["id"])
+        ) == 0
+    finally:
+        _set_currentness(user["id"], status=original_status)

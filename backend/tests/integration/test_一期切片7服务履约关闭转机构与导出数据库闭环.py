@@ -1008,24 +1008,33 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
     assert access.headers["Cache-Control"] == "no-store"
     assert access.json()["content_type"] == "application/zip"
     content_path = f"/api/v1/private-files/{export_id}/content"
-    pg_database.execute(
-        f'UPDATE public."user" SET status=\'suspended\' WHERE id={actor_id}'
+    original_status = pg_database.fetch_value(
+        f'SELECT status FROM public."user" WHERE id={actor_id}'
     )
-    revoked = real_db_client.get(
-        content_path,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-Private-File-Access": access.json()["access_token"],
-        },
-    )
-    assert revoked.status_code == 403
-    assert pg_database.fetch_value(
-        "SELECT count(*) FROM public.personal_data_export_download_access "
-        f"WHERE export_id='{export_id}' AND consumed_at IS NOT NULL"
-    ) == 0
-    pg_database.execute(
-        f'UPDATE public."user" SET status=\'active\' WHERE id={actor_id}'
-    )
+    try:
+        pg_database.execute(
+            f'UPDATE public."user" SET status=\'suspended\' WHERE id={actor_id}'
+        )
+        revoked = real_db_client.get(
+            content_path,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Private-File-Access": access.json()["access_token"],
+            },
+        )
+        assert revoked.status_code == 401
+        assert revoked.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        assert revoked.headers["WWW-Authenticate"] == "Bearer"
+        assert revoked.headers["Cache-Control"] == "no-store, private, max-age=0"
+        assert pg_database.fetch_value(
+            "SELECT count(*) FROM public.personal_data_export_download_access "
+            f"WHERE export_id='{export_id}' AND consumed_at IS NOT NULL"
+        ) == 0
+    finally:
+        pg_database.execute(
+            'UPDATE public."user" SET status=\'' + original_status.replace("'", "''")
+            + f'\' WHERE id={actor_id}'
+        )
     download = real_db_client.get(
         content_path,
         headers={
@@ -1056,8 +1065,13 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
 def test_D_真实HTTP签名游标稳定分页并拒绝篡改和Scope重绑定(
     real_db_client,
     slice7_seeded,
+    pg_database,
 ) -> None:
     actor_id = int(slice7_seeded["family_actor_id"])
+    if not pg_database.fetch_value(
+        f'SELECT status=\'active\' FROM public."user" WHERE id={actor_id}'
+    ):
+        pytest.fail("C1_SHARED_ACTOR_NOT_ACTIVE", pytrace=False)
     token = create_access_token({"sub": str(actor_id), "role": "member"})
     headers = {"Authorization": f"Bearer {token}"}
     case_id = str(slice7_seeded["case_id"])
@@ -1139,6 +1153,11 @@ def test_D31_D40_导出超限明确失败且无私有文件或部分写入(
     slice7_seeded,
 ) -> None:
     seeded = slice7_seeded
+    if not pg_database.fetch_value(
+        'SELECT status=\'active\' FROM public."user" WHERE id='
+        + str(seeded["family_actor_id"])
+    ):
+        pytest.fail("C1_SHARED_ACTOR_NOT_ACTIVE", pytrace=False)
 
     async def exercise() -> UUID:
         transfer_engine = create_async_engine(

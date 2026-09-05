@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -31,6 +34,16 @@ def _synthetic_runtime_settings(monkeypatch: pytest.MonkeyPatch):
         "KG_JWT_SECRET_KEY", "slice4-http-contract-jwt-key-at-least-32-bytes"
     )
     get_settings.cache_clear()
+    rows = {
+        user_id: SimpleNamespace(
+            id=user_id, role=role, tenant_id=tenant_id, tenant_org_id=None,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+        for user_id, role, tenant_id in (
+            (94001, "org_admin", 94002), (94011, "super_admin", None),
+        )
+    }
+    monkeypatch.setattr("app.core.认证当前性._read_authority", AsyncMock(side_effect=rows.get))
     yield
     get_settings.cache_clear()
 
@@ -105,7 +118,7 @@ def _app(
 
 
 def _authorization(role: str, *, tenant_id: int | None = None) -> dict[str, str]:
-    claims: dict[str, object] = {"sub": "94001", "role": role}
+    claims: dict[str, object] = {"sub": "94011" if role == "super_admin" else "94001", "role": role}
     if tenant_id is not None:
         claims["tenant_id"] = tenant_id
     return {"Authorization": f"Bearer {create_access_token(claims)}"}

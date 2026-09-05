@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
@@ -8,6 +9,34 @@ from fastapi.testclient import TestClient
 
 
 class HealthIndicatorWriteApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        # These fixed authority rows do not depend on decoded token claims.
+        self.authority_rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in (
+                (1001, "member"), (1101, "org_admin"), (1102, "super_admin"),
+                (1103, "province_admin"), (1104, "city_admin"),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority",
+            new=AsyncMock(side_effect=self.authority_rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"1103":{"province":"ZJ"},"1104":{"province":"ZJ","city":"HZ"}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _payload(self, *, source="APP") -> dict:
         return {
             "indicators": [
@@ -37,6 +66,9 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
         from app.core.security import create_access_token
 
         claims = {"sub": str(user_id), "role": role}
+        claims.update({
+            1103: {"province": "ZJ"}, 1104: {"province": "ZJ", "city": "HZ"},
+        }.get(user_id, {}))
         if tenant_id is not None:
             claims["tenant_id"] = tenant_id
         token = create_access_token(claims)
@@ -83,6 +115,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
         self.assertIn("post", response.json()["paths"]["/api/v1/users/{user_id}/health-indicators"])
 
     def test_member_writes_own_health_indicators_successfully(self):
+        self.authority_rows[1001].tenant_id = 301
         client, session = self._client()
 
         async def create_indicators(session_arg, *, user_id, payload):
@@ -112,6 +145,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
         self.assertEqual(data[0]["source"], "APP")
 
     def test_member_token_preserves_tenant_context(self):
+        self.authority_rows[1001].tenant_id = 301
         client, _ = self._client()
         captured = {}
 
@@ -157,7 +191,10 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
                     response = client.post(
                         "/api/v1/users/1001/health-indicators",
                         json=self._payload(),
-                        headers=self._jwt_headers(user_id=1001, role=role),
+                        headers=self._jwt_headers(user_id={
+                            "org_admin": 1101, "super_admin": 1102,
+                            "province_admin": 1103, "city_admin": 1104,
+                        }[role], role=role),
                     )
 
                 self.assertEqual(response.status_code, 403)

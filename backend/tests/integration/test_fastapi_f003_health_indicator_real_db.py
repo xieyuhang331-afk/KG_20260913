@@ -213,17 +213,26 @@ def test_f003_real_db_health_indicator_requires_health_profile(real_db_client, p
 def test_f003_real_db_health_indicator_inactive_user_is_rejected(real_db_client, pg_database):
     user = _register(real_db_client, "13800139607")
     _create_health_profile(real_db_client, user["id"])
-    pg_database.execute('UPDATE "user" SET status = \'disabled\' WHERE id = %s' % user["id"])
-
-    response = real_db_client.post(
-        f"/api/v1/users/{user['id']}/health-indicators",
-        json=_indicator_payload(),
-        headers=_member_headers(user["id"]),
+    original_status = pg_database.fetch_value(
+        f'SELECT status FROM public."user" WHERE id={user["id"]}'
     )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "User is not active"
-    assert _health_indicator_count(pg_database, user["id"]) == 0
+    try:
+        pg_database.execute('UPDATE "user" SET status = \'disabled\' WHERE id = %s' % user["id"])
+        response = real_db_client.post(
+            f"/api/v1/users/{user['id']}/health-indicators",
+            json=_indicator_payload(),
+            headers=_member_headers(user["id"]),
+        )
+        assert response.status_code == 401
+        assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers["Cache-Control"] == "no-store"
+        assert _health_indicator_count(pg_database, user["id"]) == 0
+    finally:
+        pg_database.execute(
+            'UPDATE public."user" SET status=\'' + original_status.replace("'", "''")
+            + f'\' WHERE id={user["id"]}'
+        )
 
 
 def test_f003_real_db_health_indicator_invalid_payload_is_rejected(real_db_client, pg_database):

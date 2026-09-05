@@ -6,6 +6,26 @@ from fastapi.testclient import TestClient
 
 
 class TenantApplicationApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=200, tenant_org_id=org_id,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role, org_id in (
+                (100, "org_admin", 20), (101, "member", None), (102, "org_admin", None),
+            )
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority", new=AsyncMock(side_effect=rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _payload(self) -> dict:
         return {
             "name": "Kanglin West Lake Store",
@@ -32,7 +52,8 @@ class TenantApplicationApiTests(unittest.TestCase):
     def _headers(self, role: str = "org_admin", *, org_id: str | None = "20") -> dict:
         from app.core.security import create_access_token
 
-        claims = {"sub": "100", "role": role, "tenant_id": 200}
+        actor_id = "101" if role == "member" else ("102" if org_id is None else "100")
+        claims = {"sub": actor_id, "role": role, "tenant_id": 200}
         if org_id is not None:
             claims["org_id"] = org_id
         token = create_access_token(claims)
@@ -103,7 +124,7 @@ class TenantApplicationApiTests(unittest.TestCase):
         )
 
     def test_non_org_admin_cannot_submit_tenant_application(self):
-        response = self._client().post("/api/v1/tenants", json=self._payload(), headers=self._headers("member"))
+        response = self._client().post("/api/v1/tenants", json=self._payload(), headers=self._headers("member", org_id=None))
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"], "Forbidden")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
 from uuid import UUID
@@ -19,10 +20,17 @@ from app.tasks.slice6_health_plan_tasks import _generate
 from tests.integration.test_一期切片6方案生成审核确认数据库闭环 import _seed_ready_case
 
 
-def _headers(actor_id: int, role: str, key: str | None = None) -> dict[str, str]:
+def _headers(
+    actor_id: int, role: str, key: str | None = None, *,
+    tenant_id: int | None = None, org_id: int | None = None,
+    province: str | None = None, city: str | None = None,
+) -> dict[str, str]:
     result = {
         "Authorization": "Bearer "
-        + create_access_token({"sub": str(actor_id), "role": role})
+        + create_access_token({
+            "sub": str(actor_id), "role": role, "tenant_id": tenant_id,
+            "org_id": org_id, "province": province, "city": city,
+        })
     }
     if key is not None:
         result["Idempotency-Key"] = key
@@ -33,6 +41,7 @@ def test_API01_API10_真实ASGI完成机构发起平台审核家庭确认旅程(
     pg_database,
     real_db_client,
     slice5_clinical_reader_database,
+    monkeypatch,
 ):
     seeded = _seed_ready_case(pg_database, ordinal=67)
     case_id = str(seeded["case_id"])
@@ -71,7 +80,11 @@ def test_API01_API10_真实ASGI完成机构发起平台审核家庭确认旅程(
                 f"SELECT has_table_privilege('{role}','public.{table}','SELECT')"
             )
     org_headers = _headers(
-        int(seeded["org_actor_id"]), "org_admin", "slice6-http-generation-0001"
+        int(seeded["org_actor_id"]), "org_admin", "slice6-http-generation-0001",
+        tenant_id=int(seeded["tenant_id"]),
+        org_id=pg_database.fetch_value(
+            f"SELECT org_id FROM public.tenant WHERE id={int(seeded['tenant_id'])}"
+        ),
     )
     expert_headers = _headers(
         int(seeded["expert_actor_id"]), "expert", "slice6-http-review-claim-0001"
@@ -265,24 +278,50 @@ def test_API01_API10_真实ASGI完成机构发起平台审核家庭确认旅程(
         "therapist": int(seeded["therapist_actor_id"]),
         "member": int(seeded["family_actor_id"]),
     }
-    for role in (
+    independent_roles = (
         "super_admin",
         "province_admin",
         "city_admin",
         "sys_admin",
-        "org_admin",
         "org_operator",
-        "therapist",
         "host",
-        "member",
-    ):
-        forbidden = real_db_client.get(
-            "/api/v1/platform/health-plan-reviews",
-            headers=_headers(
-                actor_by_role.get(role, int(seeded["expert_actor_id"])), role
-            ),
+    )
+    for offset, role in enumerate(independent_roles):
+        actor_id = 9906701 + offset
+        pg_database.execute(
+            'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+            f"({actor_id},'1980990670{offset}','synthetic','{role}','active')"
         )
-        assert forbidden.status_code == 403, (role, forbidden.json())
+        actor_by_role[role] = actor_id
+    from app.core.config import get_settings
+
+    context = {
+        str(actor_by_role["province_admin"]): {"province": "C1_TEST_PROVINCE"},
+        str(actor_by_role["city_admin"]): {"province": "C1_TEST_PROVINCE", "city": "C1_TEST_CITY"},
+    }
+    try:
+        with monkeypatch.context() as scope:
+            scope.setenv("KG_AUTH_CONTEXT_MAP", json.dumps(context))
+            get_settings.cache_clear()
+            for role in (
+                "super_admin", "province_admin", "city_admin", "sys_admin",
+                "org_admin", "org_operator", "therapist", "host", "member",
+            ):
+                actor_id = actor_by_role[role]
+                row = pg_database.fetch_rows(
+                    'SELECT u.tenant_id,t.org_id FROM public."user" u '
+                    'LEFT JOIN public.tenant t ON t.id=u.tenant_id WHERE u.id=$1', actor_id,
+                )[0]
+                forbidden = real_db_client.get(
+                    "/api/v1/platform/health-plan-reviews",
+                    headers=_headers(
+                        actor_id, role, tenant_id=row["tenant_id"], org_id=row["org_id"] if role == "org_admin" else None,
+                        **context.get(str(actor_id), {}),
+                    ),
+                )
+                assert forbidden.status_code == 403, (role, forbidden.json())
+    finally:
+        get_settings.cache_clear()
     reviews = real_db_client.get(
         "/api/v1/platform/health-plan-reviews",
         headers=_headers(int(seeded["expert_actor_id"]), "expert"),
@@ -529,6 +568,7 @@ def test_API01_API10_真实ASGI完成机构发起平台审核家庭确认旅程(
             int(seeded["therapist_actor_id"]),
             "therapist",
             "slice6-http-explanation-0001",
+            tenant_id=int(seeded["tenant_id"]),
         ),
         json={"explanation_codes": ["PLAN_SCOPE_EXPLAINED"], "expected_version": 3},
     )

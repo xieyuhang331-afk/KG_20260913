@@ -1,8 +1,13 @@
 import os
+from functools import cached_property
 
 from celery import Celery
+from celery.apps.worker import Worker
+from celery.exceptions import SecurityError
+from celery.worker.worker import WorkController
 from kombu import Queue
 
+from app.core.认证配置校验 import validated_auth_settings
 
 REGISTRATION_QUEUE = "registration"
 DISPATCH_TASK_NAME = "identity.registration.dispatch_outbox"
@@ -39,10 +44,48 @@ def get_declared_queues() -> tuple[str, ...]:
     return _DECLARED_QUEUES
 
 
+def _validate_worker(app):
+    try:
+        validated_auth_settings(worker=True, broker_url=app.conf.broker_url)
+    except RuntimeError:
+        # Celery's CLI catches SecurityError and exits nonzero without a traceback.
+        raise SecurityError("AUTH_CONFIGURATION_INVALID") from None
+
+
+class _ValidatedWorker(Worker):
+    def __init__(self, app=None, **kwargs):
+        _validate_worker(app if app is not None else self.app)
+        super().__init__(app=app, **kwargs)
+
+
+class _ValidatedWorkController(WorkController):
+    def __init__(self, app=None, **kwargs):
+        _validate_worker(app if app is not None else self.app)
+        super().__init__(app=app, **kwargs)
+
+
+class _ValidatedCelery(Celery):
+    def worker_main(self, argv=None):
+        # Celery 5.6.3 worker_main discards start()'s nonzero CLI return code.
+        # Validate before delegation so embedded callers cannot mistake failure
+        # for a successful return; Worker still validates the actual bootstrap.
+        _validate_worker(self)
+        return super().worker_main(argv)
+
+    @cached_property
+    def Worker(self):
+        return self.subclass_with_self(_ValidatedWorker, name="Worker", reverse="Worker")
+
+    @cached_property
+    def WorkController(self):
+        return self.subclass_with_self(_ValidatedWorkController, name="WorkController", reverse="WorkController")
+
+
 def create_celery_app(*, broker_url: str | None = None) -> Celery:
+    validated_auth_settings(broker_url=broker_url)
     resolved_broker = broker_url or os.getenv("KG_CELERY_BROKER_URL")
     test_result_backend = os.getenv("KG_CELERY_TEST_RESULT_BACKEND")
-    app = Celery(
+    app = _ValidatedCelery(
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,

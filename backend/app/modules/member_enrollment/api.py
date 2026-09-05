@@ -103,9 +103,9 @@ _STATUS = {
 
 
 def _route_errors(*codes: str, mutation: bool = False):
-    values=("AUTHENTICATION_REQUIRED",*codes,"DEPENDENCY_UNAVAILABLE") + (("COMMIT_OUTCOME_UNKNOWN",) if mutation else ())
+    values=("AUTHENTICATION_REQUIRED","ACCESS_TOKEN_STALE",*codes,"DEPENDENCY_UNAVAILABLE") + (("COMMIT_OUTCOME_UNKNOWN",) if mutation else ())
     grouped={}
-    for code in values: grouped.setdefault(_STATUS.get(code,401 if code=="AUTHENTICATION_REQUIRED" else 409),[]).append(code)
+    for code in values: grouped.setdefault(_STATUS.get(code,401 if code in ("AUTHENTICATION_REQUIRED","ACCESS_TOKEN_STALE") else 409),[]).append(code)
     return {status:tuple(items) for status,items in grouped.items()}
 
 
@@ -155,11 +155,12 @@ class MemberEnrollmentRoute(APIRoute):
                 key=(next(iter(self.methods)),self.path); allowed=SLICE3_ROUTE_ERROR_CODES[key]; detail=exc.detail; code=detail.get("code") if isinstance(detail,dict) else detail if isinstance(detail,str) else None
                 status=400 if exc.status_code==422 else exc.status_code
                 if status == 401:
-                    code = "AUTHENTICATION_REQUIRED"
+                    code = "ACCESS_TOKEN_STALE" if code == "ACCESS_TOKEN_STALE" else "AUTHENTICATION_REQUIRED"
                 if type(code) is not str or code not in allowed.get(status,()):
                     status,code=(400,"INVALID_REQUEST") if "INVALID_REQUEST" in allowed.get(400,()) else (503,"DEPENDENCY_UNAVAILABLE")
-                return JSONResponse(status_code=status,content={"code":code,"message":"request rejected"})
-            except Exception: return JSONResponse(status_code=503,content={"code":"DEPENDENCY_UNAVAILABLE","message":"request rejected"})
+                headers = {"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if status == 401 else {"Cache-Control": "no-store"} if status == 503 else None
+                return JSONResponse(status_code=status,content={"code":code,"message":"request rejected"},headers=headers)
+            except Exception: return JSONResponse(status_code=503,content={"code":"DEPENDENCY_UNAVAILABLE","message":"request rejected"},headers={"Cache-Control":"no-store"})
         return handler
 
 
@@ -177,7 +178,18 @@ def strip_member_enrollment_validation_responses(schema: dict[str,object]):
         operation=paths.get(path,{}).get(method.lower())
         if not isinstance(operation,dict): continue
         responses=operation.get("responses",{})
-        if isinstance(responses,dict): responses.pop("422",None)
+        if isinstance(responses,dict):
+            responses.pop("422",None)
+            authentication_schema = ErrorEnvelopeDTO.model_json_schema()
+            authentication_schema["properties"]["code"]["enum"] = list(errors[401])
+            responses["401"] = {
+                "description": "Authentication required or access token stale",
+                "content": {"application/json": {"schema": authentication_schema}},
+                "headers": {
+                    "WWW-Authenticate": {"schema": {"type": "string", "enum": ["Bearer"]}},
+                    "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+                },
+            }
         operation["x-symbolic-error-codes"]={str(status):list(codes) for status,codes in errors.items()}
     return schema
 

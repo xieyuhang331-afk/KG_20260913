@@ -18,7 +18,16 @@ def _headers():
     return {"Authorization": "Bearer " + create_access_token({"sub": "17", "role": "super_admin"})}
 
 
-def test_平台管理员可拒绝当前Submission且响应无PII() -> None:
+def test_平台管理员可拒绝当前Submission且响应无PII(monkeypatch) -> None:
+    async def read_authority(user_id):
+        if user_id != 17:
+            return None
+        return SimpleNamespace(
+            id=17, role="super_admin", status="active", tenant_id=None,
+            tenant_org_id=None, exited_at=None, deletion_requested_at=None,
+        )
+
+    monkeypatch.setattr("app.core.认证当前性._read_authority", read_authority)
     from app.main import create_app
     from app.modules.review.api import get_platform_identity_submission_review_service
     app = create_app()

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import json
 
 import pytest
 
@@ -237,8 +238,25 @@ def test_P3机构管理员候选最小PII与本人未分配(real_db_client, pg_d
     assert me.json()["organization_path"] == []
 
 
+@pytest.fixture
+def _descendant_scope_actor_context(monkeypatch):
+    from app.core.config import get_settings
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv(
+            "KG_AUTH_CONTEXT_MAP",
+            json.dumps({"301002": {"province": "TEST_SCOPE_PROVINCE"}}),
+        )
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
+
+
 def test_tenant_descendant_scope_is_fail_closed_for_legacy_archived_and_corrupted_nodes(
-    real_db_client, pg_database
+    real_db_client, pg_database, _descendant_scope_actor_context
 ):
     _seed(pg_database)
     pg_database.execute(

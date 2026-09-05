@@ -154,10 +154,10 @@ class Slice7Route(APIRoute):
                     code = "UNAUTHENTICATED"
                 if code not in _STATUS:
                     code = "INVALID_REQUEST" if exc.status_code < 500 else "DEPENDENCY_UNAVAILABLE"
-                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
+                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"}, headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if _STATUS[code] == 401 else {"Cache-Control": "no-store"} if _STATUS[code] == 503 else None)
             except Exception as exc:
                 code = _safe_code(exc)
-                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"})
+                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"}, headers={"Cache-Control": "no-store"} if _STATUS[code] == 503 else None)
             if request.method == "GET":
                 response.headers["Cache-Control"] = "no-store"
             return response
@@ -199,6 +199,20 @@ def strip_slice7_validation_responses(schema: dict[str, object]) -> dict[str, ob
                 and "responses" in operation
                 and slice7_tags.intersection(operation.get("tags", ()))
             ):
+                for status, auth_code in (("401", "UNAUTHENTICATED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+                    response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
+                    media = response.setdefault("content", {}).setdefault("application/json", {
+                        "schema": {"type": "object", "required": ["code", "message"], "properties": {
+                            "code": {"type": "string"}, "message": {"type": "string"},
+                        }},
+                    })
+                    media.setdefault("examples", {})["authentication"] = {
+                        "value": {"code": auth_code, "message": "request rejected"},
+                    }
+                    headers = response.setdefault("headers", {})
+                    headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                    if status == "401":
+                        headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
                 operation["x-symbolic-error-codes"] = tuple(_STATUS)
                 if method == "get":
                     success = operation["responses"].get("200")

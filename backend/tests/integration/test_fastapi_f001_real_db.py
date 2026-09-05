@@ -1,7 +1,27 @@
+import json
+
 import pytest
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _fixed_authority_context(monkeypatch):
+    from app.core.config import get_settings
+
+    context = {
+        "100": {"org_id": 20}, "101": {"org_id": 30},
+        "2": {"province": "ZJ"}, "3": {"province": "ZJ", "city": "HZ"},
+    }
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_AUTH_CONTEXT_MAP", json.dumps(context))
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
 
 
 def _headers(role, *, user_id, org_id=None, province=None, city=None):
@@ -59,18 +79,22 @@ def _seed_org_and_users(pg_database):
           (1, '13900000001', 'hash', 'super_admin'),
           (2, '13900000002', 'hash', 'province_admin'),
           (3, '13900000003', 'hash', 'city_admin'),
-          (100, '13900000100', 'hash', 'org_admin')
+          (100, '13900000100', 'hash', 'org_admin'),
+          (101, '13900000101', 'hash', 'org_admin')
         ON CONFLICT (phone) DO NOTHING
         """
     )
 
 
 def _submit(real_db_client, credit_code, *, org_id=20, province="ZJ", city="HZ"):
-    return real_db_client.post(
+    response = real_db_client.post(
         "/api/v1/tenants",
         json=_payload(credit_code, province=province, city=city),
-        headers=_headers("org_admin", user_id=100, org_id=org_id),
+        headers=_headers("org_admin", user_id={20: 100, 30: 101}[org_id], org_id=org_id),
     )
+    if response.status_code != 200:
+        pytest.fail(f"C1_SUBMIT_STATUS_{response.status_code}", pytrace=False)
+    return response
 
 
 def _fetch_tenant(pg_database, tenant_id):

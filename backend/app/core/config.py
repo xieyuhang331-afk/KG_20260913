@@ -1,6 +1,7 @@
-from functools import lru_cache
 import json
 import os
+import re
+from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -11,6 +12,13 @@ def require_secret(name: str) -> str:
     if value is None or not value.strip():
         raise RuntimeError(f"Required secret environment variable is missing: {name}")
     return value
+
+
+def _access_token_minutes() -> int:
+    value = os.getenv("KG_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
+    if re.fullmatch(r"[1-9][0-9]{0,2}", value) is None:
+        raise RuntimeError("AUTH_CONFIGURATION_INVALID")
+    return int(value)
 
 
 class Settings(BaseModel):
@@ -53,6 +61,7 @@ class Settings(BaseModel):
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 120
+    auth_rate_limit_hmac_key: str | None = None
     auth_context_map: dict[str, dict[str, Any]] = Field(default_factory=dict)
     async_runtime: str = "Celery + RabbitMQ"
     file_storage_backend: Literal["local_filesystem", "minio"] = "local_filesystem"
@@ -208,9 +217,8 @@ def get_settings() -> Settings:
         ),
         jwt_secret_key=require_secret("KG_JWT_SECRET_KEY"),
         jwt_algorithm=os.getenv("KG_JWT_ALGORITHM", "HS256"),
-        jwt_access_token_expire_minutes=int(
-            os.getenv("KG_JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
-        ),
+        jwt_access_token_expire_minutes=_access_token_minutes(),
+        auth_rate_limit_hmac_key=os.getenv("KG_AUTH_RATE_LIMIT_HMAC_KEY"),
         auth_context_map=json.loads(os.getenv("KG_AUTH_CONTEXT_MAP", "{}")),
         phase1_pilot_mode=os.getenv("KG_PHASE1_PILOT_MODE", "false").lower() == "true",
         file_storage_backend=os.getenv(

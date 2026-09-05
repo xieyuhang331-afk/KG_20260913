@@ -1,12 +1,40 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from starlette.requests import Request
 
 
 class JwtCurrentUserDependencyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        # Fixed synthetic authority, independent of the request's signed claims.
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=tenant_id, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role, tenant_id in (
+                (1001, "member", 501), (2001, "org_admin", None),
+                (3001, "city_admin", None),
+            )
+        }
+        self.authority = AsyncMock(side_effect=rows.get)
+        authority = patch("app.core.认证当前性._read_authority", new=self.authority)
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": (
+            '{"2001":{"org_id":77},"3001":{"province":"浙江省","city":"杭州市"}}'
+        )})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _request(self, token: str | None) -> Request:
         headers = []
         if token is not None:
@@ -26,6 +54,7 @@ class JwtCurrentUserDependencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 401)
         self.assertEqual(context.exception.detail, "Authentication required")
+        self.authority.assert_not_awaited()
 
     async def test_invalid_token_returns_401(self):
         from app.core.security import get_current_user_from_jwt
@@ -35,6 +64,29 @@ class JwtCurrentUserDependencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 401)
         self.assertEqual(context.exception.detail, "Invalid or expired token")
+        self.authority.assert_not_awaited()
+
+    async def test_stale_role_snapshot_returns_401(self):
+        from app.core.security import get_current_user_from_jwt
+
+        with self.assertRaises(HTTPException) as context:
+            await get_current_user_from_jwt(self._request(self._token(
+                {"sub": "1001", "role": "super_admin", "tenant_id": 501}
+            )))
+        self.assertEqual(context.exception.status_code, 401)
+        self.assertEqual(context.exception.detail, "ACCESS_TOKEN_STALE")
+
+    async def test_authority_unavailable_returns_safe_503(self):
+        from app.core.security import get_current_user_from_jwt
+
+        self.authority.side_effect = RuntimeError("SYNTHETIC_AUTHORITY_DEPENDENCY_FAILURE")
+        with self.assertRaises(HTTPException) as context:
+            await get_current_user_from_jwt(self._request(self._token(
+                {"sub": "1001", "role": "member", "tenant_id": 501}
+            )))
+        self.assertEqual(context.exception.status_code, 503)
+        self.assertEqual(context.exception.detail, "AUTHORITY_UNAVAILABLE")
+        self.assertEqual(context.exception.headers["Cache-Control"], "no-store")
 
     async def test_member_token_builds_current_user(self):
         from app.core.security import get_current_user_from_jwt

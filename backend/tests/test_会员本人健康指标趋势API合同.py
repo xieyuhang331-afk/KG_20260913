@@ -1,16 +1,41 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def fixed_authority(monkeypatch):
+    from app.core.config import get_settings
+
+    rows = {
+        user_id: SimpleNamespace(
+            id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+            status="active", exited_at=None, deletion_requested_at=None,
+        )
+        for user_id, role in (
+            (1001, "member"), (1101, "org_admin"), (1102, "super_admin"),
+            (1103, "province_admin"), (1104, "city_admin"), (1105, "therapist"),
+        )
+    }
+    monkeypatch.setattr("app.core.认证当前性._read_authority", AsyncMock(side_effect=rows.get))
+    monkeypatch.setenv("KG_AUTH_CONTEXT_MAP", (
+        '{"1103":{"province":"ZJ"},"1104":{"province":"ZJ","city":"HZ"}}'
+    ))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _configure(monkeypatch) -> None:
-    monkeypatch.setenv("KG_DATABASE_PASSWORD", "process-only-test-secret")
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "process-only-jwt-test-secret")
+    monkeypatch.setenv("KG_DATABASE_PASSWORD", secrets.token_urlsafe(40))
+    monkeypatch.setenv("KG_JWT_SECRET_KEY", secrets.token_urlsafe(48))
     from app.core.config import get_settings
 
     get_settings.cache_clear()
@@ -34,7 +59,15 @@ def _client(monkeypatch):
 def _headers(*, role="member"):
     from app.core.security import create_access_token
 
-    token = create_access_token({"sub": "1001", "role": role})
+    actor_id = {
+        "member": 1001, "org_admin": 1101, "super_admin": 1102, "province_admin": 1103,
+        "city_admin": 1104, "therapist": 1105,
+    }[role]
+    claims = {"sub": str(actor_id), "role": role}
+    claims.update({
+        1103: {"province": "ZJ"}, 1104: {"province": "ZJ", "city": "HZ"},
+    }.get(actor_id, {}))
+    token = create_access_token(claims)
     return {"Authorization": f"Bearer {token}"}
 
 

@@ -118,7 +118,7 @@ def _family_errors(prefix: str, *, proxy: bool) -> dict[tuple[str, str], tuple[s
         ("GET", f"{prefix}/health-indicators/latest"): PROJECTION_READ,
         ("GET", f"{prefix}/health-indicators/trends"): PROJECTION_READ,
     }
-    return {key: tuple(dict.fromkeys((*codes, *extra))) for key, codes in values.items()}
+    return {key: tuple(dict.fromkeys(("AUTHENTICATION_REQUIRED", *codes, *extra))) for key, codes in values.items()}
 
 
 ERRORS = {
@@ -128,7 +128,7 @@ ERRORS = {
 
 
 def _therapist(*codes: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*codes, "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")))
+    return tuple(dict.fromkeys(("AUTHENTICATION_REQUIRED", *codes, "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")))
 
 
 ERRORS.update(

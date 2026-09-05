@@ -52,7 +52,9 @@ class OrganizationRoute(APIRoute):
                 return JSONResponse(status_code=422, content={"detail": "ORGANIZATION_REQUEST_INVALID"})
             except HTTPException as exc:
                 if exc.status_code == 401:
-                    return JSONResponse(status_code=401, content={"detail": "AUTHENTICATION_REQUIRED"})
+                    return JSONResponse(status_code=401, content={"detail": "AUTHENTICATION_REQUIRED"}, headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
+                if exc.status_code == 503:
+                    return JSONResponse(status_code=503, content={"detail": "DEPENDENCY_UNAVAILABLE"}, headers={"Cache-Control": "no-store"})
                 if exc.status_code == 403:
                     return JSONResponse(status_code=403, content={"detail": "ORGANIZATION_SCOPE_FORBIDDEN"})
                 raise
@@ -60,7 +62,22 @@ class OrganizationRoute(APIRoute):
         return handler
 
 
-router = APIRouter(tags=["organization"], route_class=OrganizationRoute)
+_AUTHENTICATION_RESPONSES = {
+    status: {
+        "description": "Authentication rejected" if status == 401 else "Dependency unavailable",
+        "headers": {
+            "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+            **({"WWW-Authenticate": {"schema": {"type": "string", "enum": ["Bearer"]}}} if status == 401 else {}),
+        },
+        "content": {"application/json": {
+            "schema": {"type": "object", "required": ["detail"], "properties": {"detail": {"type": "string"}}},
+            "examples": {"authentication": {"value": {"detail": code}}},
+        }},
+    }
+    for status, code in ((401, "AUTHENTICATION_REQUIRED"), (503, "DEPENDENCY_UNAVAILABLE"))
+}
+
+router = APIRouter(tags=["organization"], route_class=OrganizationRoute, responses=_AUTHENTICATION_RESPONSES)
 
 
 @router.get("/api/v1/platform/organizations/tree", response_model=OrganizationTreeResponse)

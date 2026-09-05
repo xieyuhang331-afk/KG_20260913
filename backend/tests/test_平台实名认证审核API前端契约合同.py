@@ -3,8 +3,21 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def fixed_authority(monkeypatch):
+    row = SimpleNamespace(
+        id=17, role="super_admin", status="active", tenant_id=None,
+        tenant_org_id=None, exited_at=None, deletion_requested_at=None,
+    )
+    monkeypatch.setattr(
+        "app.core.认证当前性._read_authority", AsyncMock(side_effect={17: row}.get),
+    )
 
 
 def _headers() -> dict[str, str]:

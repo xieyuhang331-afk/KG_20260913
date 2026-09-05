@@ -432,40 +432,54 @@ def test_旧JWT声明super_admin但reviewer数据库漂移时全路径fail_close
         ("active", "super_admin", "94812"),
         ("active", "super_admin", "94813"),
     )
-    for index, (status, role, tenant_id) in enumerate(invalid_states, start=1):
+    assert application_database.fetch_value(
+        'SELECT status=\'active\' AND role=\'super_admin\' AND tenant_id IS NULL '
+        f'FROM public."user" WHERE id={reviewer_id}'
+    ), "STAGE_CURRENTNESS_SEED_STATE"
+    try:
+        for index, (status, role, tenant_id) in enumerate(invalid_states, start=1):
+            application_database.execute(
+                'UPDATE public."user" '
+                f"SET status='{status}', role='{role}', tenant_id={tenant_id}, "
+                f"updated_at='{NOW.isoformat()}' WHERE id={reviewer_id}"
+            )
+            responses = (
+                real_db_client.get(
+                    "/api/v1/reviews/identity?status=submitted", headers=stale_headers
+                ),
+                real_db_client.get(
+                    f"/api/v1/reviews/users/{target_id}/identity?purpose_code=MANUAL_REVIEW",
+                    headers={
+                        **stale_headers,
+                        "X-Identity-Review-Step-Up": "invalid",
+                    },
+                ),
+                real_db_client.post(
+                    f"/api/v1/reviews/users/{target_id}/identity/reject",
+                    headers=stale_headers,
+                    json={
+                        "submission_version": 1,
+                        "idempotency_key": f"stale-reviewer-reject-{index}",
+                        "reason_code": "OFFLINE_CHECK_FAILED",
+                    },
+                ),
+            )
+            for response in responses:
+                _require_status(response, 401, f"STAGE_CURRENTNESS_STATE_{index}")
+                assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+                assert response.headers["WWW-Authenticate"] == "Bearer"
+                assert response.headers["Cache-Control"] == "no-store"
+            assert application_database.fetch_value(
+                "SELECT status = 'submitted' FROM public.identity_verification_submission "
+                f"WHERE user_ref={target_id} AND version=1"
+            ), f"STAGE_CURRENTNESS_ZERO_REJECT_{index}"
+            assert application_database.fetch_value(
+                "SELECT count(*) FROM public.operation_log "
+                f"WHERE object_id={target_id} AND action='identity_sensitive_detail_read'"
+            ) == 0, f"STAGE_CURRENTNESS_ZERO_AUDIT_{index}"
+    finally:
+        # Restore only this independently seeded reviewer, including its original scope.
         application_database.execute(
-            'UPDATE public."user" '
-            f"SET status='{status}', role='{role}', tenant_id={tenant_id}, "
-            f"updated_at='{NOW.isoformat()}' WHERE id={reviewer_id}"
+            'UPDATE public."user" SET status=\'active\', role=\'super_admin\', '
+            f"tenant_id=NULL, updated_at='{NOW.isoformat()}' WHERE id={reviewer_id}"
         )
-        responses = (
-            real_db_client.get(
-                "/api/v1/reviews/identity?status=submitted", headers=stale_headers
-            ),
-            real_db_client.get(
-                f"/api/v1/reviews/users/{target_id}/identity?purpose_code=MANUAL_REVIEW",
-                headers={
-                    **stale_headers,
-                    "X-Identity-Review-Step-Up": "invalid",
-                },
-            ),
-            real_db_client.post(
-                f"/api/v1/reviews/users/{target_id}/identity/reject",
-                headers=stale_headers,
-                json={
-                    "submission_version": 1,
-                    "idempotency_key": f"stale-reviewer-reject-{index}",
-                    "reason_code": "OFFLINE_CHECK_FAILED",
-                },
-            ),
-        )
-        for response in responses:
-            _require_status(response, 403, f"STAGE_CURRENTNESS_STATE_{index}")
-        assert application_database.fetch_value(
-            "SELECT status = 'submitted' FROM public.identity_verification_submission "
-            f"WHERE user_ref={target_id} AND version=1"
-        ), f"STAGE_CURRENTNESS_ZERO_REJECT_{index}"
-        assert application_database.fetch_value(
-            "SELECT count(*) FROM public.operation_log "
-            f"WHERE object_id={target_id} AND action='identity_sensitive_detail_read'"
-        ) == 0, f"STAGE_CURRENTNESS_ZERO_AUDIT_{index}"

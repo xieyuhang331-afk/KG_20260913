@@ -116,6 +116,8 @@ jobs:
           values = {
               "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_AUTH_RATE_LIMIT_HMAC_KEY": secrets.token_urlsafe(64),
+              "KG_ENV": "test",
               "KG_IDENTITY_PII_KEK_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
               "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
               "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
@@ -348,6 +350,8 @@ jobs:
               "KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"],
               "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
+              "KG_AUTH_RATE_LIMIT_HMAC_KEY": secrets.token_urlsafe(64),
+              "KG_ENV": "ci_ephemeral",
               "KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY": secrets.token_urlsafe(64),
               "KG_IDENTITY_PII_KEK_B64": base64.b64encode(
                   secrets.token_bytes(32)

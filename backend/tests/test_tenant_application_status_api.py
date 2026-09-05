@@ -1,11 +1,34 @@
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 
 class TenantApplicationStatusApiTests(unittest.TestCase):
+    def setUp(self):
+        from app.core.config import get_settings
+
+        # Distinct pending-admin-without-context, linked admin and member actors.
+        rows = {
+            user_id: SimpleNamespace(
+                id=user_id, role=role, tenant_id=None, tenant_org_id=None,
+                status="active", exited_at=None, deletion_requested_at=None,
+            )
+            for user_id, role in ((100, "org_admin"), (101, "member"), (102, "org_admin"))
+        }
+        authority = patch(
+            "app.core.认证当前性._read_authority", new=AsyncMock(side_effect=rows.get),
+        )
+        authority.start()
+        self.addCleanup(authority.stop)
+        context = patch.dict("os.environ", {"KG_AUTH_CONTEXT_MAP": '{"100":{"org_id":20}}'})
+        context.start()
+        self.addCleanup(context.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
     def _client(self):
         from app.core.database import get_db_session
         from app.main import create_app
@@ -24,7 +47,8 @@ class TenantApplicationStatusApiTests(unittest.TestCase):
     def _headers(self, role: str = "org_admin", *, org_id: str | None = "20") -> dict:
         from app.core.security import create_access_token
 
-        claims = {"sub": "100", "role": role}
+        actor_id = "101" if role == "member" else ("102" if org_id is None else "100")
+        claims = {"sub": actor_id, "role": role}
         if org_id is not None:
             claims["org_id"] = org_id
         token = create_access_token(claims)
@@ -110,7 +134,7 @@ class TenantApplicationStatusApiTests(unittest.TestCase):
         with patch("app.modules.tenant.service.get_tenant_application_status", new=repo_mock, create=True):
             response = self._client().get(
                 "/api/v1/tenants/501/application-status",
-                headers=self._headers("member"),
+                headers=self._headers("member", org_id=None),
             )
 
         self.assertEqual(response.status_code, 403)

@@ -364,11 +364,44 @@ def test_f002_real_db_tenant_binding_guards(real_db_client, pg_database):
     assert _fetch_user(pg_database, duplicate_user["id"])["tenant_id"] is None
 
 
+@pytest.fixture
+def _non_member_actor_context(monkeypatch):
+    from app.core.config import get_settings
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_AUTH_CONTEXT_MAP", json.dumps({
+            "83023": {"province": "ZJ"},
+            "83024": {"province": "ZJ", "city": "HZ"},
+        }))
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
+
+
 @pytest.mark.parametrize("role", ["org_admin", "super_admin", "province_admin", "city_admin"])
-def test_f002_real_db_non_member_roles_are_forbidden(real_db_client, pg_database, role):
+def test_f002_real_db_non_member_roles_are_forbidden(
+    real_db_client, pg_database, role, _non_member_actor_context
+):
     _seed_tenants(pg_database)
     user = _register(real_db_client, f"138001395{len(role):02d}")
-    headers = _headers(role, user_id=user["id"])
+    pg_database.execute(
+        'INSERT INTO public."user" (id,phone,password_hash,role,status) VALUES '
+        "(83021,'13900083021','synthetic','org_admin','active'),"
+        "(83022,'13900083022','synthetic','super_admin','active'),"
+        "(83023,'13900083023','synthetic','province_admin','active'),"
+        "(83024,'13900083024','synthetic','city_admin','active') "
+        "ON CONFLICT (id) DO NOTHING"
+    )
+    actor_id = {"org_admin": 83021, "super_admin": 83022,
+                "province_admin": 83023, "city_admin": 83024}[role]
+    headers = _headers(
+        role, user_id=actor_id,
+        province="ZJ" if role in {"province_admin", "city_admin"} else None,
+        city="HZ" if role == "city_admin" else None,
+    )
 
     identity = real_db_client.post(
         f"/api/v1/users/{user['id']}/identity",
@@ -396,7 +429,23 @@ def test_f002_real_db_non_member_roles_are_forbidden(real_db_client, pg_database
     assert _fetch_user(pg_database, user["id"])["tenant_id"] is None
 
 
-def test_f001_approved_tenant_can_be_consumed_by_f002_binding(real_db_client, pg_database):
+@pytest.fixture
+def _f001_actor_context(monkeypatch):
+    from app.core.config import get_settings
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_AUTH_CONTEXT_MAP", json.dumps({"9102": {"org_id": 8401}}))
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            scoped.undo()
+            get_settings.cache_clear()
+
+
+def test_f001_approved_tenant_can_be_consumed_by_f002_binding(
+    real_db_client, pg_database, _f001_actor_context
+):
     _seed_f001_org_and_users(pg_database)
     member = _register(real_db_client, "13800139420")
 
