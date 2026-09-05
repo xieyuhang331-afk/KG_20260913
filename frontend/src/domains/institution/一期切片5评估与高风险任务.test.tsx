@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +43,52 @@ describe("一期切片5机构评估摘要与高风险任务", () => {
 
   it("未知任务状态fail-closed且不产生可写操作", () => {
     expect(availableHighRiskActions("UNKNOWN")).toEqual([]);
+  });
+
+  it("高风险列表恢复旧cursor时保留当前状态筛选", async () => {
+    setCurrentUser({ id: 8, role: USER_ROLES.orgOperator, tenant_id: 2 });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(success({ items: [], next_cursor: null }))
+      .mockResolvedValueOnce(success({ items: [task("OPEN", 2)], next_cursor: "legacy.high-risk" }))
+      .mockResolvedValueOnce(failure(422, "INVALID_REQUEST"))
+      .mockResolvedValueOnce(success({ items: [task("OPEN", 2)], next_cursor: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderRoute("/institution/high-risk-tasks", "/institution/high-risk-tasks", <HighRiskTaskPage />);
+
+    await userEvent.selectOptions(await screen.findByLabelText("任务状态"), "OPEN");
+    await userEvent.click(await screen.findByRole("button", { name: "下一批" }));
+    await userEvent.click(await screen.findByRole("button", { name: "返回首页重新查询" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    const recoveryUrl = String(fetchMock.mock.calls[3]?.[0]);
+    expect(recoveryUrl).toContain("status=OPEN");
+    expect(recoveryUrl).not.toContain("cursor=");
+  });
+
+  it("角色和tenant切换后迟到错误不污染新授权上下文", async () => {
+    setCurrentUser({ id: 8, role: USER_ROLES.orgOperator, tenant_id: 2 });
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    renderRoute("/institution/high-risk-tasks", "/institution/high-risk-tasks", <HighRiskTaskPage />);
+
+    await act(async () => {
+      setCurrentUser({ id: 9, role: USER_ROLES.orgAdmin, tenant_id: 3 });
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    first.resolve(failure(422, "INVALID_REQUEST"));
+
+    expect(await screen.findByText("正在加载高风险任务…")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "返回首页重新查询" })).not.toBeInTheDocument();
+
+    second.resolve(success({ items: [task("OPEN", 2)], next_cursor: null }));
+    expect(await screen.findByText("血压与心血管")).toBeInTheDocument();
   });
 
   it("org_operator可执行正式任务Action且409后只刷新不自动重放", async () => {
@@ -236,4 +282,12 @@ function success(data: unknown) {
 
 function failure(status: number, code: string) {
   return new Response(JSON.stringify({ code }), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
 }
