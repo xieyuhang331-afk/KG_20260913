@@ -62,7 +62,7 @@ MODULE_TABLES = (
 
 
 def test_PG01_PG10_0031单一Head六身份受限函数与基础表ACL精确闭合(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
     roles = {name: os.environ[name] for name in FUNCTION_GRANTS}
     assert len(set(roles.values())) == 6
 

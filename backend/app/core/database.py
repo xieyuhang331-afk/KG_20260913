@@ -1,5 +1,6 @@
 import asyncio
 import weakref
+from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
 from app.core.config import Settings, get_settings
@@ -459,10 +460,36 @@ def invalidate_orphaned_projection_runtimes() -> bool:
     return not orphaned
 
 
+async def _close_owned_session(session, primary: BaseException | None) -> None:
+    try:
+        await session.close()
+    except (Exception, asyncio.CancelledError) as cleanup:
+        cancellation = cleanup if isinstance(cleanup, asyncio.CancelledError) else None
+        try:
+            await session.invalidate()
+        except (Exception, asyncio.CancelledError) as invalidation:
+            if isinstance(invalidation, asyncio.CancelledError) and cancellation is None:
+                cancellation = invalidation
+        if isinstance(primary, asyncio.CancelledError):
+            return
+        if cancellation is not None:
+            raise cancellation from None
+        if primary is not None:
+            primary.add_note("DATABASE_SESSION_CLEANUP_FAILED")
+            return
+        raise RuntimeError("DATABASE_SESSION_CLEANUP_FAILED") from None
+
+
 async def get_db_session():
-    session_factory = get_session_factory()
-    async with session_factory() as session:
+    session = get_session_factory()()
+    primary = None
+    try:
         yield session
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        await _close_owned_session(session, primary)
 
 
 def _slice1_url(settings: Settings, kind: str) -> str:
@@ -605,28 +632,36 @@ async def dispose_slice2_runtime(kind: str) -> None:
         await entry[0].dispose()
 
 
+@asynccontextmanager
 async def _slice2_session(kind: str):
-    async with get_slice2_session_factory(kind)() as session:
+    session = get_slice2_session_factory(kind)()
+    primary = None
+    try:
         yield session
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        await _close_owned_session(session, primary)
 
 
 async def get_therapist_onboarding_writer_session():
-    async for session in _slice2_session("onboarding_writer"):
+    async with _slice2_session("onboarding_writer") as session:
         yield session
 
 
 async def get_therapist_review_writer_session():
-    async for session in _slice2_session("review_writer"):
+    async with _slice2_session("review_writer") as session:
         yield session
 
 
 async def get_therapist_readiness_worker_session():
-    async for session in _slice2_session("readiness_worker"):
+    async with _slice2_session("readiness_worker") as session:
         yield session
 
 
 async def get_therapist_reader_session():
-    async for session in _slice2_session("reader"):
+    async with _slice2_session("reader") as session:
         yield session
 
 

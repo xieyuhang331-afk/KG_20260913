@@ -239,12 +239,23 @@ class TherapistSecrets:
 
 
 async def _rollback(session) -> None:
-    task = asyncio.create_task(session.rollback())
+    failure = None
     try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+        await session.rollback()
+    except (Exception, asyncio.CancelledError) as exc:
+        failure = exc
+    try:
+        await session.close()
+    except (Exception, asyncio.CancelledError) as exc:
+        if failure is None or isinstance(exc, asyncio.CancelledError):
+            failure = exc
+    if failure is not None:
+        try:
+            await session.invalidate()
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) and not isinstance(failure, asyncio.CancelledError):
+                failure = exc
+        raise failure
 
 
 async def _replay(repo: TherapistQualificationRepository, *, scope: str, operation: str, key: str, request: object):
@@ -275,14 +286,28 @@ async def _record(repo: TherapistQualificationRepository, *, scope: str, operati
 
 
 async def _commit(session, *, confirm=None) -> None:
+    from contextlib import suppress
+
     try:
         await session.commit()
-    except asyncio.CancelledError:
-        await _rollback(session)
-        raise
+    except asyncio.CancelledError as cancellation:
+        with suppress(Exception, asyncio.CancelledError):
+            await _rollback(session)
+        raise cancellation
     except Exception:
-        await _rollback(session)
-        if confirm is not None and await confirm() == COMMITTED:
+        try:
+            await _rollback(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise HTTPException(503, "COMMIT_OUTCOME_UNKNOWN") from None
+        try:
+            outcome = await confirm() if confirm is not None else UNKNOWN
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise HTTPException(503, "COMMIT_OUTCOME_UNKNOWN") from None
+        if type(outcome) is str and outcome == COMMITTED:
             return
         raise HTTPException(503, "COMMIT_OUTCOME_UNKNOWN") from None
 
@@ -582,7 +607,7 @@ async def _commit_invitation_failure(
     failed_attempts: int,
     version: int,
 ) -> None:
-    async def confirm() -> bool:
+    async def confirm() -> str:
         from app.core.database import get_slice2_session_factory
         from sqlalchemy import text
 
@@ -593,7 +618,10 @@ async def _commit_invitation_failure(
                 "FROM public.therapist_invitation WHERE invitation_id=:invitation_id"
             ), {"invitation_id": invitation_id})).one_or_none()
             await confirmation.rollback()
-        return row == ("INVITED", failed_attempts, version)
+        if row != ("INVITED", failed_attempts, version):
+            return UNKNOWN
+        # This projection has no operation receipt: another transaction can match it.
+        return UNKNOWN
 
     await _commit(session, confirm=confirm)
 
@@ -607,7 +635,7 @@ async def _commit_readiness(
     input_digest: str,
     result_digest: str,
 ) -> None:
-    async def confirm() -> bool:
+    async def confirm() -> str:
         from app.core.database import get_slice2_session_factory
         from sqlalchemy import text
 
@@ -629,10 +657,10 @@ async def _commit_readiness(
             )).one_or_none()
             await confirmation.rollback()
         expected = (tenant_id, evidence_version, input_digest, result_digest)
-        return bool(
-            readiness == expected[1:]
-            and evidence == expected
-        )
+        if readiness != expected[1:] or evidence != expected:
+            return UNKNOWN
+        # Matching evidence alone does not identify this commit attempt.
+        return UNKNOWN
 
     await _commit(session, confirm=confirm)
 
@@ -1041,6 +1069,40 @@ async def submit(session, actor: CurrentUser, payload: TherapistSubmit, request_
     return response
 
 
+async def _correction_authority(session, actor, profile, decision_id, review_item_id=None):
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    if profile is None:
+        return None, None
+    row = (await session.execute(text(
+        "SELECT * FROM public.slice2_therapist_correction_authority_v1("
+        ":actor_user_id,:actor_tenant_id,:subject_therapist_id,"
+        ":correction_decision_id,:renewal_review_item_id)"
+    ), {
+        "actor_user_id": actor.id, "actor_tenant_id": actor.tenant_id,
+        "subject_therapist_id": profile.therapist_id,
+        "correction_decision_id": str(decision_id), "renewal_review_item_id": review_item_id,
+    })).mappings().one_or_none()
+    if row is None:
+        return None, None
+    allowed = [name for name in ("real_name", "display_name", "practice_summary", "service_tags") if row["allow_" + name]]
+    if row["qualification_target"] is not None:
+        allowed.append("qualification:" + str(row["qualification_target"]))
+    decision = SimpleNamespace(
+        therapist_id=str(row["decision_therapist_id"]), decision=row["decision_kind"],
+        revision_id=str(row["decision_revision_id"]), review_item_id=str(row["decision_review_item_id"]),
+        correction_fields=allowed,
+    )
+    item = SimpleNamespace(
+        therapist_id=str(row["item_therapist_id"]), review_kind=row["item_review_kind"],
+        status=row["item_status"], version=row["item_version"],
+        qualification_version_id=str(row["item_qualification_version_id"]) if row["item_qualification_version_id"] is not None else None,
+    )
+    return decision, item
+
+
 async def resubmit(session, actor: CurrentUser, payload: TherapistResubmit, request_id: str, idempotency_key: str, *, tenant_public_id: str, precommit_check=None) -> dict:
     now = utcnow()
     scope = f"therapist-user:{actor.id}:decision:{payload.decision_id}"
@@ -1051,11 +1113,7 @@ async def resubmit(session, actor: CurrentUser, payload: TherapistResubmit, requ
     profile = await repo.current_profile_for_user(actor.id, for_update=True)
     if profile is None or profile.status != "NEEDS_CORRECTION" or profile.version != payload.expected_version:
         raise HTTPException(409, "THERAPIST_CORRECTION_SCOPE_CONFLICT")
-    decision = (await session.execute(
-        __import__("sqlalchemy").select(TherapistReviewDecisionModel)
-        .where(TherapistReviewDecisionModel.decision_id == str(payload.decision_id))
-        .with_for_update()
-    )).scalar_one_or_none()
+    decision, _ = await _correction_authority(session, actor, profile, payload.decision_id)
     if decision is None or decision.therapist_id != profile.therapist_id or decision.decision != "NEEDS_CORRECTION":
         raise HTTPException(409, "THERAPIST_CORRECTION_SCOPE_CONFLICT")
     allowed = set(decision.correction_fields or ())
@@ -1592,12 +1650,7 @@ async def renewal_resubmit(session, actor: CurrentUser, review_item_id: str, pay
     if replay is not None:
         return replay
     profile = await repo.current_profile_for_user(actor.id, for_update=True)
-    old_item = await repo.review_item_for_update(review_item_id)
-    decision = (await session.execute(
-        __import__("sqlalchemy").select(TherapistReviewDecisionModel)
-        .where(TherapistReviewDecisionModel.decision_id == str(payload.decision_id))
-        .with_for_update()
-    )).scalar_one_or_none()
+    decision, old_item = await _correction_authority(session, actor, profile, payload.decision_id, review_item_id)
     if (
         profile is None or profile.status not in {"APPROVED_ACTIVE", "SUSPENDED"}
         or old_item is None or old_item.therapist_id != profile.therapist_id

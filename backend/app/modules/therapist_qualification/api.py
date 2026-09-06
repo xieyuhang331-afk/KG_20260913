@@ -420,16 +420,12 @@ async def _tenant_public_id(authority_session, tenant_id: int) -> str:
     row = (
         await authority_session.execute(
             __import__("sqlalchemy").text(
-                "SELECT a.tenant_public_id FROM public.institution_application a "
-                "JOIN public.tenant t ON t.id=a.tenant_internal_id "
-                "WHERE a.tenant_internal_id=:tenant_id AND a.status='APPROVED' "
-                "AND a.tenant_public_id IS NOT NULL AND t.status='active' "
-                "FOR SHARE OF a,t"
+                "SELECT public.slice2_institution_identity_authority_v1(:tenant_id)"
             ),
             {"tenant_id": tenant_id},
         )
     ).one_or_none()
-    if row is None:
+    if row is None or row[0] is None:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
     return str(row[0])
 

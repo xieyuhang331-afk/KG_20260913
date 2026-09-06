@@ -330,27 +330,43 @@ async def test_无业务写入才可NOT_COMMITTED且混合部分提交保持UNKN
 
 @pytest.mark.asyncio
 async def test_UNKNOWN固定503且commit不发生二次写():
+    from fastapi import HTTPException
+
+    events = []
+
     class Session:
         commit_calls = 0
         rollback_calls = 0
+        close_calls = 0
+        closed = False
 
         async def commit(self):
             self.commit_calls += 1
+            events.append("commit")
             raise RuntimeError("commit result unavailable")
 
         async def rollback(self):
             self.rollback_calls += 1
+            events.append("rollback")
+
+        async def close(self):
+            self.close_calls += 1
+            self.closed = True
+            events.append("close")
 
     confirm_calls = 0
 
     async def confirm():
         nonlocal confirm_calls
+        assert session.closed, "GATE_CONFIRM_BEFORE_CLOSE"
         confirm_calls += 1
+        events.append("confirm")
         return service.UNKNOWN
 
     session = Session()
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(HTTPException) as exc:
         await service._commit(session, confirm=confirm)
     assert getattr(exc.value, "status_code", None) == 503
     assert getattr(exc.value, "detail", None) == "COMMIT_OUTCOME_UNKNOWN"
-    assert (session.commit_calls, session.rollback_calls, confirm_calls) == (1, 1, 1)
+    assert (session.commit_calls, session.rollback_calls, session.close_calls, confirm_calls) == (1, 1, 1, 1)
+    assert events == ["commit", "rollback", "close", "confirm"], "GATE_COMMIT_RELEASE_CONFIRM_ORDER_INVALID"
