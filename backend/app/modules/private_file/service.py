@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.uuid_generator import Uuid7Generator
+from app.core.认证配置校验 import purpose_signing_key
 from app.modules.private_file.domain import (
     PRIVATE_FILE_SCAN_LEASE,
     PRIVATE_FILE_SCAN_MAX_ATTEMPTS,
@@ -1067,10 +1068,10 @@ async def metadata(session, user_id: int, file_id: str) -> dict:
 
 
 def _access_secret() -> bytes:
-    secret = os.getenv("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY")
-    if not secret:
-        raise RuntimeError("Private file access is unavailable")
-    return secret.encode()
+    try:
+        return purpose_signing_key("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY")
+    except ValueError:
+        raise RuntimeError("Private file access is unavailable") from None
 
 
 def issue_access_token(

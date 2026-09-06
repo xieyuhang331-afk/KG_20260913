@@ -117,6 +117,10 @@ jobs:
               "KG_DATABASE_PASSWORD": secrets.token_urlsafe(32),
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
               "KG_AUTH_RATE_LIMIT_HMAC_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE5_CURSOR_SIGNING_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE7_CURSOR_SIGNING_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY": secrets.token_urlsafe(64),
+              "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48),
               "KG_ENV": "test",
               "KG_IDENTITY_PII_KEK_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
               "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
@@ -132,6 +136,26 @@ jobs:
 
       - name: Run non-database regression
         run: python -m pytest tests --ignore=tests/integration --ignore=tests/uuid_validation -q --junitxml=pytest-report.xml
+
+      - name: Scan unit signing material before artifact upload
+        id: unit_signing_sensitive_scan
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          values = (
+              os.environ.get("KG_SLICE5_CURSOR_SIGNING_KEY", ""),
+              os.environ.get("KG_SLICE7_CURSOR_SIGNING_KEY", ""),
+              os.environ.get("KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY", ""),
+              os.environ.get("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", ""),
+          )
+          report = Path("pytest-report.xml").read_text(encoding="utf-8")
+          if any(value and value in report for value in values):
+              raise SystemExit("C1B_UNIT_SIGNING_MATERIAL_LEAK")
+          PY
 
       - name: Record D1 toolchain evidence
         shell: bash
@@ -170,7 +194,7 @@ jobs:
           PY
 
       - name: Upload backend test report
-        if: always()
+        if: always() && steps.unit_signing_sensitive_scan.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: backend-pytest-report
@@ -351,6 +375,9 @@ jobs:
               "KG_DATABASE_PASSWORD": passwords["KG_TEST_APPLICATION_ROLE"],
               "KG_JWT_SECRET_KEY": secrets.token_urlsafe(64),
               "KG_AUTH_RATE_LIMIT_HMAC_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE5_CURSOR_SIGNING_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE7_CURSOR_SIGNING_KEY": secrets.token_urlsafe(64),
+              "KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY": secrets.token_urlsafe(64),
               "KG_ENV": "ci_ephemeral",
               "KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY": secrets.token_urlsafe(64),
               "KG_IDENTITY_PII_KEK_B64": base64.b64encode(
@@ -1381,6 +1408,10 @@ jobs:
               "pii_kek": os.environ.get("KG_IDENTITY_PII_KEK_B64", ""),
               "pii_hmac": os.environ.get("KG_IDENTITY_PII_HMAC_KEY_B64", ""),
               "jwt_secret": os.environ.get("KG_JWT_SECRET_KEY", ""),
+              "slice5_cursor_key": os.environ.get("KG_SLICE5_CURSOR_SIGNING_KEY", ""),
+              "slice7_cursor_key": os.environ.get("KG_SLICE7_CURSOR_SIGNING_KEY", ""),
+              "slice5_reference_key": os.environ.get("KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY", ""),
+              "private_file_key": os.environ.get("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", ""),
               "step_up_secret": os.environ.get("KG_IDENTITY_REVIEW_STEP_UP_SECRET_KEY", ""),
               "database_password": os.environ.get("KG_DATABASE_PASSWORD", ""),
               "rabbitmq_password": os.environ.get("KG_RABBITMQ_PASSWORD", ""),

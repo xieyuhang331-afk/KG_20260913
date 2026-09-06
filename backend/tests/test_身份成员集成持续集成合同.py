@@ -1169,7 +1169,6 @@ def test_slice1_ephemeral_crypto_material_is_random_masked_and_exported_only_in_
     declarations = (
         '"KG_ONBOARDING_PII_KEK_B64": base64.b64encode(',
         '"KG_ONBOARDING_PII_HMAC_KEY_B64": base64.b64encode(',
-        '"KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48)',
     )
     mask_position = backend_integration_job.index('print(f"::add-mask::{value}")')
     export_position = backend_integration_job.index("GITHUB_ENV")
@@ -1177,6 +1176,15 @@ def test_slice1_ephemeral_crypto_material_is_random_masked_and_exported_only_in_
         assert declaration not in backend_unit_job
         assert backend_integration_job.count(declaration) == 1
         assert backend_integration_job.index(declaration) < mask_position < export_position
+
+    declaration = '"KG_PRIVATE_FILE_ACCESS_SIGNING_KEY": secrets.token_urlsafe(48)'
+    for block in (backend_unit_job, backend_integration_job):
+        assert block.count(declaration) == 1
+        declared = block.index(declaration)
+        masked = block.index('print(f"::add-mask::{value}")', declared)
+        exported = block.index("GITHUB_ENV", masked)
+        assert declared < masked < exported
+        assert 'os.environ.get("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", "")' in block
 
 
 def test_slice1_database_closure_uses_an_independent_celery_worker_in_ci():

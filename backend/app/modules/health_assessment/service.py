@@ -9,7 +9,6 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import secrets as stdlib_secrets
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Mapping
@@ -20,6 +19,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.config import get_settings
+from app.core.认证配置校验 import purpose_signing_key
 from app.modules.user_health.service import Slice4Secrets
 
 from .domain import AssessmentFacts, EvaluationContext, MODULE_CODES, RISK_RANK
@@ -51,10 +51,10 @@ def _base64url(value: bytes) -> str:
 
 
 def _cursor_key() -> bytes:
-    value = os.getenv("KG_JWT_SECRET_KEY")
-    if value is None or len(value.encode("utf-8")) < 32:
-        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE")
-    return value.encode("utf-8")
+    try:
+        return purpose_signing_key("KG_SLICE5_CURSOR_SIGNING_KEY")
+    except ValueError:
+        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
 
 
 def encode_slice5_cursor(cursor_id: UUID, scope: Mapping[str, object]) -> str:
@@ -106,8 +106,12 @@ def decode_slice5_cursor(cursor: str | None, scope: Mapping[str, object]) -> UUI
 def public_user_reference(actor_user_id: int) -> str:
     if type(actor_user_id) is not int or actor_user_id < 1:
         raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE")
+    try:
+        key = purpose_signing_key("KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY")
+    except ValueError:
+        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
     digest = hmac.new(
-        _cursor_key(),
+        key,
         _PUBLIC_USER_REF_DOMAIN + str(actor_user_id).encode("ascii"),
         hashlib.sha256,
     ).digest()

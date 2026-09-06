@@ -16,7 +16,7 @@ SCOPE_ID = UUID("0198f1c0-0000-7000-8000-0000000000d2")
 
 
 def test_D_分页游标不透明签名且绑定资源Scope身份与租户(monkeypatch) -> None:
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "slice7-cursor-test-secret")
+    monkeypatch.setenv("KG_SLICE7_CURSOR_SIGNING_KEY", "slice7-cursor-synthetic-key-0000000000000000")
     cursor = encode_page_cursor(
         CURSOR_ID,
         snapshot_ceiling=SNAPSHOT_CEILING,
@@ -62,7 +62,7 @@ def test_D_分页游标不透明签名且绑定资源Scope身份与租户(monkey
 
 
 def test_D_分页游标篡改和非规范编码稳定拒绝(monkeypatch) -> None:
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "slice7-cursor-test-secret")
+    monkeypatch.setenv("KG_SLICE7_CURSOR_SIGNING_KEY", "slice7-cursor-synthetic-key-0000000000000000")
     cursor = encode_page_cursor(
         CURSOR_ID,
         snapshot_ceiling=SNAPSHOT_CEILING,
@@ -124,7 +124,7 @@ def test_D_四类列表以UUID原生倒序取得快照上界且不使用max聚�
 
 
 def test_D_游标快照上界防止并发新增记录进入后续页(monkeypatch) -> None:
-    monkeypatch.setenv("KG_JWT_SECRET_KEY", "slice7-cursor-test-secret")
+    monkeypatch.setenv("KG_SLICE7_CURSOR_SIGNING_KEY", "slice7-cursor-synthetic-key-0000000000000000")
     cursor = encode_page_cursor(
         CURSOR_ID,
         snapshot_ceiling=SNAPSHOT_CEILING,
