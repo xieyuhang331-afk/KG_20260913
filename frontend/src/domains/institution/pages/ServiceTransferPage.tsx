@@ -19,6 +19,7 @@ import {
 import { createIdempotencyKey } from "@/shared/api/slice3";
 import { useAuthStore } from "@/shared/auth/authStore";
 import { USER_ROLES } from "@/shared/constants/roles";
+import { CursorRecoveryAction, useRecoverableCursorPage } from "@/shared/pagination/游标分页恢复";
 import { EmptyPanel, Feedback, LoadingPanel, secondaryButtonClassName } from "@/domains/institution/受控入驻界面";
 
 type TransferMode = "institution" | "platform";
@@ -30,31 +31,18 @@ export function ServiceTransferPage({ mode = "institution" }: { mode?: TransferM
 }
 
 function TransferList({ mode }: { mode: TransferMode }) {
-  const [items, setItems] = useState<TransferDTO[]>([]);
+  const { currentUser } = useAuthStore();
   const [status, setStatus] = useState<TransferStatus | "">("");
-  const [cursor, setCursor] = useState<string>();
-  const [history, setHistory] = useState<Array<string | undefined>>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
+  const requestScope = `${mode}:${currentUser?.role ?? "anonymous"}:${currentUser?.tenant_id ?? "none"}`;
+  const loadPage = useCallback(
+    (cursor?: string) => {
+      void requestScope;
       const params = { status: status || undefined, cursor, limit: 20 };
-      const page =
-        mode === "institution" ? await listInstitutionTransfers(params) : await listPlatformTransfers(params);
-      setItems(page.items);
-      setNextCursor(page.next_cursor);
-      setFeedback("");
-    } catch (error) {
-      setFeedback(getSafeSlice7Error(error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [cursor, mode, status]);
-
-  useEffect(() => void load(), [load]);
+      return mode === "institution" ? listInstitutionTransfers(params) : listPlatformTransfers(params);
+    },
+    [mode, requestScope, status],
+  );
+  const page = useRecoverableCursorPage(loadPage, getSafeSlice7Error);
 
   const basePath = mode === "institution" ? "/institution/service-transfers" : "/platform/service-transfers";
   return (
@@ -71,7 +59,7 @@ function TransferList({ mode }: { mode: TransferMode }) {
             查看转出、转入、授权范围确认和接续进度；状态由服务端按当前机构范围安全返回。
           </p>
         </div>
-        <button className={secondaryButtonClassName} onClick={() => void load()} type="button">
+        <button className={secondaryButtonClassName} onClick={() => void page.refresh()} type="button">
           <RefreshCw aria-hidden="true" className="mr-2" size={16} />
           刷新
         </button>
@@ -84,8 +72,6 @@ function TransferList({ mode }: { mode: TransferMode }) {
               className="mt-1.5 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3"
               onChange={(event) => {
                 setStatus(event.target.value as TransferStatus | "");
-                setCursor(undefined);
-                setHistory([]);
               }}
               value={status}
             >
@@ -97,13 +83,14 @@ function TransferList({ mode }: { mode: TransferMode }) {
               ))}
             </select>
           </label>
-          <div className="ml-auto text-xs text-slate-500">本批次 {items.length} 项 · 签名分页凭据原样使用</div>
+          <div className="ml-auto text-xs text-slate-500">本批次 {page.items.length} 项 · 签名分页凭据原样使用</div>
         </div>
       </section>
-      <Feedback message={feedback} tone="error" />
-      {loading ? (
+      <Feedback message={page.feedback} tone="error" />
+      <CursorRecoveryAction loading={page.loading} onRecover={page.recoverToFirstPage} visible={page.canRecover} />
+      {page.loading ? (
         <LoadingPanel label="正在加载转机构记录…" />
-      ) : items.length ? (
+      ) : page.items.length ? (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
           <div className="hidden grid-cols-[minmax(0,1.2fr)_190px_minmax(0,1fr)_110px] gap-4 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs font-semibold text-slate-500 md:grid">
             <span>服务接续</span>
@@ -112,7 +99,7 @@ function TransferList({ mode }: { mode: TransferMode }) {
             <span>操作</span>
           </div>
           <div className="divide-y divide-slate-100">
-            {items.map((item) => (
+            {page.items.map((item) => (
               <div
                 className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1.2fr)_190px_minmax(0,1fr)_110px] md:items-center"
                 key={item.transfer_id}
@@ -141,26 +128,16 @@ function TransferList({ mode }: { mode: TransferMode }) {
       <div className="flex justify-end gap-2">
         <button
           className={secondaryButtonClassName}
-          disabled={loading || !history.length}
-          onClick={() =>
-            setHistory((current) => {
-              const copy = [...current];
-              setCursor(copy.pop());
-              return copy;
-            })
-          }
+          disabled={page.loading || !page.canGoBack}
+          onClick={page.previous}
           type="button"
         >
           上一批
         </button>
         <button
           className={secondaryButtonClassName}
-          disabled={loading || !nextCursor}
-          onClick={() => {
-            if (!nextCursor) return;
-            setHistory((current) => [...current, cursor]);
-            setCursor(nextCursor);
-          }}
+          disabled={page.loading || !page.nextCursor}
+          onClick={page.next}
           type="button"
         >
           下一批

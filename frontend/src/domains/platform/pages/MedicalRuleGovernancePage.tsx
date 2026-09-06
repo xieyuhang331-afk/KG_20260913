@@ -1,5 +1,5 @@
 import { ArrowLeft, BookOpenCheck, RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   createAssessmentRuleSet,
@@ -22,6 +22,7 @@ import {
 import { createIdempotencyKey, isUuidV7 } from "@/shared/api/slice3";
 import { useAuthStore } from "@/shared/auth/authStore";
 import { USER_ROLES } from "@/shared/constants/roles";
+import { CursorRecoveryAction } from "@/shared/pagination/游标分页恢复";
 import { EmptyPanel, Feedback, LoadingPanel, secondaryButtonClassName } from "@/domains/institution/受控入驻界面";
 
 interface PendingMutation {
@@ -42,30 +43,75 @@ export function MedicalRuleGovernancePage() {
   const [feedback, setFeedback] = useState("");
   const [tone, setTone] = useState<"success" | "error">("error");
   const [pendingMutation, setPendingMutation] = useState<PendingMutation | null>(null);
+  const [canRecoverCursor, setCanRecoverCursor] = useState(false);
+  const [requestScopeRevision, setRequestScopeRevision] = useState(0);
+  const requestSequence = useRef(0);
+  const requestScope = `${currentUser?.role ?? "anonymous"}:${currentUser?.tenant_id ?? "none"}`;
+  const requestContext = `${requestScope}:${versionId}`;
+  const latestRequestContext = useRef(requestContext);
+  latestRequestContext.current = requestContext;
+  const previousRequestScope = useRef(requestScope);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      if (versionId) {
-        if (!isUuidV7(versionId)) throw { status: 422 };
-        setDetail(await getAssessmentRuleSet(versionId));
-      } else {
-        const page = await listAssessmentRuleSets({ cursor, limit: 20 });
-        setItems(page.items);
-        setNextCursor(page.next_cursor);
+  const load = useCallback(
+    async (targetCursor = cursor) => {
+      void requestScopeRevision;
+      const requestId = ++requestSequence.current;
+      const requestContextAtStart = latestRequestContext.current;
+      const isCurrentRequest = () =>
+        requestId === requestSequence.current && requestContextAtStart === latestRequestContext.current;
+      setLoading(true);
+      setCanRecoverCursor(false);
+      try {
+        if (versionId) {
+          if (!isUuidV7(versionId)) throw { status: 422 };
+          const result = await getAssessmentRuleSet(versionId);
+          if (!isCurrentRequest()) return;
+          setDetail(result);
+        } else {
+          const page = await listAssessmentRuleSets({ cursor: targetCursor, limit: 20 });
+          if (!isCurrentRequest()) return;
+          setItems(page.items);
+          setNextCursor(page.next_cursor);
+          setDetail(null);
+        }
+        setFeedback("");
+      } catch (error) {
+        if (!isCurrentRequest()) return;
+        const safe = getSafeSlice5Error(error);
         setDetail(null);
+        if (!versionId) {
+          setItems([]);
+          setNextCursor(null);
+          setCanRecoverCursor(safe.status === 422 && targetCursor !== undefined);
+        }
+        setFeedback(safe.message);
+        setTone("error");
+      } finally {
+        if (isCurrentRequest()) setLoading(false);
       }
-      setFeedback("");
-    } catch (error) {
-      setDetail(null);
-      setFeedback(getSafeSlice5Error(error).message);
-      setTone("error");
-    } finally {
-      setLoading(false);
-    }
-  }, [cursor, versionId]);
+    },
+    [cursor, requestScopeRevision, versionId],
+  );
 
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      requestSequence.current += 1;
+    };
+  }, [load]);
+
+  useEffect(() => {
+    if (previousRequestScope.current === requestScope) return;
+    previousRequestScope.current = requestScope;
+    requestSequence.current += 1;
+    setItems([]);
+    setCursor(undefined);
+    setCursorHistory([]);
+    setNextCursor(null);
+    setFeedback("");
+    setCanRecoverCursor(false);
+    setRequestScopeRevision((current) => current + 1);
+  }, [requestScope]);
 
   async function runMutation(request: PendingMutation) {
     if (submitting) return;
@@ -115,6 +161,20 @@ export function MedicalRuleGovernancePage() {
         </button>
       </header>
       <Feedback message={feedback} tone={tone} />
+      {!versionId ? (
+        <CursorRecoveryAction
+          loading={loading}
+          onRecover={() => {
+            setItems([]);
+            setCursorHistory([]);
+            setNextCursor(null);
+            setFeedback("");
+            setCanRecoverCursor(false);
+            setCursor(undefined);
+          }}
+          visible={canRecoverCursor}
+        />
+      ) : null}
       {pendingMutation ? (
         <button
           className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"

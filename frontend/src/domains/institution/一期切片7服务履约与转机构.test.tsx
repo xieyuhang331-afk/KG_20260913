@@ -50,6 +50,42 @@ describe("一期切片7机构服务履约与转机构", () => {
     }
   });
 
+  it("履约列表旧cursor失效后清空失效页并回到首页", async () => {
+    setCurrentUser({ id: 8, role: USER_ROLES.orgOperator, tenant_id: 2 });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(success({ items: [fulfillment("ACTIVE")], next_cursor: "legacy.fulfillment" }))
+      .mockResolvedValueOnce(failure(422, "INVALID_REQUEST"))
+      .mockResolvedValueOnce(success({ items: [fulfillment("PAUSED")], next_cursor: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderInstitutionRoute("/institution/service-cases", "/institution/service-cases", <ServiceFulfillmentPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "下一批" }));
+    await userEvent.click(await screen.findByRole("button", { name: "返回首页重新查询" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(String(fetchMock.mock.calls[2]?.[0])).not.toContain("cursor=");
+    expect((await screen.findAllByText("服务已暂停")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("转机构列表旧cursor失效后可显式回到首页", async () => {
+    setCurrentUser({ id: 8, role: USER_ROLES.orgOperator, tenant_id: 2 });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(success({ items: [transfer("REQUESTED_BY_USER")], next_cursor: "legacy.transfer" }))
+      .mockResolvedValueOnce(failure(422, "INVALID_REQUEST"))
+      .mockResolvedValueOnce(success({ items: [transfer("ACCEPTED")], next_cursor: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderInstitutionRoute("/institution/service-transfers", "/institution/service-transfers", <ServiceTransferPage />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "下一批" }));
+    await userEvent.click(await screen.findByRole("button", { name: "返回首页重新查询" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(String(fetchMock.mock.calls[2]?.[0])).not.toContain("cursor=");
+    expect((await screen.findAllByText("目标机构已接受")).length).toBeGreaterThanOrEqual(2);
+  });
+
   it("org_operator可查看五阶段履约详情但不出现写操作", async () => {
     setCurrentUser({ id: 8, role: USER_ROLES.orgOperator, tenant_id: 2 });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(success(fulfillment("ACTIVE"))));

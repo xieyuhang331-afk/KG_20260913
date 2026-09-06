@@ -49,6 +49,26 @@ describe("一期切片5医学规则治理", () => {
     expect(screen.queryByText("opaque.next")).not.toBeInTheDocument();
   });
 
+  it("旧cursor失效后由用户返回首页，且恢复请求不再携带cursor", async () => {
+    setCurrentUser({ id: 71, role: USER_ROLES.expert });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(success({ items: [summary("DRAFT")], next_cursor: "legacy.cursor" }))
+      .mockResolvedValueOnce(failure(422, "INVALID_REQUEST"))
+      .mockResolvedValueOnce(success({ items: [summary("PUBLISHED", 3, "APPROVED")], next_cursor: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage("/platform/assessment-rule-sets", "/platform/assessment-rule-sets");
+
+    await userEvent.click(await screen.findByRole("button", { name: "下一批" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("分页凭据");
+    await userEvent.click(screen.getByRole("button", { name: "返回首页重新查询" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("cursor=legacy.cursor");
+    expect(String(fetchMock.mock.calls[2]?.[0])).not.toContain("cursor=");
+    expect(screen.queryByRole("button", { name: "返回首页重新查询" })).not.toBeInTheDocument();
+  });
+
   it("expert可在草稿详情修改依据并提交审核，unknown结果复用同一Key和Body确认", async () => {
     setCurrentUser({ id: 71, role: USER_ROLES.expert });
     const fetchMock = vi

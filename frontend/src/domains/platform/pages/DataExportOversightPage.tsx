@@ -10,6 +10,8 @@ import {
   type DataScope,
 } from "@/shared/api/slice7";
 import { EmptyPanel, Feedback, LoadingPanel, secondaryButtonClassName } from "@/domains/institution/受控入驻界面";
+import { useAuthStore } from "@/shared/auth/authStore";
+import { CursorRecoveryAction, useRecoverableCursorPage } from "@/shared/pagination/游标分页恢复";
 
 export function DataExportOversightPage() {
   const { exportId = "" } = useParams();
@@ -17,33 +19,21 @@ export function DataExportOversightPage() {
 }
 
 function ExportList() {
-  const [items, setItems] = useState<DataExportDTO[]>([]);
+  const { currentUser } = useAuthStore();
   const [status, setStatus] = useState<DataExportStatus | "">("");
-  const [cursor, setCursor] = useState<string>();
-  const [history, setHistory] = useState<Array<string | undefined>>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const page = await listPlatformDataExports({ status: status || undefined, cursor, limit: 20 });
-      setItems(page.items);
-      setNextCursor(page.next_cursor);
-      setFeedback("");
-    } catch (error) {
-      setFeedback(getSafeSlice7Error(error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [cursor, status]);
-
-  useEffect(() => void load(), [load]);
+  const requestScope = `${currentUser?.role ?? "anonymous"}:${currentUser?.tenant_id ?? "none"}`;
+  const loadPage = useCallback(
+    (cursor?: string) => {
+      void requestScope;
+      return listPlatformDataExports({ status: status || undefined, cursor, limit: 20 });
+    },
+    [requestScope, status],
+  );
+  const page = useRecoverableCursorPage(loadPage, getSafeSlice7Error);
 
   return (
     <main className="space-y-5">
-      <Header onRefresh={load} title="数据导出任务监督" />
+      <Header onRefresh={page.refresh} title="数据导出任务监督" />
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-panel">
         <div className="flex flex-wrap items-end gap-3">
           <label className="min-w-56 text-sm font-medium text-slate-700">
@@ -52,8 +42,6 @@ function ExportList() {
               className="mt-1.5 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3"
               onChange={(event) => {
                 setStatus(event.target.value as DataExportStatus | "");
-                setCursor(undefined);
-                setHistory([]);
               }}
               value={status}
             >
@@ -68,10 +56,11 @@ function ExportList() {
           <p className="ml-auto text-xs text-slate-500">只读监督 · 不提供下载凭据或文件路径</p>
         </div>
       </section>
-      <Feedback message={feedback} tone="error" />
-      {loading ? (
+      <Feedback message={page.feedback} tone="error" />
+      <CursorRecoveryAction loading={page.loading} onRecover={page.recoverToFirstPage} visible={page.canRecover} />
+      {page.loading ? (
         <LoadingPanel label="正在加载导出任务…" />
-      ) : items.length ? (
+      ) : page.items.length ? (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
           <div className="hidden grid-cols-[minmax(0,1fr)_160px_minmax(0,1fr)_180px_100px] gap-4 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs font-semibold text-slate-500 md:grid">
             <span>导出任务</span>
@@ -81,7 +70,7 @@ function ExportList() {
             <span>操作</span>
           </div>
           <div className="divide-y divide-slate-100">
-            {items.map((item) => (
+            {page.items.map((item) => (
               <div
                 className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_160px_minmax(0,1fr)_180px_100px] md:items-center"
                 key={item.export_id}
@@ -112,26 +101,16 @@ function ExportList() {
       <div className="flex justify-end gap-2">
         <button
           className={secondaryButtonClassName}
-          disabled={loading || !history.length}
-          onClick={() =>
-            setHistory((current) => {
-              const copy = [...current];
-              setCursor(copy.pop());
-              return copy;
-            })
-          }
+          disabled={page.loading || !page.canGoBack}
+          onClick={page.previous}
           type="button"
         >
           上一批
         </button>
         <button
           className={secondaryButtonClassName}
-          disabled={loading || !nextCursor}
-          onClick={() => {
-            if (!nextCursor) return;
-            setHistory((current) => [...current, cursor]);
-            setCursor(nextCursor);
-          }}
+          disabled={page.loading || !page.nextCursor}
+          onClick={page.next}
           type="button"
         >
           下一批
