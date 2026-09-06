@@ -20,6 +20,7 @@ import {
 import { createIdempotencyKey } from "@/shared/api/slice3";
 import { useAuthStore } from "@/shared/auth/authStore";
 import { USER_ROLES } from "@/shared/constants/roles";
+import { CursorRecoveryAction, useRecoverableCursorPage } from "@/shared/pagination/游标分页恢复";
 import { EmptyPanel, Feedback, LoadingPanel, secondaryButtonClassName } from "@/domains/institution/受控入驻界面";
 
 type WorkspaceMode = "institution" | "platform";
@@ -33,37 +34,24 @@ export function ServiceFulfillmentPage({ mode = "institution" }: { mode?: Worksp
 }
 
 function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
-  const [items, setItems] = useState<ServiceFulfillmentDTO[]>([]);
+  const { currentUser } = useAuthStore();
   const [status, setStatus] = useState<ServiceLifecycleStatus | "">("");
   const [riskOnly, setRiskOnly] = useState(false);
-  const [cursor, setCursor] = useState<string>();
-  const [cursorHistory, setCursorHistory] = useState<Array<string | undefined>>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
+  const requestScope = `${mode}:${currentUser?.role ?? "anonymous"}:${currentUser?.tenant_id ?? "none"}`;
+  const loadPage = useCallback(
+    (cursor?: string) => {
+      void requestScope;
       const params = {
         cursor,
         limit: 20,
         status: status || undefined,
         risk: riskOnly ? ("AT_RISK" as const) : undefined,
       };
-      const page =
-        mode === "institution" ? await listInstitutionServiceCases(params) : await listPlatformServiceCases(params);
-      setItems(page.items);
-      setNextCursor(page.next_cursor);
-      setFeedback("");
-    } catch (error) {
-      setFeedback(getSafeSlice7Error(error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [cursor, mode, riskOnly, status]);
-
-  useEffect(() => void load(), [load]);
+      return mode === "institution" ? listInstitutionServiceCases(params) : listPlatformServiceCases(params);
+    },
+    [mode, requestScope, riskOnly, status],
+  );
+  const page = useRecoverableCursorPage(loadPage, getSafeSlice7Error);
 
   const basePath = mode === "institution" ? "/institution/service-cases" : "/platform/service-fulfillment";
   const platform = mode === "platform";
@@ -78,7 +66,7 @@ function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
             ? "监督服务案例的履约周期、高风险阻断与关闭准备，不读取客户原始健康隐私。"
             : "按服务端权威状态查看当前服务周期、五阶段里程碑和需要机构处理的风险。"
         }
-        onRefresh={load}
+        onRefresh={page.refresh}
       />
 
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-panel">
@@ -89,8 +77,6 @@ function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
               className="mt-1.5 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3"
               onChange={(event) => {
                 setStatus(event.target.value as ServiceLifecycleStatus | "");
-                setCursor(undefined);
-                setCursorHistory([]);
               }}
               value={status}
             >
@@ -107,21 +93,20 @@ function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
               checked={riskOnly}
               onChange={(event) => {
                 setRiskOnly(event.target.checked);
-                setCursor(undefined);
-                setCursorHistory([]);
               }}
               type="checkbox"
             />
             仅看高风险阻断
           </label>
-          <div className="ml-auto text-xs text-slate-500">本批次 {items.length} 项 · 不提供虚构总页数</div>
+          <div className="ml-auto text-xs text-slate-500">本批次 {page.items.length} 项 · 不提供虚构总页数</div>
         </div>
       </section>
 
-      <Feedback message={feedback} tone="error" />
-      {loading ? (
+      <Feedback message={page.feedback} tone="error" />
+      <CursorRecoveryAction loading={page.loading} onRecover={page.recoverToFirstPage} visible={page.canRecover} />
+      {page.loading ? (
         <LoadingPanel label="正在加载服务履约状态…" />
-      ) : items.length ? (
+      ) : page.items.length ? (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-panel">
           <div className="hidden grid-cols-[minmax(0,1.3fr)_170px_160px_160px_110px] gap-4 border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs font-semibold text-slate-500 md:grid">
             <span>服务案例</span>
@@ -131,7 +116,7 @@ function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
             <span>操作</span>
           </div>
           <div className="divide-y divide-slate-100">
-            {items.map((item) => (
+            {page.items.map((item) => (
               <div
                 className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1.3fr)_170px_160px_160px_110px] md:items-center"
                 key={item.service_case_id}
@@ -169,21 +154,11 @@ function FulfillmentList({ mode }: { mode: WorkspaceMode }) {
       )}
 
       <CursorControls
-        canPrevious={cursorHistory.length > 0}
-        canNext={Boolean(nextCursor)}
-        disabled={loading}
-        onNext={() => {
-          if (!nextCursor) return;
-          setCursorHistory((current) => [...current, cursor]);
-          setCursor(nextCursor);
-        }}
-        onPrevious={() => {
-          setCursorHistory((current) => {
-            const copy = [...current];
-            setCursor(copy.pop());
-            return copy;
-          });
-        }}
+        canPrevious={page.canGoBack}
+        canNext={Boolean(page.nextCursor)}
+        disabled={page.loading}
+        onNext={page.next}
+        onPrevious={page.previous}
       />
     </main>
   );
