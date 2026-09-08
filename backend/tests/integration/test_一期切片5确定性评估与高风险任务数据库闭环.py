@@ -211,7 +211,7 @@ def _task_action_payload(index: int, *, task_id: str, actor: int, version: int, 
 
 
 def test_PG01_PG11_0030单一Head六身份函数与基础表ACL精确闭合(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
     runtime_roles = {name: os.environ[name] for name in FUNCTION_GRANTS}
     assert len(set(runtime_roles.values())) == 6
 
@@ -381,7 +381,7 @@ def test_PG12_0028_0029_0030线性生命周期保持单一Head和权限对称(pg
         "'public.slice5_family_subject_authority_v1(bigint,uuid)','EXECUTE')"
     )
     command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
 
 
 def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
@@ -399,7 +399,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
         config = _build_alembic_config(_get_test_database_url())
         with pytest.raises(RuntimeError, match="Slice 5 downgrade requires empty module tables"):
             command.downgrade(config, "20260824_0029")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
         assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") == "health_assessment"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure("
@@ -411,7 +411,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
             'DELETE FROM public."user" WHERE id=91999'
         )
         command.upgrade(config, "head")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
 
 
 def test_D11_D12_规则治理作者审核人分离且mutation伴随事实完整(
