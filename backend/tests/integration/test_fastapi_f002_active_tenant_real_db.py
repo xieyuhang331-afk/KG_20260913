@@ -73,9 +73,15 @@ def test_f002_real_db_member_lists_only_active_tenants(real_db_client, pg_databa
         "/api/v1/tenants/active", headers=_headers(user_id=80013)
     )
     assert missing_actor.status_code == 401
-    assert missing_actor.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    body = missing_actor.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "ACCESS_TOKEN_STALE", "request rejected", [], False,
+    )
+    assert missing_actor.headers["X-Request-ID"] == body["request_id"]
     assert missing_actor.headers["WWW-Authenticate"] == "Bearer"
-    assert missing_actor.headers["Cache-Control"] == "no-store"
+    assert missing_actor.headers["Cache-Control"] == "no-store, private"
+    assert missing_actor.headers["Pragma"] == "no-cache"
 
 
 def test_f002_real_db_active_tenant_filters_and_pagination(real_db_client, pg_database):

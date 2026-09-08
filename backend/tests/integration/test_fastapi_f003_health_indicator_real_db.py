@@ -191,7 +191,14 @@ def test_f003_real_db_health_indicator_source_must_be_app(real_db_client, pg_dat
         )
 
         assert response.status_code == 422
-        assert response.json()["detail"] == "Only APP source is allowed for member write API"
+        body = response.json()
+        assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+        assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+            "HEALTH_INDICATOR_SOURCE_INVALID", "request rejected", [], False,
+        )
+        assert response.headers["X-Request-ID"] == body["request_id"]
+        assert response.headers["Cache-Control"] == "no-store, private"
+        assert response.headers["Pragma"] == "no-cache"
 
     assert _health_indicator_count(pg_database, user["id"]) == 0
 
@@ -206,7 +213,14 @@ def test_f003_real_db_health_indicator_requires_health_profile(real_db_client, p
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Health profile is required"
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "HEALTH_PROFILE_REQUIRED", "request rejected", [], False,
+    )
+    assert response.headers["X-Request-ID"] == body["request_id"]
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
     assert _health_indicator_count(pg_database, user["id"]) == 0
 
 
@@ -224,9 +238,15 @@ def test_f003_real_db_health_indicator_inactive_user_is_rejected(real_db_client,
             headers=_member_headers(user["id"]),
         )
         assert response.status_code == 401
-        assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        body = response.json()
+        assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+        assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+            "ACCESS_TOKEN_STALE", "request rejected", [], False,
+        )
+        assert response.headers["X-Request-ID"] == body["request_id"]
         assert response.headers["WWW-Authenticate"] == "Bearer"
-        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Cache-Control"] == "no-store, private"
+        assert response.headers["Pragma"] == "no-cache"
         assert _health_indicator_count(pg_database, user["id"]) == 0
     finally:
         pg_database.execute(

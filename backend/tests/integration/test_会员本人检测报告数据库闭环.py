@@ -97,7 +97,15 @@ def test_本人报告列表详情分页IDOR与currentness闭环(real_db_client, 
         denied = real_db_client.get(
             f"/api/v1/users/me/detection-reports/{report_id}", headers=headers
         )
-        assert (denied.status_code, denied.json()["detail"]) == (404, "DETECTION_REPORT_NOT_FOUND")
+        assert denied.status_code == 404
+        body = denied.json()
+        assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+        assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+            "DETECTION_REPORT_NOT_FOUND", "request rejected", [], False,
+        )
+        assert denied.headers["X-Request-ID"] == body["request_id"]
+        assert denied.headers["Cache-Control"] == "no-store, private"
+        assert denied.headers["Pragma"] == "no-cache"
 
     assert pg_database.fetch_value(
         f"SELECT COUNT(*) FROM public.detection_report WHERE user_id={user['id']}"
@@ -109,9 +117,15 @@ def test_本人报告列表详情分页IDOR与currentness闭环(real_db_client, 
         _set_currentness(user["id"], status="disabled")
         unavailable = real_db_client.get("/api/v1/users/me/detection-reports", headers=headers)
         assert unavailable.status_code == 401
-        assert unavailable.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        body = unavailable.json()
+        assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+        assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+            "ACCESS_TOKEN_STALE", "request rejected", [], False,
+        )
+        assert unavailable.headers["X-Request-ID"] == body["request_id"]
         assert unavailable.headers["WWW-Authenticate"] == "Bearer"
-        assert unavailable.headers["Cache-Control"] == "no-store"
+        assert unavailable.headers["Cache-Control"] == "no-store, private"
+        assert unavailable.headers["Pragma"] == "no-cache"
         assert pg_database.fetch_value(
             f"SELECT COUNT(*) FROM public.detection_report WHERE user_id={user['id']}"
         ) == 3
@@ -133,10 +147,15 @@ def test_损坏schema_fail_closed且应用与只读角色不能写(real_db_clien
         "/api/v1/users/me/detection-reports/93001",
         headers=_headers(user["id"]),
     )
-    assert (response.status_code, response.json()["detail"]) == (
-        409,
-        "DETECTION_REPORT_CONTENT_INCONSISTENT",
+    assert response.status_code == 409
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "DETECTION_REPORT_CONTENT_INCONSISTENT", "request rejected", [], False,
     )
+    assert response.headers["X-Request-ID"] == body["request_id"]
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
 
     async def assert_read_only(environment_name: str) -> None:
         connection = await asyncpg.connect(

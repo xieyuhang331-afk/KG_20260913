@@ -125,7 +125,14 @@ def test_本人基础健康档案创建读取更新与稳定重放(real_db_clien
         headers=headers,
     )
     assert stale.status_code == 409
-    assert stale.json()["detail"] == "HEALTH_PROFILE_VERSION_CONFLICT"
+    body = stale.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "HEALTH_PROFILE_VERSION_CONFLICT", "request rejected", [], False,
+    )
+    assert stale.headers["X-Request-ID"] == body["request_id"]
+    assert stale.headers["Cache-Control"] == "no-store, private"
+    assert stale.headers["Pragma"] == "no-cache"
     assert pg_database.fetch_value(
         "SELECT COUNT(*) FROM health_profile WHERE user_id = " + str(user["id"])
     ) == 1

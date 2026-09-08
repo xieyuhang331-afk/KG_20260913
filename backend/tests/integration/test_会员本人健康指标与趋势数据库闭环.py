@@ -187,7 +187,14 @@ def test_本人趋势稳定升序且混合单位fail_closed(real_db_client) -> N
         headers=_headers(user["id"]),
     )
     assert inconsistent.status_code == 409
-    assert inconsistent.json()["detail"] == "HEALTH_INDICATOR_UNIT_INCONSISTENT"
+    body = inconsistent.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "HEALTH_INDICATOR_UNIT_INCONSISTENT", "request rejected", [], False,
+    )
+    assert inconsistent.headers["X-Request-ID"] == body["request_id"]
+    assert inconsistent.headers["Cache-Control"] == "no-store, private"
+    assert inconsistent.headers["Pragma"] == "no-cache"
 
 
 def test_空态权限与currentness保持fail_closed(real_db_client, pg_database) -> None:
@@ -215,9 +222,15 @@ def test_空态权限与currentness保持fail_closed(real_db_client, pg_database
         _set_currentness(user["id"], status="disabled")
         unavailable = real_db_client.get("/api/v1/users/me/health-indicators", headers=headers)
         assert unavailable.status_code == 401
-        assert unavailable.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        body = unavailable.json()
+        assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+        assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+            "ACCESS_TOKEN_STALE", "request rejected", [], False,
+        )
+        assert unavailable.headers["X-Request-ID"] == body["request_id"]
         assert unavailable.headers["WWW-Authenticate"] == "Bearer"
-        assert unavailable.headers["Cache-Control"] == "no-store"
+        assert unavailable.headers["Cache-Control"] == "no-store, private"
+        assert unavailable.headers["Pragma"] == "no-cache"
         assert pg_database.fetch_value(
             "SELECT COUNT(*) FROM health_indicator WHERE user_id=" + str(user["id"])
         ) == 0

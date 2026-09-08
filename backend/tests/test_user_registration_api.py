@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class UserRegistrationApiTests(unittest.TestCase):
     def _payload(self) -> dict:
@@ -95,7 +99,7 @@ class UserRegistrationApiTests(unittest.TestCase):
             response = self._client().post("/api/v1/users/register", json=self._payload())
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "User already exists")
+        assert_core_error_response(response, 409, "USER_EXISTS")
         create_mock.assert_not_awaited()
 
     def test_unique_violation_returns_409_and_rolls_back(self):
@@ -133,7 +137,7 @@ class UserRegistrationApiTests(unittest.TestCase):
             response = TestClient(app, client=("127.0.0.1", 50000)).post("/api/v1/users/register", json=self._payload())
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "User already exists")
+        assert_core_error_response(response, 409, "USER_EXISTS")
         self.assertTrue(fake_session_instance.rollback_called)
 
     def test_invalid_payload_returns_422(self):

@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class HealthTrendApiTests(unittest.TestCase):
     def setUp(self):
@@ -155,7 +159,7 @@ class HealthTrendApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["detail"], "Unknown indicator_type")
+        assert_core_error_response(response, 422, "HEALTH_INDICATOR_TYPE_INVALID")
 
     def test_start_after_end_returns_422(self):
         client, _ = self._client()
@@ -175,7 +179,7 @@ class HealthTrendApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["detail"], "Invalid time range")
+        assert_core_error_response(response, 422, "HEALTH_INDICATOR_TIME_RANGE_INVALID")
 
     def test_api_passes_default_window_values_to_service_as_none(self):
         client, _ = self._client()

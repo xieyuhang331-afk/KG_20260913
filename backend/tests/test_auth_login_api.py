@@ -6,6 +6,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class AuthLoginApiTests(unittest.TestCase):
     def _client(self, *, raise_server_exceptions: bool = True):
@@ -89,7 +93,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Invalid credentials")
+        assert_core_error_response(response, 401, "INVALID_CREDENTIALS")
 
     def test_missing_user_returns_401(self):
         with patch(
@@ -103,7 +107,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Invalid credentials")
+        assert_core_error_response(response, 401, "INVALID_CREDENTIALS")
 
     def test_inactive_user_returns_403(self):
         with patch(
@@ -117,7 +121,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "User is not active")
+        assert_core_error_response(response, 403, "USER_INACTIVE")
 
     def test_org_admin_without_onboarding_account_is_rejected_without_token(self):
         token_issuer = Mock(return_value="must-not-be-issued")
@@ -138,7 +142,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Login context is not configured")
+        assert_core_error_response(response, 403, "LOGIN_CONTEXT_NOT_CONFIGURED")
         token_issuer.assert_not_called()
 
     def test_org_admin_with_disabled_totp_is_rejected_without_false_amr(self):
@@ -160,7 +164,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Login context is not configured")
+        assert_core_error_response(response, 403, "LOGIN_CONTEXT_NOT_CONFIGURED")
         token_issuer.assert_not_called()
 
     def test_org_admin_missing_totp_is_rejected_without_token(self):
@@ -186,7 +190,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "TOTP_REQUIRED_OR_INVALID")
+        assert_core_error_response(response, 401, "TOTP_REQUIRED_OR_INVALID")
         token_issuer.assert_not_called()
 
     def test_org_admin_invalid_totp_is_rejected_without_token(self):
@@ -220,7 +224,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "TOTP_REQUIRED_OR_INVALID")
+        assert_core_error_response(response, 401, "TOTP_REQUIRED_OR_INVALID")
         token_issuer.assert_not_called()
 
     def test_org_admin_account_dependency_failure_is_redacted_and_fail_closed(self):
@@ -242,7 +246,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["detail"], "Authentication service unavailable")
+        assert_core_error_response(response, 503, "AUTHENTICATION_UNAVAILABLE", retryable=True)
         self.assertNotIn("synthetic dependency detail", response.text)
         token_issuer.assert_not_called()
 
@@ -273,7 +277,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["detail"], "Authentication service unavailable")
+        assert_core_error_response(response, 503, "AUTHENTICATION_UNAVAILABLE", retryable=True)
         self.assertNotIn("synthetic secret detail", response.text)
         token_issuer.assert_not_called()
 
@@ -305,7 +309,7 @@ class AuthLoginApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["detail"], "Authentication service unavailable")
+        assert_core_error_response(response, 503, "AUTHENTICATION_UNAVAILABLE", retryable=True)
         self.assertNotIn("synthetic decrypt detail", response.text)
         decrypt.assert_called_once_with(b"synthetic-ciphertext")
         token_issuer.assert_not_called()

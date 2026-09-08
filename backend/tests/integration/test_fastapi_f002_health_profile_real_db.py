@@ -131,7 +131,14 @@ def test_f002_real_db_duplicate_health_profile_returns_409(real_db_client, pg_da
 
     assert first_response.status_code == 201
     assert second_response.status_code == 409
-    assert second_response.json()["detail"] == "Health profile already exists"
+    body = second_response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "HEALTH_PROFILE_EXISTS", "request rejected", [], False,
+    )
+    assert second_response.headers["X-Request-ID"] == body["request_id"]
+    assert second_response.headers["Cache-Control"] == "no-store, private"
+    assert second_response.headers["Pragma"] == "no-cache"
     assert _health_profile_count(pg_database, user["id"]) == 1
     assert pg_database.fetch_value(
         """
@@ -166,6 +173,12 @@ def test_f002_real_db_health_profile_user_not_found_returns_404(real_db_client):
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "ACCESS_TOKEN_STALE", "request rejected", [], False,
+    )
+    assert response.headers["X-Request-ID"] == body["request_id"]
     assert response.headers["WWW-Authenticate"] == "Bearer"
-    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"

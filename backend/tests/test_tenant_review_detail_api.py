@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class TenantReviewDetailApiTests(unittest.TestCase):
     def setUp(self):
@@ -170,7 +174,7 @@ class TenantReviewDetailApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        assert_core_error_response(response, 403, "FORBIDDEN")
 
     def test_tenant_review_detail_requires_jwt(self):
         service_mock = AsyncMock()
@@ -188,7 +192,7 @@ class TenantReviewDetailApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "Tenant not found")
+        assert_core_error_response(response, 404, "TENANT_NOT_FOUND")
 
     def test_invalid_tenant_id_returns_422(self):
         response = self._client().get(

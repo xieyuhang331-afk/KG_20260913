@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class AuthMeApiTests(unittest.TestCase):
     def setUp(self):
@@ -81,13 +85,13 @@ class AuthMeApiTests(unittest.TestCase):
         response = self._get_me(None)
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Authentication required")
+        assert_core_error_response(response, 401, "AUTHENTICATION_REQUIRED")
 
     def test_invalid_token_returns_401(self):
         response = self._get_me("not-a-valid-token")
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Invalid or expired token")
+        assert_core_error_response(response, 401, "ACCESS_TOKEN_INVALID")
 
     def test_expired_token_returns_401(self):
         token = self._token(
@@ -101,7 +105,7 @@ class AuthMeApiTests(unittest.TestCase):
         response = self._get_me(token)
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Invalid or expired token")
+        assert_core_error_response(response, 401, "ACCESS_TOKEN_INVALID")
 
     def test_org_admin_claims_are_returned(self):
         token = self._token({"sub": "2001", "role": "org_admin", "org_id": 77})

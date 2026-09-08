@@ -668,7 +668,7 @@ def test_C1A_R09_HTTP限流先于业务Session且忽略伪代理头(access_setti
         pytest.fail("C1A_LOGIN_HTTP_LIMIT_MISSING", pytrace=False)
     assert calls.count("session") == 5
     assert calls.count("login") == 5
-    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Cache-Control"] == "no-store, private"
     assert int(response.headers["Retry-After"]) > 0
 
 
@@ -756,7 +756,7 @@ def test_C1A_R09_注册冲突也应no_store并消耗额度(access_settings, monk
     app.dependency_overrides[get_db_session] = session
     client = TestClient(app, client=("127.0.0.1", 12345))
     response = client.post("/api/v1/users/register", json={"phone": "19900000000", "password": "SyntheticPassword"})
-    if response.headers.get("Cache-Control") != "no-store":
+    if response.headers.get("Cache-Control") != "no-store, private":
         pytest.fail("C1A_REGISTRATION_FAILURE_CACHEABLE", pytrace=False)
 
 
@@ -1257,7 +1257,7 @@ def test_C1A_R15_合法请求只执行一次限流依赖且不改服务状态(ac
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         response = client.post(path, json={"phone": "19900000000", "password": "SyntheticPassword"})
     assert response.status_code == status
-    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Cache-Control"] == ("no-store" if status == 200 else "no-store, private")
     assert calls.count("reserve") == calls.count("session") == calls.count("service") == calls.count("session-exit") == 1
     assert calls.index("reserve") < calls.index("session") < calls.index("service")
     assert calls.count("settle") == (1 if kind == "login" else 0)

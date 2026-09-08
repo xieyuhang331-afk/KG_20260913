@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class TenantReviewDecisionApiTests(unittest.TestCase):
     def setUp(self):
@@ -172,7 +176,7 @@ class TenantReviewDecisionApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "Tenant not found")
+        assert_core_error_response(response, 404, "TENANT_NOT_FOUND")
         session.commit.assert_not_awaited()
         session.rollback.assert_not_awaited()
         notification_mock.assert_not_called()
@@ -187,7 +191,7 @@ class TenantReviewDecisionApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "Tenant application is not pending")
+        assert_core_error_response(response, 409, "TENANT_APPLICATION_NOT_PENDING")
         session.commit.assert_not_awaited()
         session.rollback.assert_not_awaited()
         notification_mock.assert_not_called()
@@ -202,7 +206,7 @@ class TenantReviewDecisionApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        assert_core_error_response(response, 403, "FORBIDDEN")
         session.commit.assert_not_awaited()
         notification_mock.assert_not_called()
 
@@ -260,13 +264,15 @@ class TenantReviewDecisionApiTests(unittest.TestCase):
         )
 
         with get_patch, apply_patch, review_log_patch, operation_log_patch, self._patch_notification_builder([]) as notification_mock:
-            with self.assertRaises(RuntimeError):
-                self._client(session).post(
-                    "/api/v1/reviews/tenants/501/approve",
-                    json={},
-                    headers=self._headers("super_admin"),
-                )
+            response = self._client(session).post(
+                "/api/v1/reviews/tenants/501/approve",
+                json={},
+                headers=self._headers("super_admin"),
+            )
 
         session.rollback.assert_awaited_once()
         session.commit.assert_not_awaited()
         notification_mock.assert_not_called()
+        assert_core_error_response(response, 500, "INTERNAL_ERROR")
+        self.assertNotIn("operation log failed", response.text)
+        self.assertIn("private", response.headers["cache-control"])

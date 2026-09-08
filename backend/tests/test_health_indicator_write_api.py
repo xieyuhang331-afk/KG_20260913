@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class HealthIndicatorWriteApiTests(unittest.TestCase):
     def setUp(self):
@@ -228,7 +232,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "User not found")
+        assert_core_error_response(response, 404, "USER_NOT_FOUND")
 
     def test_user_inactive_returns_409(self):
         client, _ = self._client()
@@ -244,7 +248,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "User is not active")
+        assert_core_error_response(response, 409, "USER_INACTIVE")
 
     def test_missing_health_profile_returns_409(self):
         client, _ = self._client()
@@ -260,7 +264,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "Health profile is required")
+        assert_core_error_response(response, 409, "HEALTH_PROFILE_REQUIRED")
 
     def test_non_app_sources_return_422(self):
         for source in ("STORE", "DEVICE", "REPORT"):
@@ -276,7 +280,7 @@ class HealthIndicatorWriteApiTests(unittest.TestCase):
                     )
 
                 self.assertEqual(response.status_code, 422)
-                self.assertEqual(response.json()["detail"], "Only APP source is allowed for member write API")
+                assert_core_error_response(response, 422, "HEALTH_INDICATOR_SOURCE_INVALID")
                 service_mock.assert_not_awaited()
 
     def test_invalid_payload_returns_422(self):
