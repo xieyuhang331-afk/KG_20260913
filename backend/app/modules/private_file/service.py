@@ -1107,12 +1107,17 @@ def verify_access_token(
 ) -> dict:
     try:
         encoded_payload, encoded_signature = token.split(".")
-        payload = base64.urlsafe_b64decode(
-            encoded_payload + "=" * (-len(encoded_payload) % 4)
-        )
-        signature = base64.urlsafe_b64decode(
-            encoded_signature + "=" * (-len(encoded_signature) % 4)
-        )
+
+        def decode_canonical(value: str) -> bytes:
+            if not value:
+                raise ValueError("empty base64url value")
+            decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+            if base64.urlsafe_b64encode(decoded).decode().rstrip("=") != value:
+                raise ValueError("non-canonical base64url value")
+            return decoded
+
+        payload = decode_canonical(encoded_payload)
+        signature = decode_canonical(encoded_signature)
         expected = hmac.new(
             _access_secret(), b"private-file-access-v1\x00" + payload, hashlib.sha256
         ).digest()

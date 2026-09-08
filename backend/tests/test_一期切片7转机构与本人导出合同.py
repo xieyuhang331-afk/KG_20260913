@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timedelta, timezone
 from inspect import signature
 from io import BytesIO
@@ -155,9 +156,13 @@ def test_D35_D39_导出Token绑定一次性凭据标识且篡改过期拒绝(
     )
     assert values["token_id"] == "0198f1c0-0000-7000-8000-000000000002"
 
+    encoded_payload, encoded_signature = token.split(".")
+    changed_signature = (
+        ("A" if encoded_signature[0] != "A" else "B") + encoded_signature[1:]
+    )
     with pytest.raises(Exception, match="PRIVATE_FILE_ACCESS_INVALID"):
         verify_access_token(
-            token=token[:-1] + ("A" if token[-1] != "A" else "B"),
+            token=f"{encoded_payload}.{changed_signature}",
             file_id=str(UUID7),
             user_id=7,
             access_scope="EXPORT",
@@ -178,6 +183,54 @@ def test_D35_D39_导出Token绑定一次性凭据标识且篡改过期拒绝(
             user_id=7,
             access_scope="EXPORT",
         )
+
+
+def _noncanonical_equivalent_base64url(value: str) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    assert base64.urlsafe_b64encode(raw).decode().rstrip("=") == value
+    unused_bits = {1: 4, 2: 2}.get(len(raw) % 3)
+    assert unused_bits is not None
+    index = alphabet.index(value[-1])
+    alternative = (index & ~((1 << unused_bits) - 1)) | 1
+    assert alternative != index
+    return value[:-1] + alphabet[alternative]
+
+
+def test_D35_D39_Token拒绝解码等价非规范base64url与非法文本(monkeypatch) -> None:
+    monkeypatch.setenv("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", token_urlsafe(48))
+    token = issue_access_token(
+        file_id=str(UUID7),
+        user_id=7,
+        reason_code="PERSONAL_ARCHIVE",
+        expires_at=4_102_444_800,
+        evidence_digest="ab" * 32,
+        access_scope="EXPORT",
+        token_id="0198f1c0-0000-7000-8000-000000000002",
+    )
+    encoded_payload, encoded_signature = token.split(".")
+    noncanonical_signature = _noncanonical_equivalent_base64url(encoded_signature)
+    assert base64.urlsafe_b64decode(noncanonical_signature + "=") == base64.urlsafe_b64decode(
+        encoded_signature + "="
+    )
+    candidates = [
+        f"{encoded_payload}.{noncanonical_signature}",
+        f"{_noncanonical_equivalent_base64url(encoded_payload)}.{encoded_signature}",
+        f"{encoded_payload}=.{encoded_signature}",
+        f"{encoded_payload}.{encoded_signature}=",
+        f"{encoded_payload}.{encoded_signature} ",
+        f"{encoded_payload}.{encoded_signature}!",
+        f"{encoded_payload}..{encoded_signature}",
+        f"{encoded_payload}.A",
+    ]
+    for candidate in candidates:
+        with pytest.raises(Exception, match="PRIVATE_FILE_ACCESS_INVALID"):
+            verify_access_token(
+                token=candidate,
+                file_id=str(UUID7),
+                user_id=7,
+                access_scope="EXPORT",
+            )
 
 
 def test_D34_D37_导出Manifest与ZIP确定且排除内部字段() -> None:
