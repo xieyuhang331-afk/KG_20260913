@@ -372,7 +372,17 @@ def _assert_safe_failure_without_mutation(
     invitation_id: UUID,
 ) -> None:
     assert response.status_code == status_code
-    assert response.json() == {"code": error_code, "message": "request rejected"}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == error_code
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is (status_code == 503)
+    assert body["field_errors"] == []
+    assert response.headers["cache-control"] == "no-store, private"
+    assert response.headers["pragma"] == "no-cache"
+    if status_code == 401:
+        assert response.headers["www-authenticate"] == "Bearer"
     assert _business_snapshot(pg_database, invitation_id) == before
 
 

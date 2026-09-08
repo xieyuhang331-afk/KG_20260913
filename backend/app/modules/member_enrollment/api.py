@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import text
 
@@ -23,6 +22,7 @@ from app.core.database import (
 )
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
+from app.core.接口合同 import error_response
 from app.modules.auth.service import verify_password
 from app.modules.member_enrollment.domain import (
     InvitationAttemptRejected,
@@ -52,7 +52,6 @@ from app.modules.member_enrollment.schemas import (
     EnrollmentDetailDTO,
     EnrollmentPageDTO,
     EnrollmentSummaryPageDTO,
-    ErrorEnvelopeDTO,
     FamilyEnrollmentListQuery,
     IdentityPiiDTO,
     IdentityResubmitRequest,
@@ -150,7 +149,7 @@ class MemberEnrollmentRoute(APIRoute):
         original=super().get_route_handler()
         async def handler(request:Request):
             try: return await original(request)
-            except RequestValidationError: return JSONResponse(status_code=400,content={"code":"INVALID_REQUEST","message":"request rejected"})
+            except RequestValidationError: return error_response(request,400,"INVALID_REQUEST")
             except HTTPException as exc:
                 key=(next(iter(self.methods)),self.path); allowed=SLICE3_ROUTE_ERROR_CODES[key]; detail=exc.detail; code=detail.get("code") if isinstance(detail,dict) else detail if isinstance(detail,str) else None
                 status=400 if exc.status_code==422 else exc.status_code
@@ -158,9 +157,9 @@ class MemberEnrollmentRoute(APIRoute):
                     code = "ACCESS_TOKEN_STALE" if code == "ACCESS_TOKEN_STALE" else "AUTHENTICATION_REQUIRED"
                 if type(code) is not str or code not in allowed.get(status,()):
                     status,code=(400,"INVALID_REQUEST") if "INVALID_REQUEST" in allowed.get(400,()) else (503,"DEPENDENCY_UNAVAILABLE")
-                headers = {"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if status == 401 else {"Cache-Control": "no-store"} if status == 503 else None
-                return JSONResponse(status_code=status,content={"code":code,"message":"request rejected"},headers=headers)
-            except Exception: return JSONResponse(status_code=503,content={"code":"DEPENDENCY_UNAVAILABLE","message":"request rejected"},headers={"Cache-Control":"no-store"})
+                headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+                return error_response(request,status,code,retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",headers=headers)
+            except Exception: return error_response(request,500,"INTERNAL_ERROR")
         return handler
 
 
@@ -180,16 +179,35 @@ def strip_member_enrollment_validation_responses(schema: dict[str,object]):
         responses=operation.get("responses",{})
         if isinstance(responses,dict):
             responses.pop("422",None)
-            authentication_schema = ErrorEnvelopeDTO.model_json_schema()
-            authentication_schema["properties"]["code"]["enum"] = list(errors[401])
-            responses["401"] = {
-                "description": "Authentication required or access token stale",
-                "content": {"application/json": {"schema": authentication_schema}},
-                "headers": {
-                    "WWW-Authenticate": {"schema": {"type": "string", "enum": ["Bearer"]}},
-                    "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
-                },
-            }
+            for status in {*map(str, errors), "500"}:
+                status_codes = errors.get(int(status), ())
+                example_code = "INTERNAL_ERROR" if status == "500" else status_codes[0]
+                examples = {"rejected": {"value": {
+                    "code": example_code,
+                    "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN", "field_errors": [],
+                }}}
+                if status in {"401", "503"}:
+                    examples["authentication"] = {"value": {
+                        "code": "AUTHENTICATION_REQUIRED" if status == "401" else "DEPENDENCY_UNAVAILABLE",
+                        "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                        "retryable": status == "503", "field_errors": [],
+                    }}
+                response = responses.setdefault(status, {"description": "Request rejected"})
+                response.setdefault("content", {})["application/json"] = {
+                    "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                    "examples": examples,
+                }
+                headers = response.setdefault("headers", {})
+                headers.update({
+                    "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                    "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                    "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+                })
+                if status == "401":
+                    headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
+                if status in {"429", "503"}:
+                    headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 0}}
         operation["x-symbolic-error-codes"]={str(status):list(codes) for status,codes in errors.items()}
     return schema
 

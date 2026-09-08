@@ -70,6 +70,10 @@ from app.modules.user_health.schemas import (
 )
 
 
+class UserHealthError(RuntimeError):
+    pass
+
+
 ALLOWED_HEALTH_INDICATOR_SOURCES = {"APP", "STORE", "DEVICE", "REPORT"}
 
 
@@ -387,7 +391,7 @@ async def read_formal_health_profile(
         or summary.tenant_public_id != tenant_public_id
         or summary.evidence_status != "VERIFIED"
     ):
-        raise RuntimeError("ACTOR_CURRENTNESS_FORBIDDEN")
+        raise UserHealthError("ACTOR_CURRENTNESS_FORBIDDEN")
     snapshot = Slice4Secrets().decrypt_profile(
         bytes(row["snapshot_ciphertext"]),
         row["snapshot_key_id"],
@@ -471,13 +475,13 @@ async def create_formal_profile_root(
         service_case_id=service_case_id,
     )
     if subject is None or UUID(str(subject["subject_member_id"])) != subject_member_id:
-        raise RuntimeError("ACTOR_CURRENTNESS_FORBIDDEN")
+        raise UserHealthError("ACTOR_CURRENTNESS_FORBIDDEN")
     summary = await identity_authority.verified_identity_summary(
         subject_member_id=subject_member_id,
         service_case_id=service_case_id,
     )
     if summary.evidence_status != "VERIFIED":
-        raise RuntimeError("ACTOR_CURRENTNESS_FORBIDDEN")
+        raise UserHealthError("ACTOR_CURRENTNESS_FORBIDDEN")
     await writer_repository.require_identity_summary_current(
         subject_member_id=subject_member_id,
         service_case_id=service_case_id,
@@ -560,7 +564,7 @@ async def create_formal_profile_root(
         UUID(str(result["subject_member_id"])) != subject_member_id
         or result["version"] != payload.expected_version + 1
     ):
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN")
+        raise UserHealthError("COMMIT_OUTCOME_UNKNOWN")
     return result
 
 
@@ -663,7 +667,7 @@ async def create_formal_health_facts(
         if any(item.source_type not in {"REPORT", "STORE"} for item in payload.items):
             raise ValueError("HEALTH_FACT_SOURCE_FORBIDDEN")
     else:
-        raise RuntimeError("ACTOR_CURRENTNESS_FORBIDDEN")
+        raise UserHealthError("ACTOR_CURRENTNESS_FORBIDDEN")
 
     secrets_boundary = Slice4Secrets()
     request_value = {

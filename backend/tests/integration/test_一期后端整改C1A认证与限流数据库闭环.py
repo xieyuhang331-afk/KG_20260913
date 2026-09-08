@@ -79,13 +79,21 @@ def test_C1A_D02_真实Authority到六族认证外壳且业务零进入(
         for response, status, code in (
             (stale, 401, auth_code), (unavailable, 503, "DEPENDENCY_UNAVAILABLE"),
         ):
-            expected = {field: code}
-            if field == "code":
-                expected["message"] = "request rejected"
-            if response.status_code != status or response.json() != expected:
+            body = response.json()
+            if (
+                response.status_code != status
+                or set(body) != {"code", "message", "request_id", "retryable", "field_errors"}
+                or body["code"] != code
+                or body["message"] != "request rejected"
+                or body["request_id"] != response.headers.get("x-request-id")
+                or body["retryable"] is not (status == 503)
+                or body["field_errors"] != []
+            ):
                 pytest.fail("C1A_D02_FRESH_AUTH_ENVELOPE_MISMATCH", pytrace=False)
-            if response.headers.get("Cache-Control") != "no-store":
+            if response.headers.get("Cache-Control") != "no-store, private":
                 pytest.fail("C1A_D02_FRESH_AUTH_NO_STORE_MISSING", pytrace=False)
+            if response.headers.get("Pragma") != "no-cache":
+                pytest.fail("C1A_D02_FRESH_AUTH_PRAGMA_MISSING", pytrace=False)
             if status == 401 and response.headers.get("WWW-Authenticate") != "Bearer":
                 pytest.fail("C1A_D02_FRESH_AUTH_BEARER_MISSING", pytrace=False)
             if any(value in response.text for value in (str(subject), token, "19900006103", "synthetic-authority-unavailable")):

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import (
@@ -20,6 +19,7 @@ from app.core.database import (
 )
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
+from app.core.接口合同 import error_response
 from app.modules.auth.service import verify_password
 from app.modules.private_file.schemas import (
     FileAccessRequest,
@@ -53,6 +53,28 @@ _PRIVATE_HEADERS = {
 }
 
 
+def _private_error_response(
+    request: Request,
+    status_code: int,
+    code: str,
+    *,
+    headers: dict[str, str] | None = None,
+):
+    response = error_response(
+        request,
+        status_code,
+        code,
+        retryable=status_code == 503 and code not in {
+            "PRIVATE_FILE_COMMIT_OUTCOME_UNKNOWN",
+            "PRIVATE_FILE_ACCESS_OUTCOME_UNKNOWN",
+            "PRIVATE_FILE_SCAN_STATE_UNKNOWN",
+        },
+        headers=headers,
+    )
+    _set_private_headers(response)
+    return response
+
+
 class _PrivateFileRoute(APIRoute):
     def get_route_handler(self):
         route_handler = super().get_route_handler()
@@ -61,25 +83,40 @@ class _PrivateFileRoute(APIRoute):
             try:
                 return await route_handler(request)
             except RequestValidationError:
-                return JSONResponse(
-                    status_code=422,
-                    content={"detail": "PRIVATE_FILE_REQUEST_INVALID"},
-                    headers=_PRIVATE_HEADERS,
-                )
+                return _private_error_response(request, 422, "PRIVATE_FILE_REQUEST_INVALID")
             except HTTPException as exc:
-                return JSONResponse(
-                    status_code=exc.status_code,
-                    content={"detail": exc.detail},
-                    headers={**(exc.headers or {}), **_PRIVATE_HEADERS},
+                code = exc.detail if type(exc.detail) is str else "PRIVATE_FILE_REQUEST_INVALID"
+                return _private_error_response(
+                    request, exc.status_code, code, headers=exc.headers,
                 )
+            except Exception:
+                return _private_error_response(request, 500, "INTERNAL_ERROR")
 
         return private_route_handler
+
+
+_PRIVATE_ERROR_RESPONSES = {
+    status: {
+        "description": "Request rejected",
+        "content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+        }},
+        "headers": {
+            "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+            "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private, max-age=0"]}},
+            "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+            **({"WWW-Authenticate": {"schema": {"type": "string", "enum": ["Bearer"]}}} if status == 401 else {}),
+        },
+    }
+    for status in (401, 403, 404, 409, 413, 422, 500, 503)
+}
 
 
 router = APIRouter(
     prefix="/api/v1/private-files",
     tags=["private_file"],
     route_class=_PrivateFileRoute,
+    responses=_PRIVATE_ERROR_RESPONSES,
 )
 
 
@@ -104,14 +141,7 @@ def _report_access_context(current_user: CurrentUser) -> str:
 
 
 async def _safe_call(awaitable):
-    try:
-        return await awaitable
-    except asyncio.CancelledError:
-        raise
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(503, "PRIVATE_FILE_PERSISTENCE_UNAVAILABLE") from None
+    return await awaitable
 
 
 @router.post("/uploads", response_model=PrivateFileEnvelope[PrivateFileInitiated])
@@ -215,7 +245,8 @@ async def post_file_access(
 
 @router.get(
     "/{file_id}/content",
-    responses={200: {"content": {"application/octet-stream": {}}}},
+    response_class=StreamingResponse,
+    responses={200: {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}},
 )
 async def get_file_content(
     file_id: str,

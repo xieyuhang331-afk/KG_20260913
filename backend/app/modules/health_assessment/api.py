@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Annotated, Mapping
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import (
@@ -21,10 +20,11 @@ from app.core.database import (
 )
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
+from app.core.接口合同 import error_response
 
 from .domain import MODULE_CODES
 from .evaluator import DEFERRED_RULE_IDS, INCLUDED_RULE_IDS, RULE_SET_CODE
-from .repository import HealthAssessmentRepository
+from .repository import HealthAssessmentRepository, HealthAssessmentRepositoryError
 from .schemas import (
     AssessmentDetailDTO,
     AssessmentDisputeRequest,
@@ -37,8 +37,8 @@ from .schemas import (
     HighRiskTaskDTO,
     HighRiskTaskPageDTO,
     InputEvidenceDTO,
-    ModuleResultDTO,
     MedicalRulePayloadV1DTO,
+    ModuleResultDTO,
     PublicUserRefDTO,
     RuleGovernanceRequest,
     RulePublishRequest,
@@ -46,22 +46,22 @@ from .schemas import (
     RuleSetCreateRequest,
     RuleSetDraftUpdateRequest,
     RuleSetPageDTO,
-    RuleSetVersionDTO,
     RuleSetVersionDetailDTO,
+    RuleSetVersionDTO,
     UuidV7,
     VersionRequest,
 )
 from .service import (
+    HealthAssessmentError,
+    Slice5Secrets,
     decode_slice5_cursor,
     encode_slice5_cursor,
-    Slice5Secrets,
     govern_rule_set,
     public_user_reference,
     raise_assessment_dispute,
     start_assessment,
     transition_high_risk_task,
 )
-
 
 SLICE5_VALIDATION_STATUS = 422
 _STATUS = {
@@ -103,21 +103,13 @@ _DATABASE_ERROR_MAP = {
 }
 
 
-def _safe_error_code(error: Exception) -> str:
-    current: BaseException | None = error
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
-        message = str(current)
-        for line in message.splitlines():
-            candidate = line.strip().split()[0].strip(":") if line.strip() else ""
-            if candidate in _STATUS:
-                return candidate
-            mapped = _DATABASE_ERROR_MAP.get(candidate)
-            if mapped is not None:
-                return mapped
-        current = current.__cause__ or current.__context__
-    return "DEPENDENCY_UNAVAILABLE"
+def _registered_assessment_error(
+    error: HealthAssessmentError | HealthAssessmentRepositoryError,
+) -> str | None:
+    if len(error.args) != 1 or type(error.args[0]) is not str:
+        return None
+    code = _DATABASE_ERROR_MAP.get(error.args[0], error.args[0])
+    return code if code in _STATUS else None
 
 _AUTH = ("AUTHENTICATION_REQUIRED",)
 _COMMON = ("INVALID_REQUEST", "DEPENDENCY_UNAVAILABLE")
@@ -139,32 +131,32 @@ SLICE5_ROUTE_ERROR_CODES = {
     ),
     ("GET", "/api/v1/therapist/service-cases/{case_id}/assessments"): _route_codes(_THERAPIST),
     ("GET", "/api/v1/therapist/service-cases/{case_id}/assessments/{assessment_id}"): _route_codes(_THERAPIST, "ASSESSMENT_NOT_FOUND"),
-    ("POST", "/api/v1/therapist/service-cases/{case_id}/assessments/{assessment_id}/disputes"): _route_codes(_THERAPIST, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/assessments/{assessment_id}/disputes"): _route_codes(_THERAPIST, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/therapist/high-risk-tasks"): _route_codes(_THERAPIST),
     ("GET", "/api/v1/therapist/high-risk-tasks/{task_id}"): _route_codes(_THERAPIST, "HIGH_RISK_TASK_NOT_FOUND"),
-    ("POST", "/api/v1/therapist/high-risk-tasks/{task_id}/actions"): _route_codes(_THERAPIST, "HIGH_RISK_TASK_NOT_FOUND", "VERSION_CONFLICT", "STATE_CONFLICT", "INVALID_TASK_TRANSITION", "HIGH_RISK_ACTION_INVALID", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/therapist/high-risk-tasks/{task_id}/actions"): _route_codes(_THERAPIST, "HIGH_RISK_TASK_NOT_FOUND", "VERSION_CONFLICT", "STATE_CONFLICT", "INVALID_TASK_TRANSITION", "HIGH_RISK_ACTION_INVALID", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/institution/high-risk-tasks"): _route_codes(_INSTITUTION),
     ("GET", "/api/v1/institution/high-risk-tasks/{task_id}"): _route_codes(_INSTITUTION, "HIGH_RISK_TASK_NOT_FOUND"),
-    ("POST", "/api/v1/institution/high-risk-tasks/{task_id}/actions"): _route_codes(_INSTITUTION, "HIGH_RISK_TASK_NOT_FOUND", "VERSION_CONFLICT", "STATE_CONFLICT", "INVALID_TASK_TRANSITION", "HIGH_RISK_ACTION_INVALID", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/institution/high-risk-tasks/{task_id}/actions"): _route_codes(_INSTITUTION, "HIGH_RISK_TASK_NOT_FOUND", "VERSION_CONFLICT", "STATE_CONFLICT", "INVALID_TASK_TRANSITION", "HIGH_RISK_ACTION_INVALID", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/institution/service-cases/{case_id}/assessments"): _route_codes(_INSTITUTION),
     ("GET", "/api/v1/family/assessments"): _route_codes(_FAMILY),
     ("GET", "/api/v1/family/assessments/{assessment_id}"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND"),
-    ("POST", "/api/v1/family/assessments/{assessment_id}/disputes"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/family/assessments/{assessment_id}/disputes"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments"): _route_codes(_FAMILY),
     ("GET", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND"),
-    ("POST", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}/disputes"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/family/proxy-enrollments/{enrollment_id}/assessments/{assessment_id}/disputes"): _route_codes(_FAMILY, "ASSESSMENT_NOT_FOUND", "VERSION_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("POST", "/api/v1/platform/assessment-rule-sets"): _route_codes(
         _PLATFORM, "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"
     ),
     ("PATCH", "/api/v1/platform/assessment-rule-sets/{version_id}/draft"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/platform/assessment-rule-sets"): _route_codes(_PLATFORM),
     ("GET", "/api/v1/platform/assessment-rule-sets/{version_id}"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/submit"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/review"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "RULE_AUTHOR_REVIEWER_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/publish"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/suspend"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/resume"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/retire"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/submit"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/review"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "RULE_AUTHOR_REVIEWER_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/publish"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/suspend"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/resume"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/assessment-rule-sets/{version_id}/retire"): _route_codes(_PLATFORM, "RULE_SET_NOT_FOUND", "VERSION_CONFLICT", "RULE_STATE_CONFLICT", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/platform/high-risk-tasks"): _route_codes(_PLATFORM),
     ("GET", "/api/v1/platform/high-risk-tasks/{task_id}"): _route_codes(_PLATFORM, "HIGH_RISK_TASK_NOT_FOUND"),
 }
@@ -179,10 +171,7 @@ class Slice5Route(APIRoute):
             try:
                 return await original(request)
             except RequestValidationError:
-                return JSONResponse(
-                    status_code=SLICE5_VALIDATION_STATUS,
-                    content={"code": "INVALID_REQUEST", "message": "request rejected"},
-                )
+                return error_response(request, SLICE5_VALIDATION_STATUS, "INVALID_REQUEST")
             except HTTPException as exc:
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
@@ -190,20 +179,23 @@ class Slice5Route(APIRoute):
                     code = "AUTHENTICATION_REQUIRED"
                 if code not in SLICE5_ROUTE_ERROR_CODES[key]:
                     code = "INVALID_REQUEST" if exc.status_code < 500 else "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(
-                    status_code=_STATUS[code],
-                    content={"code": code, "message": "request rejected"},
-                    headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if _STATUS[code] == 401 else {"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
+                status = _STATUS[code]
+                return error_response(
+                    request, status, code,
+                    retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    headers={"WWW-Authenticate": "Bearer"} if status == 401 else None,
                 )
-            except Exception as exc:
-                code = _safe_error_code(exc)
-                if code not in SLICE5_ROUTE_ERROR_CODES[key]:
-                    code = "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(
-                    status_code=_STATUS[code],
-                    content={"code": code, "message": "request rejected"},
-                    headers={"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
-                )
+            except (HealthAssessmentError, HealthAssessmentRepositoryError) as exc:
+                code = _registered_assessment_error(exc)
+                if code in SLICE5_ROUTE_ERROR_CODES[key]:
+                    status = _STATUS[code]
+                    return error_response(
+                        request, status, code,
+                        retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    )
+                return error_response(request, 500, "INTERNAL_ERROR")
+            except Exception:
+                return error_response(request, 500, "INTERNAL_ERROR")
 
         return handler
 
@@ -412,20 +404,46 @@ def strip_slice5_validation_responses(schema: dict[str, object]) -> dict[str, ob
     for (method, path), codes in SLICE5_ROUTE_ERROR_CODES.items():
         operation = paths.get(path, {}).get(method.lower())
         if isinstance(operation, dict):
-            for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+            statuses = {
+                *(str(_STATUS[code]) for code in codes),
+                str(SLICE5_VALIDATION_STATUS),
+                "500",
+            }
+            for status in sorted(statuses, key=int):
+                example_code = "INTERNAL_ERROR" if status == "500" else next(
+                    code for code in codes if _STATUS[code] == int(status)
+                )
                 response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
-                media = response.setdefault("content", {}).setdefault("application/json", {
-                    "schema": {"type": "object", "required": ["code", "message"], "properties": {
-                        "code": {"type": "string"}, "message": {"type": "string"},
-                    }},
-                })
-                media.setdefault("examples", {})["authentication"] = {
-                    "value": {"code": auth_code, "message": "request rejected"},
+                examples = {"rejected": {"value": {
+                    "code": example_code,
+                    "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN", "field_errors": [],
+                }}}
+                if status in {"401", "503"}:
+                    authentication_code = (
+                        "AUTHENTICATION_REQUIRED"
+                        if status == "401" and "AUTHENTICATION_REQUIRED" in codes
+                        else "UNAUTHENTICATED" if status == "401" else "DEPENDENCY_UNAVAILABLE"
+                    )
+                    examples["authentication"] = {"value": {
+                        "code": authentication_code,
+                        "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                        "retryable": status == "503", "field_errors": [],
+                    }}
+                response.setdefault("content", {})["application/json"] = {
+                    "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                    "examples": examples,
                 }
                 headers = response.setdefault("headers", {})
-                headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                headers.update({
+                    "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                    "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                    "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+                })
                 if status == "401":
                     headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
+                if status in {"429", "503"}:
+                    headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 0}}
             operation["x-symbolic-error-codes"] = list(codes)
     return schema
 

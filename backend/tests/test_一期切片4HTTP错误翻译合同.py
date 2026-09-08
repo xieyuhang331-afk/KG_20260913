@@ -88,7 +88,10 @@ def _app(
     scope_forbidden: bool = False,
     dependency_unavailable: bool = False,
 ) -> FastAPI:
+    from app.core.middleware import add_request_middleware
+
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(institution_health_router)
     app.include_router(readiness_router)
 
@@ -141,10 +144,12 @@ def test_四个只读接口缺失或无效认证固定401且不进入数据库�
             response = TestClient(_app(calls)).get(route, headers=headers)
 
             assert response.status_code == 401
-            assert response.json() == {
-                "code": "AUTHENTICATION_REQUIRED",
-                "message": "request rejected",
-            }
+            body = response.json()
+            assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+            assert body["code"] == "AUTHENTICATION_REQUIRED"
+            assert body["message"] == "request rejected"
+            assert body["request_id"] == response.headers["x-request-id"]
+            assert body["retryable"] is False and body["field_errors"] == []
             assert calls == []
 
 
@@ -183,13 +188,15 @@ def test_四个只读接口非法参数保持422() -> None:
         assert response.json()["code"] == "INVALID_REQUEST"
 
 
-def test_四个只读接口真实依赖不可用保持503() -> None:
+def test_四个只读接口未分类依赖异常安全收敛500() -> None:
     for route in READ_ROUTES:
         response = TestClient(_app([], dependency_unavailable=True)).get(
             route, headers=_authorization("org_admin", tenant_id=94002)
         )
-        assert response.status_code == 503
-        assert response.json() == {
-            "code": "DEPENDENCY_UNAVAILABLE",
-            "message": "request rejected",
-        }
+        assert response.status_code == 500
+        body = response.json()
+        assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+        assert body["code"] == "INTERNAL_ERROR"
+        assert body["message"] == "request rejected"
+        assert body["request_id"] == response.headers["x-request-id"]
+        assert body["retryable"] is False and body["field_errors"] == []

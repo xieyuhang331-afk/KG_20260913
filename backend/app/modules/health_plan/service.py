@@ -749,8 +749,8 @@ async def commit_with_confirmation(
         if outcome is CommitOutcome.COMMITTED:
             return outcome
         if outcome is CommitOutcome.NOT_COMMITTED:
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+            raise HealthPlanError("DEPENDENCY_UNAVAILABLE") from None
+        raise HealthPlanError("COMMIT_OUTCOME_UNKNOWN") from None
 
 
 async def review_plan(

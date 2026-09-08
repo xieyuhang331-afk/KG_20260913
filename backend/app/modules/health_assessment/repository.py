@@ -1,14 +1,105 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
-import json
 from typing import Any, Mapping
 from uuid import UUID
 
+import asyncpg
 from sqlalchemy import BigInteger, String, bindparam, text
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.exc import DBAPIError
+
+
+class HealthAssessmentRepositoryError(RuntimeError):
+    pass
+
+
+_DATABASE_ERRORS = {
+    "ASSESSMENT_START_REPLAY": {
+        "ACTOR_CURRENTNESS_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "ASSESSMENT_START_WRITE": {
+        "SLICE5_INVALID_PAYLOAD": "INVALID_REQUEST",
+        "ASSEMBLY_STALE": "ASSEMBLY_STALE",
+    },
+    "RAISE_DISPUTE": {
+        "ACTOR_CURRENTNESS_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "VERSION_CONFLICT": "VERSION_CONFLICT",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "HIGH_RISK_TRANSITION": {
+        "ACTOR_CURRENTNESS_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "HIGH_RISK_TASK_NOT_FOUND": "HIGH_RISK_TASK_NOT_FOUND",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "VERSION_CONFLICT": "VERSION_CONFLICT",
+        "INVALID_TASK_TRANSITION": "INVALID_TASK_TRANSITION",
+        "HIGH_RISK_ACTION_INVALID": "HIGH_RISK_ACTION_INVALID",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "RULE_CREATE": {
+        "RULE_GOVERNANCE_FORBIDDEN": "RULE_GOVERNANCE_FORBIDDEN",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "RULE_SET_INVALID": "INVALID_REQUEST",
+        "SLICE5_INVALID_PAYLOAD": "INVALID_REQUEST",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "RULE_UPDATE_DRAFT": {
+        "RULE_GOVERNANCE_FORBIDDEN": "RULE_GOVERNANCE_FORBIDDEN",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "RULE_STATE_CONFLICT": "RULE_STATE_CONFLICT",
+        "RULE_SET_INVALID": "INVALID_REQUEST",
+        "SLICE5_INVALID_PAYLOAD": "INVALID_REQUEST",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+}
+
+for _operation in (
+    "SUBMIT", "REVIEW_APPROVE", "REVIEW_CORRECTION", "PUBLISH", "SUSPEND", "RESUME", "RETIRE"
+):
+    _DATABASE_ERRORS[f"RULE_{_operation}"] = {
+        "RULE_GOVERNANCE_FORBIDDEN": "RULE_GOVERNANCE_FORBIDDEN",
+        "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "RULE_STATE_CONFLICT": "RULE_STATE_CONFLICT",
+        "RULE_SET_INVALID": "INVALID_REQUEST",
+        "SLICE5_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    }
+    if _operation != "SUBMIT":
+        _DATABASE_ERRORS[f"RULE_{_operation}"]["RULE_REASON_INVALID"] = "INVALID_REQUEST"
+
+
+def _database_error(exc: DBAPIError, callpoint: str) -> str | None:
+    original = exc.orig
+    direct_cause = getattr(original, "__cause__", None)
+    driver_error = next(
+        (
+            candidate
+            for candidate in (original, direct_cause)
+            if isinstance(candidate, asyncpg.PostgresError)
+        ),
+        None,
+    )
+    if driver_error is None or driver_error.sqlstate != "P0001":
+        return None
+    if len(driver_error.args) != 1 or type(driver_error.args[0]) is not str:
+        return None
+    code = driver_error.args[0]
+    return _DATABASE_ERRORS.get(callpoint, {}).get(code)
+
+
+async def _execute_registered(session, statement, parameters, callpoint: str):
+    try:
+        return await session.execute(statement, parameters)
+    except DBAPIError as exc:
+        code = _database_error(exc, callpoint)
+        if code is None:
+            raise
+        raise HealthAssessmentRepositoryError(code) from None
 
 
 def _json_value(value: Any) -> Any:
@@ -43,7 +134,8 @@ class HealthAssessmentRepository:
         self, actor_user_id: int, idempotency_key: str, request_digest: bytes
     ) -> dict | None:
         row = (
-            await self.session.execute(
+            await _execute_registered(
+                self.session,
                 text(
                     "SELECT public.slice5_assessment_start_replay_v1("
                     ":actor_user_id,:idempotency_key,:request_digest) AS value"
@@ -53,6 +145,7 @@ class HealthAssessmentRepository:
                     "idempotency_key": idempotency_key,
                     "request_digest": request_digest,
                 },
+                "ASSESSMENT_START_REPLAY",
             )
         ).mappings().one()
         return row["value"]
@@ -70,9 +163,11 @@ class HealthAssessmentRepository:
 
     async def write_assessment_start(self, payload: Mapping[str, object]) -> dict:
         row = (
-            await self.session.execute(
+            await _execute_registered(
+                self.session,
                 text("SELECT public.slice5_assessment_snapshot_write_v1(CAST(:payload AS jsonb)) AS value"),
                 {"payload": _payload(payload)},
+                "ASSESSMENT_START_WRITE",
             )
         ).mappings().one()
         return row["value"]
@@ -127,18 +222,22 @@ class HealthAssessmentRepository:
 
     async def transition_high_risk_task(self, payload: Mapping[str, object]) -> dict:
         row = (
-            await self.session.execute(
+            await _execute_registered(
+                self.session,
                 text("SELECT public.slice5_high_risk_transition_v1(CAST(:payload AS jsonb)) AS value"),
                 {"payload": _payload(payload)},
+                "HIGH_RISK_TRANSITION",
             )
         ).mappings().one()
         return row["value"]
 
     async def raise_dispute(self, payload: Mapping[str, object]) -> dict:
         row = (
-            await self.session.execute(
+            await _execute_registered(
+                self.session,
                 text("SELECT public.slice5_assessment_dispute_v1(CAST(:payload AS jsonb)) AS value"),
                 {"payload": _payload(payload)},
+                "RAISE_DISPUTE",
             )
         ).mappings().one()
         return row["value"]
@@ -171,12 +270,13 @@ class HealthAssessmentRepository:
         return row["value"] is True
 
     async def govern_rule_set(self, operation: str, payload: Mapping[str, object]) -> dict:
-        row = (
-            await self.session.execute(
-                text("SELECT public.slice5_rule_governance_v2(:operation,CAST(:payload AS jsonb)) AS value"),
-                {"operation": operation, "payload": _payload(payload)},
-            )
-        ).mappings().one()
+        result = await _execute_registered(
+            self.session,
+            text("SELECT public.slice5_rule_governance_v2(:operation,CAST(:payload AS jsonb)) AS value"),
+            {"operation": operation, "payload": _payload(payload)},
+            f"RULE_{operation}",
+        )
+        row = result.mappings().one()
         return row["value"]
 
     async def confirm_rule_governance(self, payload: Mapping[str, object]) -> str:

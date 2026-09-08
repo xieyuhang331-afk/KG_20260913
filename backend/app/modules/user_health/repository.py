@@ -3,12 +3,73 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import asyncpg
 from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
 from app.modules.health_fact.repository import SqlAlchemyHealthFactRepository
-from app.modules.user_health.models import DetectionReport, HealthIndicator, HealthProfile
+from app.modules.user_health.models import (
+    DetectionReport,
+    HealthIndicator,
+    HealthProfile,
+)
+
+
+class UserHealthRepositoryError(RuntimeError):
+    pass
+
+
+_DATABASE_ERRORS = {
+    "CREATE_PROFILE_ROOT": {
+        "SLICE4_HEALTH_PROFILE_ROOT_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "SLICE4_VERSION_CONFLICT": "VERSION_CONFLICT",
+        "SLICE4_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "CREATE_DETECTION_REPORT": {
+        "SLICE4_DETECTION_REPORT_INVALID": "INVALID_REQUEST",
+        "SLICE4_DETECTION_REPORT_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "SLICE4_PRIVATE_FILE_BIND_CONFLICT": "PRIVATE_FILE_BIND_CONFLICT",
+        "SLICE4_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+    "HEALTH_FACT_STATE_TRANSITION": {
+        "SLICE4_HEALTH_FACT_STATE_INVALID": "INVALID_REQUEST",
+        "SLICE4_HEALTH_FACT_NOT_FOUND": "HEALTH_FACT_NOT_FOUND",
+        "SLICE4_HEALTH_FACT_STATE_CONFLICT": "STATE_CONFLICT",
+        "SLICE4_HEALTH_FACT_CORRECTION_CONFLICT": "HEALTH_FACT_CORRECTION_CONFLICT",
+        "SLICE4_HEALTH_FACT_STATE_FORBIDDEN": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "SLICE4_COMMIT_OUTCOME_UNKNOWN": "COMMIT_OUTCOME_UNKNOWN",
+    },
+}
+
+
+def _database_error(exc: DBAPIError, callpoint: str) -> str | None:
+    original = exc.orig
+    direct_cause = getattr(original, "__cause__", None)
+    driver_error = next(
+        (
+            candidate
+            for candidate in (original, direct_cause)
+            if isinstance(candidate, asyncpg.PostgresError)
+        ),
+        None,
+    )
+    if driver_error is None or driver_error.sqlstate != "P0001":
+        return None
+    if len(driver_error.args) != 1 or type(driver_error.args[0]) is not str:
+        return None
+    return _DATABASE_ERRORS.get(callpoint, {}).get(driver_error.args[0])
+
+
+async def _execute_registered(session, statement, parameters, callpoint: str):
+    try:
+        return await session.execute(statement, parameters)
+    except DBAPIError as exc:
+        code = _database_error(exc, callpoint)
+        if code is None:
+            raise
+        raise UserHealthRepositoryError(code) from None
 
 
 def _ensure_mapped() -> None:
@@ -53,7 +114,8 @@ class Slice4HealthRecordRepository:
         values["changed_fields"] = json.dumps(
             values["changed_fields"], separators=(",", ":"), sort_keys=True
         )
-        result = await self._session.execute(
+        result = await _execute_registered(
+            self._session,
             text(
                 "SELECT * FROM public.slice4_health_profile_root_create_v1("
                 ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
@@ -64,6 +126,7 @@ class Slice4HealthRecordRepository:
                 ":expected_version,:idempotency_key,:request_digest,:expected_postimage_digest)"
             ),
             values,
+            "CREATE_PROFILE_ROOT",
         )
         return dict(result.mappings().one())
 
@@ -86,7 +149,8 @@ class Slice4HealthRecordRepository:
         )
 
     async def create_detection_report(self, **values) -> dict:
-        result = await self._session.execute(
+        result = await _execute_registered(
+            self._session,
             text(
                 "SELECT * FROM public.slice4_detection_report_create_v1("
                 ":actor_user_id,:actor_context,:subject_member_id,:service_case_id,"
@@ -95,6 +159,7 @@ class Slice4HealthRecordRepository:
                 ":expected_postimage_digest)"
             ),
             values,
+            "CREATE_DETECTION_REPORT",
         )
         return dict(result.mappings().one())
 
@@ -118,13 +183,15 @@ class Slice4HealthRecordRepository:
         return await SqlAlchemyHealthFactRepository(self._session).get_by_ref(fact_ref)
 
     async def health_fact_state_transition(self, **values) -> dict:
-        result = await self._session.execute(
+        result = await _execute_registered(
+            self._session,
             text(
                 "SELECT * FROM public.slice4_health_fact_state_transition_v1("
                 ":fact_ref,:target_state,:expected_state,:actor_user_id,:service_case_id,"
                 ":expected_version,:reason_code,:event_digest)"
             ),
             values,
+            "HEALTH_FACT_STATE_TRANSITION",
         )
         return dict(result.mappings().one())
 
