@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class TenantApplicationApiTests(unittest.TestCase):
     def setUp(self):
@@ -127,7 +131,7 @@ class TenantApplicationApiTests(unittest.TestCase):
         response = self._client().post("/api/v1/tenants", json=self._payload(), headers=self._headers("member", org_id=None))
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        assert_core_error_response(response, 403, "FORBIDDEN")
 
     def test_tenant_application_requires_jwt(self):
         create_mock = AsyncMock()
@@ -143,7 +147,7 @@ class TenantApplicationApiTests(unittest.TestCase):
             response = self._client().post("/api/v1/tenants", json=self._payload(), headers=self._headers(org_id=None))
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        assert_core_error_response(response, 403, "FORBIDDEN")
         create_mock.assert_not_awaited()
 
     def test_invalid_payload_returns_422(self):
@@ -159,4 +163,4 @@ class TenantApplicationApiTests(unittest.TestCase):
             response = self._client().post("/api/v1/tenants", json=self._payload(), headers=self._headers())
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "Tenant application already exists")
+        assert_core_error_response(response, 409, "TENANT_APPLICATION_EXISTS")

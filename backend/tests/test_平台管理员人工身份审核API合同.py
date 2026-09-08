@@ -9,6 +9,10 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 ROUTE = "/api/v1/reviews/users/1042/identity/approve"
 
@@ -234,14 +238,14 @@ def test_人工身份审核只允许无TenantOrgScope的super_admin():
             ROUTE, json=_payload(), headers=headers
         )
         assert response.status_code == 403
-        assert response.json()["detail"] == "Forbidden"
+        assert_core_error_response(response, 403, "FORBIDDEN")
     malformed = _client(service).post(
         ROUTE, json=_payload(), headers=_headers("super_admin", org_id=9),
     )
     assert malformed.status_code == 401
-    assert malformed.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    assert_core_error_response(malformed, 401, "ACCESS_TOKEN_STALE")
     assert malformed.headers["WWW-Authenticate"] == "Bearer"
-    assert malformed.headers["Cache-Control"] == "no-store"
+    assert malformed.headers["Cache-Control"] == "no-store, private"
     # Direct guard unit proof; the malformed HTTP request never reaches this guard.
     with pytest.raises(HTTPException) as exc:
         _require_platform_identity_reviewer(CurrentUser(id=17, role="super_admin", org_id=9))
@@ -294,7 +298,13 @@ def test_人工身份审核固定安全错误映射且不泄漏异常链():
             ROUTE, json=_payload(), headers=_headers()
         )
         assert response.status_code == status_code
-        assert response.json() == {"detail": detail}
+        assert_core_error_response(
+            response, status_code, {
+                "Identity review subject not found": "IDENTITY_REVIEW_SUBJECT_NOT_FOUND",
+                "Identity review decision conflict": "IDENTITY_REVIEW_CONFLICT",
+                "Identity review service unavailable": "IDENTITY_REVIEW_UNAVAILABLE",
+            }[detail], retryable=status_code == 503,
+        )
         assert "secret" not in response.text
 
 
@@ -330,5 +340,5 @@ def test_WriterRuntime配置缺失固定映射503且不泄漏连接信息(monkey
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         response = client.post(ROUTE, json=_payload(), headers=_headers())
     assert response.status_code == 503
-    assert response.json() == {"detail": "Identity review service unavailable"}
+    assert_core_error_response(response, 503, "IDENTITY_REVIEW_UNAVAILABLE", retryable=True)
     assert "secret-database-target" not in response.text

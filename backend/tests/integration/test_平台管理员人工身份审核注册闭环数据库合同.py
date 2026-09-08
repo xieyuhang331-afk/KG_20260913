@@ -165,7 +165,14 @@ def test_无权角色在WriterSession创建前拒绝(
                 },
             )
             assert response.status_code == 403
-            assert response.json() == {"detail": "Forbidden"}
+            body = response.json()
+            assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+            assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+                "FORBIDDEN", "request rejected", [], False,
+            )
+            assert response.headers["X-Request-ID"] == body["request_id"]
+            assert response.headers["Cache-Control"] == "no-store, private"
+            assert response.headers["Pragma"] == "no-cache"
         finally:
             scoped.undo()
             get_settings.cache_clear()
@@ -213,7 +220,14 @@ def test_自我审核由应用服务拒绝且不产生数据库写入(
         },
     )
     assert response.status_code == 403
-    assert response.json() == {"detail": "Forbidden"}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "FORBIDDEN", "request rejected", [], False,
+    )
+    assert response.headers["X-Request-ID"] == body["request_id"]
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
     # The formal submission service rejects self-review before transition execution.
     assert calls == {"submission_guard": 1, "transition_service": 0}
     assert pg_database.fetch_value(

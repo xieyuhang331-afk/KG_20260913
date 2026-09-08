@@ -466,9 +466,15 @@ def test_旧JWT声明super_admin但reviewer数据库漂移时全路径fail_close
             )
             for response in responses:
                 _require_status(response, 401, f"STAGE_CURRENTNESS_STATE_{index}")
-                assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+                body = response.json()
+                assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+                assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+                    "ACCESS_TOKEN_STALE", "request rejected", [], False,
+                )
+                assert response.headers["X-Request-ID"] == body["request_id"]
                 assert response.headers["WWW-Authenticate"] == "Bearer"
-                assert response.headers["Cache-Control"] == "no-store"
+                assert response.headers["Cache-Control"] == "no-store, private"
+                assert response.headers["Pragma"] == "no-cache"
             assert application_database.fetch_value(
                 "SELECT status = 'submitted' FROM public.identity_verification_submission "
                 f"WHERE user_ref={target_id} AND version=1"

@@ -11,7 +11,8 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_settings
 
@@ -240,7 +241,12 @@ def build_current_user_from_authorization_header(authorization: str | None) -> C
     return build_current_user_from_claims(decode_access_token(token))
 
 
-async def get_current_user_from_jwt(request: Request) -> CurrentUser:
+_ACCESS_BEARER = Security(HTTPBearer(scheme_name="AccessBearer", bearerFormat="JWT", auto_error=False))
+
+
+async def get_current_user_from_jwt(
+    request: Request, _credential: HTTPAuthorizationCredentials | None = _ACCESS_BEARER,
+) -> CurrentUser:
     from app.core.认证当前性 import verify_current_user
 
     current_user = build_current_user_from_authorization_header(request.headers.get("authorization"))

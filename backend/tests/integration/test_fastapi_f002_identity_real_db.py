@@ -85,9 +85,15 @@ def test_f002_real_db_identity_user_not_found_returns_404(real_db_client, pg_dat
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "ACCESS_TOKEN_STALE"}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "ACCESS_TOKEN_STALE", "request rejected", [], False,
+    )
+    assert response.headers["X-Request-ID"] == body["request_id"]
     assert response.headers["WWW-Authenticate"] == "Bearer"
-    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
     assert "99999999" not in response.text
 
     caller = _register(real_db_client, "13800139104")

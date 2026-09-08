@@ -143,7 +143,7 @@ def test_C1A_R12_正式应用身份最小查询与旧令牌即时失效(pg_datab
         response = real_db_client.get("/api/v1/auth/me", headers=headers)
         if response.status_code != 401:
             pytest.fail("C1A_REAL_CURRENTNESS_NOT_ENFORCED", pytrace=False)
-        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Cache-Control"] == "no-store, private"
         forbidden = ("password_hash", "real_name", "id_card", "phone", "select *")
         if any(part in statement for part in forbidden for statement in currentness_authority):
             pytest.fail("C1A_AUTHORITY_PROJECTION_NOT_MINIMAL", pytrace=False)
@@ -175,7 +175,7 @@ def test_C1A_R12_正式HTTP注册登录与429闭环(pg_database, real_db_client,
                 pytest.fail("C1A_FRESH_BAD_PASSWORD_BOUNDARY", pytrace=False)
         limited = real_db_client.post("/api/v1/auth/login", json={"phone": phone, "password": password})
         assert limited.status_code == 429
-        assert limited.headers["Cache-Control"] == "no-store"
+        assert limited.headers["Cache-Control"] == "no-store, private"
         assert int(limited.headers["Retry-After"]) > 0
         if phone in limited.text or password in limited.text or token in limited.text:
             pytest.fail("C1A_FRESH_LIMIT_RESPONSE_UNSAFE", pytrace=False)

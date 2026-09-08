@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class HealthIndicatorQueryApiTests(unittest.TestCase):
     def setUp(self):
@@ -216,7 +220,7 @@ class HealthIndicatorQueryApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "User not found")
+        assert_core_error_response(response, 404, "USER_NOT_FOUND")
 
     def test_user_not_found_returns_404_for_latest_query(self):
         client, _ = self._client()
@@ -231,7 +235,7 @@ class HealthIndicatorQueryApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "User not found")
+        assert_core_error_response(response, 404, "USER_NOT_FOUND")
 
     def test_query_response_does_not_expose_sensitive_user_fields(self):
         client, _ = self._client()
@@ -259,7 +263,7 @@ class HealthIndicatorQueryApiTests(unittest.TestCase):
             response = client.get("/api/v1/users/1001/health-indicators")
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Authentication required")
+        assert_core_error_response(response, 401, "AUTHENTICATION_REQUIRED")
         service_mock.assert_not_awaited()
 
     def test_missing_token_returns_401_for_latest_query(self):
@@ -270,5 +274,5 @@ class HealthIndicatorQueryApiTests(unittest.TestCase):
             response = client.get("/api/v1/users/1001/health-indicators/latest")
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Authentication required")
+        assert_core_error_response(response, 401, "AUTHENTICATION_REQUIRED")
         service_mock.assert_not_awaited()

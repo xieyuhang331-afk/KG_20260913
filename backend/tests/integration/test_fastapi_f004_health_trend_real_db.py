@@ -238,7 +238,14 @@ def test_f004_real_db_health_trend_unknown_indicator_returns_422(real_db_client)
     response = _get_health_trend(real_db_client, user["id"], indicator_type="unknown_metric")
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Unknown indicator_type"
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "HEALTH_INDICATOR_TYPE_INVALID", "request rejected", [], False,
+    )
+    assert response.headers["X-Request-ID"] == body["request_id"]
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
 
 
 def test_f004_real_db_health_trend_idor_is_blocked(real_db_client, pg_database):

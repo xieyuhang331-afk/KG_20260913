@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class UserTenantBindingApiTests(unittest.TestCase):
     def setUp(self):
@@ -142,4 +146,4 @@ class UserTenantBindingApiTests(unittest.TestCase):
             json={"tenant_id": 501},
         )
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Authentication required")
+        assert_core_error_response(response, 401, "AUTHENTICATION_REQUIRED")

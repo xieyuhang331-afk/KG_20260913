@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.test_一期后端整改C2_1安全表达错误与请求上下文合同 import (
+    assert_core_error_response,
+)
+
 
 class TenantApplicationStatusApiTests(unittest.TestCase):
     def setUp(self):
@@ -171,7 +175,7 @@ class TenantApplicationStatusApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["detail"], "Tenant application not found")
+        assert_core_error_response(response, 404, "TENANT_APPLICATION_NOT_FOUND")
 
     def test_cross_org_application_status_returns_403(self):
         with patch(

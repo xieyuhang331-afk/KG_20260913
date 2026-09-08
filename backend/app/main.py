@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.core.database import dispose_database_runtimes
 from app.core.middleware import add_request_middleware
 from app.core.responses import ok_response
+from app.core.接口合同 import express_security_contract, install_error_contract
 from app.core.认证配置校验 import validated_auth_settings
 from app.core.认证限流 import AuthRateLimiter
 from app.modules.auth.api import auth_router
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.state.slice7_export_access_authorizer = authorize_generated_export_access
     app.state.slice7_export_download_consumer = consume_personal_data_export_download
     add_request_middleware(app)
+    install_error_contract(app)
     app.include_router(auth_router)
     app.include_router(user_auth_router)
     app.include_router(tenant_router)
@@ -122,7 +124,7 @@ def create_app() -> FastAPI:
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        return strip_slice7_validation_responses(
+        schema = strip_slice7_validation_responses(
             strip_slice6_validation_responses(
                 strip_slice5_validation_responses(
                     strip_slice4_validation_responses(
@@ -133,6 +135,7 @@ def create_app() -> FastAPI:
                 )
             )
         )
+        return express_security_contract(app, schema)
 
     app.openapi = therapist_aware_openapi
 

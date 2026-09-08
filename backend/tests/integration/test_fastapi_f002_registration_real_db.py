@@ -50,7 +50,14 @@ def test_f002_real_db_duplicate_phone_returns_409(real_db_client, pg_database):
 
     assert first_response.status_code == 200
     assert second_response.status_code == 409
-    assert second_response.json()["detail"] == "User already exists"
+    body = second_response.json()
+    assert set(body) == {"code", "message", "request_id", "field_errors", "retryable"}
+    assert (body["code"], body["message"], body["field_errors"], body["retryable"]) == (
+        "USER_EXISTS", "request rejected", [], False,
+    )
+    assert second_response.headers["X-Request-ID"] == body["request_id"]
+    assert second_response.headers["Cache-Control"] == "no-store, private"
+    assert second_response.headers["Pragma"] == "no-cache"
 
     users = pg_database.fetch_rows(
         """

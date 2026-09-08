@@ -55,10 +55,10 @@ def test_四接口与StepUp成功响应均为精确TypedEnvelope() -> None:
 def test_四接口OpenAPI声明实际错误状态子集() -> None:
     document = _openapi()["paths"]
     cases = {
-        ("/api/v1/reviews/identity", "get"): {"200", "401", "403", "422", "503"},
-        ("/api/v1/reviews/users/{user_id}/identity", "get"): {"200", "401", "403", "404", "422", "503"},
-        ("/api/v1/reviews/users/{user_id}/identity/approve", "post"): {"200", "401", "403", "404", "409", "422", "503"},
-        ("/api/v1/reviews/users/{user_id}/identity/reject", "post"): {"200", "401", "403", "404", "409", "422", "503"},
+        ("/api/v1/reviews/identity", "get"): {"200", "401", "403", "422", "500", "503"},
+        ("/api/v1/reviews/users/{user_id}/identity", "get"): {"200", "401", "403", "404", "422", "500", "503"},
+        ("/api/v1/reviews/users/{user_id}/identity/approve", "post"): {"200", "401", "403", "404", "409", "422", "500", "503"},
+        ("/api/v1/reviews/users/{user_id}/identity/reject", "post"): {"200", "401", "403", "404", "409", "422", "500", "503"},
     }
     for (path, method), expected in cases.items():
         assert set(document[path][method]["responses"]) == expected
