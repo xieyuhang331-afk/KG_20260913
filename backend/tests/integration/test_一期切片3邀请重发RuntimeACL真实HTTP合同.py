@@ -8,6 +8,7 @@ from alembic import command
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
 from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
     _activate_org_admin_for_test,
+    _assert_error_response_dto,
     _login,
 )
 
@@ -175,11 +176,12 @@ def test_真实Runtime邀请重发与幂等及陈旧版本闭环(
         headers={**authorization, "Idempotency-Key": idempotency_key},
         json={"expected_version": 2},
     )
-    assert conflict.status_code == 503
-    assert conflict.json() == {
-        "code": "DEPENDENCY_UNAVAILABLE",
-        "message": "request rejected",
-    }
+    _assert_error_response_dto(
+        conflict,
+        status_code=503,
+        error_code="DEPENDENCY_UNAVAILABLE",
+        retryable=True,
+    )
     assert _resend_counts(pg_database, invitation_id, idempotency_key) == expected_counts
 
     stale = real_db_client.post(
@@ -187,8 +189,12 @@ def test_真实Runtime邀请重发与幂等及陈旧版本闭环(
         headers={**authorization, "Idempotency-Key": "acl-resend-stale"},
         json={"expected_version": 1},
     )
-    assert stale.status_code == 409
-    assert stale.json() == {"code": "VERSION_CONFLICT", "message": "request rejected"}
+    _assert_error_response_dto(
+        stale,
+        status_code=409,
+        error_code="VERSION_CONFLICT",
+        retryable=False,
+    )
     assert _resend_counts(pg_database, invitation_id, "acl-resend-stale") == (1, 1, 0)
     assert pg_database.fetch_value(
         "SELECT version FROM public.member_service_invitation "

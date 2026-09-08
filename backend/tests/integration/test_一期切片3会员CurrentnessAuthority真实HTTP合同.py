@@ -371,19 +371,37 @@ def _assert_safe_failure_without_mutation(
     pg_database,
     invitation_id: UUID,
 ) -> None:
-    assert response.status_code == status_code
-    body = response.json()
-    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
-    assert body["code"] == error_code
-    assert body["message"] == "request rejected"
-    assert body["request_id"] == response.headers["x-request-id"]
-    assert body["retryable"] is (status_code == 503)
-    assert body["field_errors"] == []
+    _assert_error_response_dto(
+        response,
+        status_code=status_code,
+        error_code=error_code,
+        retryable=status_code == 503,
+    )
     assert response.headers["cache-control"] == "no-store, private"
     assert response.headers["pragma"] == "no-cache"
     if status_code == 401:
         assert response.headers["www-authenticate"] == "Bearer"
     assert _business_snapshot(pg_database, invitation_id) == before
+
+
+def _assert_error_response_dto(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+) -> dict[str, object]:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == error_code
+    assert body["message"] == "request rejected"
+    request_id = UUID(body["request_id"])
+    assert request_id.version == 7
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is retryable
+    assert body["field_errors"] == []
+    return body
 
 
 def test_Application基础表SELECT保持42501(
@@ -528,11 +546,12 @@ def test_家庭会员接受邀请真实ASGI与Currentness负向零副作用(
         headers=member_authorization,
         params={"cursor": str(uuid4())},
     )
-    assert invalid_cursor.status_code == 400
-    assert invalid_cursor.json() == {
-        "code": "INVALID_CURSOR",
-        "message": "request rejected",
-    }
+    _assert_error_response_dto(
+        invalid_cursor,
+        status_code=400,
+        error_code="INVALID_CURSOR",
+        retryable=False,
+    )
     assert _business_snapshot(pg_database, invitation_id) == unchanged
     wrong_role_list = real_db_client.get(
         "/api/v1/family/member-enrollments",

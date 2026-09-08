@@ -33,6 +33,9 @@ from app.modules.private_file.service import (
 from app.modules.private_file.storage import LocalFilesystemAdapter
 from app.tasks.slice7_service_fulfillment_tasks import _generate_export, _recover
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
+from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
+    _assert_error_response_dto,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -1022,8 +1025,12 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
                 "X-Private-File-Access": access.json()["access_token"],
             },
         )
-        assert revoked.status_code == 401
-        assert revoked.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        _assert_error_response_dto(
+            revoked,
+            status_code=401,
+            error_code="ACCESS_TOKEN_STALE",
+            retryable=False,
+        )
         assert revoked.headers["WWW-Authenticate"] == "Bearer"
         assert revoked.headers["Cache-Control"] == "no-store, private, max-age=0"
         assert pg_database.fetch_value(
