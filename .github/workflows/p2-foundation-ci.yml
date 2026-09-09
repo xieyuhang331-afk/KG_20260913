@@ -9,6 +9,7 @@ on:
     branches:
       - main
       - develop
+      - hotfix/phase1-c2-2-route-error-contract
 
 permissions:
   contents: read
