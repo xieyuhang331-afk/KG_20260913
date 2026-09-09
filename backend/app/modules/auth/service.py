@@ -4,7 +4,6 @@ import hashlib
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
@@ -23,7 +22,6 @@ from app.modules.auth.schemas import (
     UserRegisterRequest,
     UserRegisterResponse,
 )
-from app.modules.tenant.models import Tenant
 
 
 def hash_password(password: str) -> str:
@@ -72,9 +70,8 @@ def _require_context_value(context: dict, key: str):
     return value
 
 
-async def _tenant_org_id(session, tenant_id: int) -> int | None:
-    result = await session.execute(select(Tenant.org_id).where(Tenant.id == tenant_id))
-    return result.scalar_one_or_none()
+async def _tenant_org_id(user) -> int | None:
+    return user.tenant_org_id
 
 
 def _build_login_claims(user, *, dynamic_org_id: int | None = None) -> dict:
@@ -103,7 +100,10 @@ def _build_login_claims(user, *, dynamic_org_id: int | None = None) -> dict:
 
 async def get_onboarding_account_for_login(user_id: int):
     from app.core.database import get_slice1_session_factory
-    from app.modules.institution_onboarding.repository import InstitutionOnboardingRepository
+    from app.modules.institution_onboarding.repository import (
+        InstitutionOnboardingRepository,
+    )
+
     factory = get_slice1_session_factory("reader")
     async with factory() as reader_session:
         return await InstitutionOnboardingRepository(reader_session).account_for_user(user_id)
@@ -184,7 +184,7 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
             raise HTTPException(status_code=401, detail="TOTP_REQUIRED_OR_INVALID")
 
     dynamic_org_id = (
-        await _tenant_org_id(session, user.tenant_id)
+        await _tenant_org_id(user)
         if user.role == "org_admin" and user.tenant_id is not None
         else None
     )

@@ -1,10 +1,36 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from sqlalchemy import BigInteger, String, bindparam, select, text
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
 from app.modules.auth.models import User
-from app.modules.tenant.models import Tenant
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticationSubject:
+    id: int
+    phone: str
+    password_hash: str = field(repr=False)
+    role: str
+    status: str | None
+    tenant_id: int | None
+    exited_at: datetime | None
+    deletion_requested_at: datetime | None
+    tenant_org_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class UserCurrentness:
+    id: int
+    role: str
+    tenant_id: int | None
+    status: str | None
+    exited_at: datetime | None
+    deletion_requested_at: datetime | None
+    tenant_org_id: int | None
 
 
 def _ensure_mapped() -> None:
@@ -18,9 +44,14 @@ async def user_exists_by_phone(session, phone: str) -> bool:
 
 
 async def get_user_by_phone(session, phone: str):
-    _ensure_mapped()
-    result = await session.execute(select(User).where(User.phone == phone).limit(1))
-    return result.scalar_one_or_none()
+    statement = text(
+        "SELECT id,phone,password_hash,role,status,tenant_id,exited_at,"
+        "deletion_requested_at,tenant_org_id "
+        "FROM public.auth_login_subject_v1(:phone)"
+    ).bindparams(bindparam("phone", type_=String(11))).params(phone=phone)
+    result = await session.execute(statement)
+    row = result.mappings().one_or_none()
+    return AuthenticationSubject(**row) if row is not None else None
 
 
 async def get_user_by_id(session, user_id: int):
@@ -31,15 +62,13 @@ async def get_user_by_id(session, user_id: int):
 
 async def get_user_currentness(session, user_id: int):
     """Read only the authority fields required to invalidate a stale access token."""
-    _ensure_mapped()
-    result = await session.execute(
-        select(
-            User.id, User.role, User.tenant_id, User.status,
-            User.exited_at, User.deletion_requested_at,
-            Tenant.org_id.label("tenant_org_id"),
-        ).outerjoin(Tenant, Tenant.id == User.tenant_id).where(User.id == user_id)
-    )
-    return result.one_or_none()
+    statement = text(
+        "SELECT id,role,tenant_id,status,exited_at,deletion_requested_at,"
+        "tenant_org_id FROM public.auth_user_currentness_v1(:user_id)"
+    ).bindparams(bindparam("user_id", type_=BigInteger())).params(user_id=user_id)
+    result = await session.execute(statement)
+    row = result.mappings().one_or_none()
+    return UserCurrentness(**row) if row is not None else None
 
 
 async def get_user_for_tenant_binding_update(session, user_id: int):

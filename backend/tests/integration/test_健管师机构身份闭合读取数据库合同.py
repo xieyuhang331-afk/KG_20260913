@@ -1084,35 +1084,38 @@ def test_G10_0039往返只改变闭合函数(pg_database):
             "FROM pg_catalog.pg_proc p WHERE p.oid=to_regprocedure('" + signature + "')"
         ) for signature in signatures)
 
-    before = snapshot()
-    # In-memory reverse probes: every selected field participates in equality.
-    # Empty optional categories also remain represented, so additions are detected.
-    for category_index, rows in enumerate(before[1]):
-        original_length = len(rows)
-        changed_categories = list(before[1])
-        changed_categories[category_index] = [*rows, {"safe_probe": True}]
-        require(before[1] != tuple(changed_categories), "GATE_CATALOG_CATEGORY_COMPARISON_INACTIVE")
-        require(len(rows) == original_length, "GATE_PROBE_MUTATED_ORIGINAL")
-        for row_index, row in enumerate(rows):
-            for key in row:
-                original_value = row[key]
-                changed = list(rows)
-                changed[row_index] = dict(row)
-                changed[row_index][key] = object()
-                require(rows != changed, "GATE_CATALOG_FIELD_COMPARISON_INACTIVE")
-                require(row[key] is original_value, "GATE_PROBE_MUTATED_ORIGINAL")
-    # A legal empty policy catalog still needs both expressions independently protected.
-    policy_probe = {"policy_using": None, "policy_with_check": None}
-    for field in policy_probe:
-        changed_policy = dict(policy_probe)
-        changed_policy[field] = "SAFE_EXPRESSION_PROBE"
-        require(policy_probe != changed_policy and all(value is None for value in policy_probe.values()),
-                "GATE_POLICY_FIELD_PROBE_INVALID")
-    function_before = approved_functions()
     config = _build_alembic_config(_get_test_database_url())
-    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039",
+    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260909_0040",
             "GATE_CURRENT_HEAD_INVALID")
     try:
+        command.downgrade(config, "20260906_0039")
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039",
+                "GATE_0039_BASELINE_HEAD_INVALID")
+        before = snapshot()
+        # In-memory reverse probes: every selected field participates in equality.
+        # Empty optional categories also remain represented, so additions are detected.
+        for category_index, rows in enumerate(before[1]):
+            original_length = len(rows)
+            changed_categories = list(before[1])
+            changed_categories[category_index] = [*rows, {"safe_probe": True}]
+            require(before[1] != tuple(changed_categories), "GATE_CATALOG_CATEGORY_COMPARISON_INACTIVE")
+            require(len(rows) == original_length, "GATE_PROBE_MUTATED_ORIGINAL")
+            for row_index, row in enumerate(rows):
+                for key in row:
+                    original_value = row[key]
+                    changed = list(rows)
+                    changed[row_index] = dict(row)
+                    changed[row_index][key] = object()
+                    require(rows != changed, "GATE_CATALOG_FIELD_COMPARISON_INACTIVE")
+                    require(row[key] is original_value, "GATE_PROBE_MUTATED_ORIGINAL")
+        # A legal empty policy catalog still needs both expressions independently protected.
+        policy_probe = {"policy_using": None, "policy_with_check": None}
+        for field in policy_probe:
+            changed_policy = dict(policy_probe)
+            changed_policy[field] = "SAFE_EXPRESSION_PROBE"
+            require(policy_probe != changed_policy and all(value is None for value in policy_probe.values()),
+                    "GATE_POLICY_FIELD_PROBE_INVALID")
+        function_before = approved_functions()
         command.downgrade(config, "20260904_0038")
         for signature in signatures:
             require(pg_database.fetch_value("SELECT to_regprocedure('" + signature + "')") is None,
@@ -1120,10 +1123,15 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         require(before == snapshot(), "GATE_DOWNGRADE_UNAPPROVED_MUTATION")
         require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260904_0038",
                 "GATE_DOWNGRADE_HEAD_INVALID")
+        command.upgrade(config, "20260906_0039")
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039",
+                "GATE_REUPGRADE_HEAD_INVALID")
+        for signature in signatures:
+            require(pg_database.fetch_value("SELECT to_regprocedure('" + signature + "') IS NOT NULL"),
+                    "GATE_REUPGRADE_FUNCTION_MISSING")
+        require(before == snapshot(), "GATE_MIGRATION_BUSINESS_OR_AUTHORITY_MUTATION")
+        require(function_before == approved_functions(), "GATE_REUPGRADE_FUNCTION_CONTRACT_DRIFT")
     finally:
         command.upgrade(config, "head")
-    for signature in signatures:
-        require(pg_database.fetch_value("SELECT to_regprocedure('" + signature + "') IS NOT NULL"),
-                "GATE_REUPGRADE_FUNCTION_MISSING")
-    require(before == snapshot(), "GATE_MIGRATION_BUSINESS_OR_AUTHORITY_MUTATION")
-    require(function_before == approved_functions(), "GATE_REUPGRADE_FUNCTION_CONTRACT_DRIFT")
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260909_0040",
+                "GATE_LATEST_HEAD_RESTORE_FAILED")
