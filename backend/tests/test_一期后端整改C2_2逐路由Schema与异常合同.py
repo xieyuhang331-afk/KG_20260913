@@ -7,10 +7,11 @@ from uuid import UUID
 
 import asyncpg
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import DBAPIError
 
+from app.core.security import CurrentUser
 from app.core.接口合同 import install_error_contract
 from app.modules.health_assessment.api import (
     _STATUS as SLICE5_STATUS,
@@ -33,6 +34,7 @@ from app.modules.institution_onboarding.api import OnboardingRoute
 from app.modules.member_enrollment.api import (
     SLICE3_ROUTE_ERROR_CODES,
     MemberEnrollmentRoute,
+    _member_for_actor,
     strip_member_enrollment_validation_responses,
 )
 from app.modules.organization.api import OrganizationRoute
@@ -743,6 +745,121 @@ class _DirectFailSession:
 
     async def execute(self, _statement, _parameters):
         raise self.error
+
+
+class _MemberAuthorityResult:
+    def __init__(self, member_id: object) -> None:
+        self.member_id = member_id
+
+    def mappings(self):
+        return self
+
+    def one_or_none(self) -> dict[str, object] | None:
+        if self.member_id is None:
+            return None
+        return {"member_id": self.member_id}
+
+
+class _MemberAuthoritySession:
+    def __init__(self, outcome: object) -> None:
+        self.outcome = outcome
+        self.execute_count = 0
+
+    async def execute(self, _statement, _parameters):
+        self.execute_count += 1
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return _MemberAuthorityResult(self.outcome)
+
+
+def _wrapped_member_authority_error(driver_error: BaseException) -> DBAPIError:
+    return DBAPIError("SELECT", {"private": "parameter"}, driver_error, False)
+
+
+def _member_actor() -> CurrentUser:
+    return CurrentUser(id=9001, role="member")
+
+
+def _member_authority_error_response(error: BaseException) -> object:
+    async def endpoint() -> None:
+        await _member_for_actor(_MemberAuthoritySession(error), _member_actor())
+
+    return _repository_error_response(
+        MemberEnrollmentRoute,
+        "GET",
+        "/api/v1/family/member-enrollments",
+        endpoint,
+    )
+
+
+def test_C2_2_R03_Currentness权限依赖失败精确翻译为安全503() -> None:
+    error = _wrapped_member_authority_error(
+        asyncpg.exceptions.InsufficientPrivilegeError("synthetic private detail")
+    )
+    with pytest.raises(HTTPException) as translated:
+        asyncio.run(_member_for_actor(_MemberAuthoritySession(error), _member_actor()))
+    assert translated.value.status_code == 503
+    assert translated.value.detail == {
+        "code": "DEPENDENCY_UNAVAILABLE",
+        "message": "DEPENDENCY_UNAVAILABLE",
+    }
+
+    response = _member_authority_error_response(error)
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "DEPENDENCY_UNAVAILABLE",
+        "message": "request rejected",
+        "request_id": REQUEST_ID,
+        "retryable": True,
+        "field_errors": [],
+    }
+    assert response.headers["cache-control"] == "no-store, private"
+    assert response.headers["pragma"] == "no-cache"
+    assert "synthetic" not in response.text
+    assert "parameter" not in response.text
+
+
+def test_C2_2_R03_Currentness未知数据库错误保持安全500() -> None:
+    error = _wrapped_member_authority_error(
+        asyncpg.exceptions.PostgresSyntaxError("synthetic SQL detail")
+    )
+    response = _member_authority_error_response(error)
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+    assert response.json()["retryable"] is False
+    assert "synthetic" not in response.text
+
+
+def test_C2_2_R03_Currentness取消原样传播且非法actor不访问数据库() -> None:
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            _member_for_actor(
+                _MemberAuthoritySession(asyncio.CancelledError()),
+                _member_actor(),
+            )
+        )
+
+    authority = _MemberAuthoritySession(None)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(
+            _member_for_actor(
+                authority,
+                CurrentUser(id=9002, role="org_admin", tenant_id=1),
+            )
+        )
+    assert getattr(denied.value, "status_code", None) == 403
+    assert authority.execute_count == 0
+
+
+def test_C2_2_R03_Currentness无匹配member保持403() -> None:
+    authority = _MemberAuthoritySession(None)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(_member_for_actor(authority, _member_actor()))
+    assert getattr(denied.value, "status_code", None) == 403
+    assert getattr(denied.value, "detail", None) == {
+        "code": "ACTOR_CURRENTNESS_FORBIDDEN",
+        "message": "ACTOR_CURRENTNESS_FORBIDDEN",
+    }
 
 
 def _repository_error_response(

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from app.core.database import (
     get_db_session,
@@ -356,14 +357,19 @@ async def _member_for_actor(
         or actor.org_id is not None
     ):
         raise _error("ACTOR_CURRENTNESS_FORBIDDEN")
-    result = await authority.execute(
-        text(
-            "SELECT public.slice3_member_currentness_authority_v1("
-            ":user_id,:expected_phone) AS member_id"
-        ),
-        {"user_id": actor.id, "expected_phone": expected_phone},
-    )
-    row = result.mappings().one_or_none()
+    try:
+        result = await authority.execute(
+            text(
+                "SELECT public.slice3_member_currentness_authority_v1("
+                ":user_id,:expected_phone) AS member_id"
+            ),
+            {"user_id": actor.id, "expected_phone": expected_phone},
+        )
+        row = result.mappings().one_or_none()
+    except DBAPIError as error:
+        if getattr(error.orig, "sqlstate", None) == "42501":
+            raise _error("DEPENDENCY_UNAVAILABLE") from None
+        raise
     if row is None or row["member_id"] is None:
         raise _error("ACTOR_CURRENTNESS_FORBIDDEN")
     return UUID(str(row["member_id"]))
