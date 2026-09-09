@@ -325,6 +325,23 @@ def _authority_row(**changes):
     return SimpleNamespace(**fields)
 
 
+def _authority_result_mapping(row):
+    if row is None:
+        return None
+    return {
+        field: getattr(row, field)
+        for field in (
+            "id",
+            "role",
+            "tenant_id",
+            "status",
+            "exited_at",
+            "deletion_requested_at",
+            "tenant_org_id",
+        )
+    }
+
+
 def _authority_factory(monkeypatch, row, events, *, failure=None):
     from app.core import database, 认证当前性
 
@@ -333,7 +350,10 @@ def _authority_factory(monkeypatch, row, events, *, failure=None):
             events.append("authority-execute")
             if failure:
                 raise failure
-            return SimpleNamespace(one_or_none=lambda: row)
+            mapping = SimpleNamespace(
+                one_or_none=lambda: _authority_result_mapping(row)
+            )
+            return SimpleNamespace(mappings=lambda: mapping)
 
         async def rollback(self):
             events.append("authority-rollback")
@@ -793,7 +813,10 @@ async def test_C1A_R11_权威会话取消主异常与两步清理(access_setting
         async def execute(self, _statement):
             if body != "none":
                 raise primary
-            return SimpleNamespace(one_or_none=_authority_row)
+            mapping = SimpleNamespace(
+                one_or_none=lambda: _authority_result_mapping(_authority_row())
+            )
+            return SimpleNamespace(mappings=lambda: mapping)
 
         async def rollback(self):
             events.append("rollback")

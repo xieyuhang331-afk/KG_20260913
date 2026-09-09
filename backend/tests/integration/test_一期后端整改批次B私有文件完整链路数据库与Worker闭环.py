@@ -96,7 +96,7 @@ class _MutatingStatStore:
 def test_B_R31_0038对象函数与专用角色最小权限真实PostgreSQL(pg_database):
     assert MIGRATION.exists(), "B_R31_0038_MIGRATION_MISSING"
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-        "20260906_0039"
+        "20260909_0040"
     )
     columns = set(
         pg_database.fetch_column(
@@ -947,7 +947,7 @@ def test_Z_B_R36_downgrade活动上传或凭证拒绝且静默期可往返(pg_da
         with pytest.raises(RuntimeError, match="BATCH_B_PRIVATE_FILE_DOWNGRADE_NOT_QUIESCENT"):
             command.downgrade(config, "20260904_0037")
         assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-            "20260906_0039"
+            "20260909_0040"
         )
         assert pg_database.fetch_value(
             "SELECT to_regclass('public.private_file_download_access') IS NOT NULL"
@@ -982,7 +982,7 @@ def test_Z_B_R36_downgrade活动上传或凭证拒绝且静默期可往返(pg_da
         )
         command.upgrade(config, "head")
         assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-            "20260906_0039"
+            "20260909_0040"
         )
         assert _parameterized_value(
             pg_database,
@@ -1015,7 +1015,7 @@ def test_Z_B_R36_downgrade活动上传或凭证拒绝且静默期可往返(pg_da
         )
     finally:
         if pg_database.fetch_value("SELECT version_num FROM alembic_version") != (
-            "20260906_0039"
+            "20260909_0040"
         ):
             command.upgrade(config, "head")
         pg_database.execute(

@@ -106,11 +106,11 @@ def test_0031到0032到0031到0032生命周期保持单一Head(pg_database) -> N
         assert "application/zip" in definitions
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260909_0040"
 
 
 def test_0032单一Head且对象和六身份ACL闭合(pg_database) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260909_0040"
     actual = set(pg_database.fetch_column(
         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
         "AND (tablename LIKE ANY(ARRAY['service_%','personal_data_export_%']) "
@@ -1233,7 +1233,7 @@ def test_0032非空降级在任何破坏性DDL前fail_closed(pg_database) -> Non
     config = _build_alembic_config(_get_test_database_url())
     with pytest.raises(RuntimeError, match="Slice 7 downgrade requires empty module tables"):
         command.downgrade(config, "20260826_0031")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260906_0039"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260909_0040"
     assert pg_database.fetch_value(
         "SELECT to_regprocedure('public.slice7_export_private_file_register_v1(jsonb)')"
     ) is not None
