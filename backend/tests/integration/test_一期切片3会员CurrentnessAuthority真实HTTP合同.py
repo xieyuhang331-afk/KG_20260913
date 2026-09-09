@@ -625,7 +625,7 @@ def test_家庭会员接受邀请真实ASGI与Currentness负向零副作用(
                 invitation_id=invitation_id,
             )
             assert disabled.headers["WWW-Authenticate"] == "Bearer"
-            assert disabled.headers["Cache-Control"] == "no-store"
+            assert disabled.headers["Cache-Control"] == "no-store, private"
     finally:
         pg_database.execute(
             'UPDATE public."user" SET status=\'' + original_status.replace("'", "''")
@@ -800,10 +800,12 @@ def test_会员实名首次提交使用真实Writer并返回安全IdentityStatus
         },
     )
     if submitted.status_code == 503:
-        assert submitted.json() == {
-            "code": "DEPENDENCY_UNAVAILABLE",
-            "message": "request rejected",
-        }
+        _assert_error_response_dto(
+            submitted,
+            status_code=503,
+            error_code="DEPENDENCY_UNAVAILABLE",
+            retryable=True,
+        )
         assert _identity_submission_snapshot(pg_database, enrollment_id, key) == before
 
     assert submitted.status_code == 200
