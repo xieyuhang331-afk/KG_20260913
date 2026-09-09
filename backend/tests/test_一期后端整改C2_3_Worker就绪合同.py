@@ -574,7 +574,7 @@ def test_C2_3_R10_CI以精确目标运行产品探针并收集JUnit() -> None:
     assert "backend/pytest-c23-slice5-readiness-report.xml" in workflow
 
 
-def test_C2_3_R10_依赖候选CI只增加精确临时PR_Base触发() -> None:
+def test_C2_3_R10_依赖合并后CI只保留正式Base触发() -> None:
     workflow_path = (
         Path(__file__).resolve().parents[2] / ".github/workflows/p2-foundation-ci.yml"
     )
@@ -582,8 +582,4 @@ def test_C2_3_R10_依赖候选CI只增加精确临时PR_Base触发() -> None:
 
     assert set(workflow["on"]) == {"push", "pull_request"}
     assert workflow["on"]["push"]["branches"] == ["main", "develop"]
-    assert workflow["on"]["pull_request"]["branches"] == [
-        "main",
-        "develop",
-        "hotfix/phase1-c2-2-route-error-contract",
-    ]
+    assert workflow["on"]["pull_request"]["branches"] == ["main", "develop"]
