@@ -107,6 +107,11 @@ class Settings(BaseModel):
     slice4_clinical_reader_role: str | None = None
     slice4_institution_reader_role: str | None = None
     slice4_identity_authority_role: str | None = None
+    health_projection_builder_role: str | None = None
+    projection_confirmation_role: str | None = None
+    health_projection_shadow_role: str | None = None
+    projection_ready_gate_role: str | None = None
+    projection_shadow_confirmation_role: str | None = None
     slice4_profile_phi_current_key_id: str | None = None
     slice4_profile_phi_keyring_json: str | None = None
     slice4_assembly_phi_current_key_id: str | None = None
@@ -269,6 +274,13 @@ def get_settings() -> Settings:
         slice4_clinical_reader_role=os.getenv("KG_SLICE4_CLINICAL_READER_ROLE"),
         slice4_institution_reader_role=os.getenv("KG_SLICE4_INSTITUTION_READER_ROLE"),
         slice4_identity_authority_role=os.getenv("KG_SLICE4_IDENTITY_AUTHORITY_ROLE"),
+        health_projection_builder_role=os.getenv("KG_HEALTH_PROJECTION_BUILDER_ROLE"),
+        projection_confirmation_role=os.getenv("KG_PROJECTION_CONFIRMATION_ROLE"),
+        health_projection_shadow_role=os.getenv("KG_HEALTH_PROJECTION_SHADOW_ROLE"),
+        projection_ready_gate_role=os.getenv("KG_PROJECTION_READY_GATE_ROLE"),
+        projection_shadow_confirmation_role=os.getenv(
+            "KG_PROJECTION_SHADOW_CONFIRMATION_ROLE"
+        ),
         slice4_profile_phi_current_key_id=os.getenv("KG_SLICE4_PROFILE_PHI_CURRENT_KEY_ID"),
         slice4_profile_phi_keyring_json=os.getenv("KG_SLICE4_PROFILE_PHI_KEYRING_JSON"),
         slice4_assembly_phi_current_key_id=os.getenv("KG_SLICE4_ASSEMBLY_PHI_CURRENT_KEY_ID"),

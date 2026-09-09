@@ -27,42 +27,163 @@ def health_response(status: Literal["LIVE", "READY"]) -> HealthResponseDTO:
     return HealthResponseDTO(data=HealthDataDTO(status=status))
 
 
+async def _await_storage_operation(operation):
+    task = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancellation:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        with suppress(BaseException):
+            task.result()
+        raise cancellation
+
+
 async def probe_private_object_store(object_store) -> bool:
     object_key = f".readiness/{uuid4().hex}.probe"
     lease_token = str(uuid4())
-    temporary_created = False
-    committed = False
+    temporary_maybe_owned = False
+    final_maybe_owned = False
+    healthy = False
     cleanup_ok = True
     primary_cancel: asyncio.CancelledError | None = None
     try:
-        await object_store.create_temporary(object_key, lease_token)
-        temporary_created = True
-        await object_store.write_chunk(object_key, lease_token, b"ready")
-        evidence = await object_store.flush(
-            object_key, lease_token, mime_type="application/octet-stream"
+        temporary_maybe_owned = True
+        await _await_storage_operation(
+            object_store.create_temporary(object_key, lease_token)
         )
-        await object_store.commit(object_key, lease_token)
-        committed = True
-        actual = await object_store.stat(object_key)
-        return evidence.size == 5 and actual.size == 5 and evidence.sha256 == actual.sha256
+        await _await_storage_operation(
+            object_store.write_chunk(object_key, lease_token, b"ready")
+        )
+        evidence = await _await_storage_operation(
+            object_store.flush(
+                object_key, lease_token, mime_type="application/octet-stream"
+            )
+        )
+        final_maybe_owned = True
+        await _await_storage_operation(object_store.commit(object_key, lease_token))
+        actual = await _await_storage_operation(object_store.stat(object_key))
+        healthy = (
+            evidence.size == 5
+            and actual.size == 5
+            and evidence.sha256 == actual.sha256
+        )
     except asyncio.CancelledError as error:
         primary_cancel = error
+    except Exception:
+        healthy = False
+    finally:
+        cleanup_cancel: asyncio.CancelledError | None = None
+        if final_maybe_owned:
+            try:
+                await _await_storage_operation(object_store.delete(object_key))
+            except asyncio.CancelledError as error:
+                cleanup_cancel = error
+            except Exception:
+                cleanup_ok = False
+        if temporary_maybe_owned:
+            try:
+                await _await_storage_operation(
+                    object_store.abort_temporary(object_key, lease_token)
+                )
+            except asyncio.CancelledError as error:
+                cleanup_cancel = cleanup_cancel or error
+            except Exception:
+                cleanup_ok = False
+        if primary_cancel is not None:
+            raise primary_cancel
+        if cleanup_cancel is not None:
+            raise cleanup_cancel
+    return healthy and cleanup_ok
+
+
+async def probe_database_role(session_factory, expected_role: str | None) -> bool:
+    if not expected_role:
+        return False
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT 1 AS probe,
+                           current_user AS role,
+                           COALESCE((
+                               SELECT rolsuper OR rolcreatedb OR rolcreaterole
+                                      OR rolreplication OR rolbypassrls
+                               FROM pg_catalog.pg_roles
+                               WHERE rolname = current_user
+                           ), TRUE)
+                           OR EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.pg_roles AS inherited_role
+                               WHERE pg_catalog.pg_has_role(
+                                   current_user, inherited_role.rolname, 'MEMBER'
+                               )
+                               AND (
+                                   inherited_role.rolsuper
+                                   OR inherited_role.rolcreatedb
+                                   OR inherited_role.rolcreaterole
+                                   OR inherited_role.rolreplication
+                                   OR inherited_role.rolbypassrls
+                               )
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.pg_database AS database_role
+                               WHERE database_role.datname = current_database()
+                                 AND pg_catalog.pg_has_role(
+                                     current_user, database_role.datdba, 'MEMBER'
+                                 )
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.pg_namespace AS namespace_role
+                               WHERE namespace_role.nspname !~ '^pg_'
+                                 AND namespace_role.nspname <> 'information_schema'
+                                 AND (
+                                     pg_catalog.pg_has_role(
+                                         current_user,
+                                         namespace_role.nspowner,
+                                         'MEMBER'
+                                     )
+                                     OR pg_catalog.has_schema_privilege(
+                                         current_user,
+                                         namespace_role.oid,
+                                         'CREATE'
+                                     )
+                                 )
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM pg_catalog.pg_class AS relation_role
+                               JOIN pg_catalog.pg_namespace AS relation_namespace
+                                 ON relation_namespace.oid = relation_role.relnamespace
+                               WHERE relation_namespace.nspname !~ '^pg_'
+                                 AND relation_namespace.nspname <> 'information_schema'
+                                 AND pg_catalog.pg_has_role(
+                                     current_user,
+                                     relation_role.relowner,
+                                     'MEMBER'
+                                 )
+                           ) AS high_privilege
+                    """
+                )
+            )
+            row = result.mappings().one()
+        return (
+            row["probe"] == 1
+            and row["role"] == expected_role
+            and row["high_privilege"] is False
+        )
+    except asyncio.CancelledError:
         raise
     except Exception:
         return False
-    finally:
-        try:
-            if committed:
-                await object_store.delete(object_key)
-            elif temporary_created:
-                await object_store.abort_temporary(object_key, lease_token)
-        except asyncio.CancelledError:
-            if primary_cancel is None:
-                raise
-        except Exception:
-            cleanup_ok = False
-        if not cleanup_ok and primary_cancel is None:
-            raise RuntimeError("READINESS_FILE_CLEANUP_FAILED") from None
 
 
 class ReadinessService:
@@ -95,32 +216,9 @@ class ReadinessService:
         return self._probe_task is not None and not self._probe_task.done()
 
     async def _probe_database(self) -> bool:
-        try:
-            async with self._session_factory() as session:
-                result = await session.execute(
-                    text(
-                        """
-                        SELECT 1 AS probe,
-                               current_user AS role,
-                               COALESCE((
-                                   SELECT rolsuper OR rolcreatedb OR rolcreaterole
-                                          OR rolreplication OR rolbypassrls
-                                   FROM pg_catalog.pg_roles
-                                   WHERE rolname = current_user
-                               ), TRUE) AS high_privilege
-                        """
-                    )
-                )
-                row = result.mappings().one()
-            return (
-                row["probe"] == 1
-                and row["role"] == self._expected_database_role
-                and row["high_privilege"] is False
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return False
+        return await probe_database_role(
+            self._session_factory, self._expected_database_role
+        )
 
     async def _run_probe(self) -> bool:
         started = monotonic()
@@ -179,10 +277,14 @@ class ReadinessService:
         if task is None:
             return
         try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as cancellation:
-            with suppress(BaseException):
-                await task
-            raise cancellation
+            done, _ = await asyncio.wait({task}, timeout=self._total_timeout)
+        except asyncio.CancelledError:
+            raise
+        if not done:
+            raise RuntimeError("READINESS_CLEANUP_PENDING")
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             raise RuntimeError("READINESS_CLEANUP_FAILED") from None

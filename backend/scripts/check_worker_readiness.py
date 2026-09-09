@@ -2,15 +2,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
+import os
 import re
 import sys
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout, suppress
+from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from app.tasks.celery_app import celery_app
-from app.tasks.readiness import WORKER_SPECS
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _HOSTNAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$")
+_WORKER_KINDS = (
+    "registration",
+    "private_file",
+    "therapist",
+    "member",
+    "slice4",
+    "slice5",
+    "slice6",
+    "slice7",
+)
+_CLI_PROBE_TIMEOUT_SECONDS = 1.8
 
 
 class _ArgumentInvalid(Exception):
@@ -35,10 +51,18 @@ def _registered_names(value: object) -> set[str]:
     return {item.split(" ", 1)[0] for item in value}
 
 
+def _runtime_dependencies():
+    from app.tasks.celery_app import celery_app
+    from app.tasks.readiness import WORKER_SPECS
+
+    return celery_app, WORKER_SPECS
+
+
 def probe_worker(*, worker_kind: str, hostname: str) -> dict[str, str]:
-    if worker_kind not in WORKER_SPECS or _HOSTNAME.fullmatch(hostname) is None:
+    celery_app, worker_specs = _runtime_dependencies()
+    if worker_kind not in worker_specs or _HOSTNAME.fullmatch(hostname) is None:
         raise RuntimeError("WORKER_NOT_READY")
-    spec = WORKER_SPECS[worker_kind]
+    spec = worker_specs[worker_kind]
     started = monotonic()
     inspector = celery_app.control.inspect(destination=[hostname], timeout=0.35)
     queues = _single_response(inspector.active_queues(), hostname)
@@ -76,9 +100,89 @@ def probe_worker(*, worker_kind: str, hostname: str) -> dict[str, str]:
     return {"status": "READY", "worker_kind": worker_kind}
 
 
+def _probe_process_entry(
+    connection,
+    worker_kind: str,
+    hostname: str,
+    probe: Callable[..., dict[str, str]],
+) -> None:
+    result: object = None
+    try:
+        with (
+            open(os.devnull, "w", encoding="utf-8") as sink,
+            redirect_stdout(sink),
+            redirect_stderr(sink),
+        ):
+            try:
+                result = probe(worker_kind=worker_kind, hostname=hostname)
+                if result != {"status": "READY", "worker_kind": worker_kind}:
+                    raise RuntimeError("WORKER_NOT_READY")
+            except BaseException:
+                result = None
+        with suppress(BaseException):
+            connection.send(result)
+    finally:
+        connection.close()
+
+
+def _run_bounded_probe(
+    *,
+    worker_kind: str,
+    hostname: str,
+    probe: Callable[..., dict[str, str]] = probe_worker,
+    timeout_seconds: float = _CLI_PROBE_TIMEOUT_SECONDS,
+) -> dict[str, str]:
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_probe_process_entry,
+        args=(sender, worker_kind, hostname, probe),
+        name="c23-worker-readiness-probe",
+        daemon=True,
+    )
+    deadline = monotonic() + timeout_seconds
+    payload: object = None
+    started = False
+    alive = False
+    exitcode: int | None = None
+    try:
+        process.start()
+        started = True
+        sender.close()
+        remaining = max(0.0, deadline - monotonic())
+        if receiver.poll(remaining):
+            payload = receiver.recv()
+        remaining = max(0.0, deadline - monotonic())
+        process.join(remaining)
+    except BaseException:
+        payload = None
+    finally:
+        sender.close()
+        receiver.close()
+        if started and process.is_alive():
+            process.terminate()
+            process.join(0.1)
+        if started and process.is_alive():
+            process.kill()
+            process.join(0.05)
+        alive = started and process.is_alive()
+        if started and not alive:
+            exitcode = process.exitcode
+            process.close()
+    if (
+        not started
+        or alive
+        or exitcode != 0
+        or payload != {"status": "READY", "worker_kind": worker_kind}
+        or monotonic() > deadline + 0.15
+    ):
+        raise RuntimeError("WORKER_NOT_READY")
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _SafeParser(add_help=True)
-    parser.add_argument("--worker-kind", required=True, choices=tuple(WORKER_SPECS))
+    parser.add_argument("--worker-kind", required=True, choices=_WORKER_KINDS)
     parser.add_argument("--hostname", required=True)
     try:
         arguments = parser.parse_args(argv)
@@ -87,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, separators=(",", ":")))
         return 2
     try:
-        result = probe_worker(
+        result = _run_bounded_probe(
             worker_kind=arguments.worker_kind, hostname=arguments.hostname
         )
     except Exception:

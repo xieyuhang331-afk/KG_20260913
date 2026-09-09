@@ -1,27 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass
 
 from celery.worker.control import inspect_command
-from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import (
+    dispose_projection_runtime,
     dispose_slice1_runtime,
     dispose_slice2_runtime,
+    dispose_slice3_runtime,
     dispose_slice4_runtime,
     dispose_slice5_runtime,
     dispose_slice6_runtime,
     dispose_slice7_runtime,
+    get_projection_session_factory,
     get_slice1_session_factory,
     get_slice2_session_factory,
+    get_slice3_session_factory,
     get_slice4_session_factory,
     get_slice5_session_factory,
     get_slice6_session_factory,
     get_slice7_session_factory,
 )
+from app.core.readiness import probe_database_role
 
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
 _WORKER_PROBE_TIMEOUT_SECONDS = 0.8
@@ -64,6 +69,17 @@ WORKER_SPECS = {
                 "phase1.therapist.expire_invitations",
                 "phase1.therapist.recompute_readiness",
                 "phase1.therapist.sweep_readiness",
+            }
+        ),
+    ),
+    "member": WorkerSpec(
+        "member-enrollment-workflow",
+        frozenset(
+            {
+                "phase1.member_enrollment.dispatch_outbox",
+                "phase1.member_enrollment.consume_outbox",
+                "phase1.member_enrollment.recover_outbox",
+                "phase1.member_enrollment.expire_invitations",
             }
         ),
     ),
@@ -133,28 +149,7 @@ def _queue_names(state) -> set[str]:
 
 
 async def _database_ready(factory, expected_role: str | None) -> bool:
-    if not expected_role:
-        return False
-    try:
-        async with factory() as session:
-            row = (
-                await session.execute(
-                    text(
-                        """
-                        SELECT current_user AS role,
-                               COALESCE((SELECT rolsuper OR rolcreatedb OR rolcreaterole
-                                                 OR rolreplication OR rolbypassrls
-                                         FROM pg_catalog.pg_roles
-                                         WHERE rolname=current_user), TRUE) AS high_privilege
-                        """
-                    )
-                )
-            ).mappings().one()
-        return row["role"] == expected_role and row["high_privilege"] is False
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        return False
+    return await probe_database_role(factory, expected_role)
 
 
 async def _with_dispose(check, dispose) -> bool:
@@ -173,6 +168,26 @@ async def _with_dispose(check, dispose) -> bool:
         except Exception:
             if primary is None:
                 raise
+
+
+async def _factory(builder):
+    value = builder()
+    return await value if inspect.isawaitable(value) else value
+
+
+async def _dispose_all(disposes) -> None:
+    primary: BaseException | None = None
+    for dispose in disposes:
+        try:
+            await dispose()
+        except asyncio.CancelledError as error:
+            if not isinstance(primary, asyncio.CancelledError):
+                primary = error
+        except Exception as error:
+            if primary is None:
+                primary = error
+    if primary is not None:
+        raise primary
 
 
 async def _run_worker_check(worker_kind: str) -> bool:
@@ -203,38 +218,131 @@ async def _run_worker_check(worker_kind: str) -> bool:
         )
 
     mappings = {
-        "therapist": (
-            lambda: get_slice2_session_factory("readiness_worker"),
-            settings.therapist_readiness_worker_role,
-            lambda: dispose_slice2_runtime("readiness_worker"),
+        "therapist": lambda: (
+            (
+                (
+                    lambda: get_slice2_session_factory("readiness_worker"),
+                    settings.therapist_readiness_worker_role,
+                ),
+                (
+                    lambda: get_slice2_session_factory("reader"),
+                    settings.therapist_reader_role,
+                ),
+            ),
+            (
+                lambda: dispose_slice2_runtime("readiness_worker"),
+                lambda: dispose_slice2_runtime("reader"),
+            ),
         ),
-        "slice4": (
-            lambda: get_slice4_session_factory("workflow_worker"),
-            settings.slice4_workflow_worker_role,
-            lambda: dispose_slice4_runtime("workflow_worker"),
+        "slice5": lambda: (
+            (
+                (
+                    lambda: get_slice5_session_factory("workflow_worker"),
+                    settings.slice5_workflow_worker_role,
+                ),
+                (
+                    lambda: get_slice4_session_factory("identity_authority"),
+                    settings.slice4_identity_authority_role,
+                ),
+            ),
+            (
+                lambda: dispose_slice5_runtime("workflow_worker"),
+                lambda: dispose_slice4_runtime("identity_authority"),
+            ),
         ),
-        "slice5": (
-            lambda: get_slice5_session_factory("workflow_worker"),
-            settings.slice5_workflow_worker_role,
-            lambda: dispose_slice5_runtime("workflow_worker"),
+        "slice4": lambda: (
+            (
+                (
+                    lambda: get_slice4_session_factory("workflow_worker"),
+                    settings.slice4_workflow_worker_role,
+                ),
+                (
+                    lambda: get_slice4_session_factory(
+                        "assessment_readiness_writer"
+                    ),
+                    settings.assessment_readiness_writer_role,
+                ),
+                (
+                    lambda: get_projection_session_factory("health"),
+                    settings.health_projection_builder_role,
+                ),
+                (
+                    lambda: get_projection_session_factory("confirmation"),
+                    settings.projection_confirmation_role,
+                ),
+                (
+                    lambda: get_projection_session_factory("health_shadow"),
+                    settings.health_projection_shadow_role,
+                ),
+                (
+                    lambda: get_projection_session_factory("ready_gate"),
+                    settings.projection_ready_gate_role,
+                ),
+                (
+                    lambda: get_projection_session_factory(
+                        "shadow_confirmation"
+                    ),
+                    settings.projection_shadow_confirmation_role,
+                ),
+            ),
+            (
+                lambda: dispose_slice4_runtime("workflow_worker"),
+                lambda: dispose_slice4_runtime("assessment_readiness_writer"),
+                lambda: dispose_projection_runtime("health"),
+                lambda: dispose_projection_runtime("confirmation"),
+                lambda: dispose_projection_runtime("health_shadow"),
+                lambda: dispose_projection_runtime("ready_gate"),
+                lambda: dispose_projection_runtime("shadow_confirmation"),
+            ),
         ),
-        "slice6": (
-            lambda: get_slice6_session_factory("workflow_worker"),
-            settings.slice6_workflow_worker_role,
-            lambda: dispose_slice6_runtime("workflow_worker"),
+        "member": lambda: (
+            (
+                (
+                    lambda: get_slice3_session_factory("workflow_worker"),
+                    settings.member_workflow_worker_role,
+                ),
+                (
+                    lambda: get_slice3_session_factory("enrollment_writer"),
+                    settings.member_enrollment_writer_role,
+                ),
+            ),
+            (
+                lambda: dispose_slice3_runtime("workflow_worker"),
+                lambda: dispose_slice3_runtime("enrollment_writer"),
+            ),
         ),
-        "slice7": (
-            lambda: get_slice7_session_factory("export_worker"),
-            settings.slice7_export_worker_role,
-            lambda: dispose_slice7_runtime("export_worker"),
+        "slice6": lambda: (
+            (
+                (
+                    lambda: get_slice6_session_factory("workflow_worker"),
+                    settings.slice6_workflow_worker_role,
+                ),
+            ),
+            (lambda: dispose_slice6_runtime("workflow_worker"),),
+        ),
+        "slice7": lambda: (
+            (
+                (
+                    lambda: get_slice7_session_factory("export_worker"),
+                    settings.slice7_export_worker_role,
+                ),
+            ),
+            (lambda: dispose_slice7_runtime("export_worker"),),
         ),
     }
-    factory_builder, expected_role, dispose = mappings[worker_kind]
-    async def check() -> bool:
-        factory = await factory_builder() if worker_kind not in {"therapist"} else factory_builder()
-        return await _database_ready(factory, expected_role)
+    dependencies, disposes = mappings[worker_kind]()
 
-    return await _with_dispose(check, dispose)
+    async def check() -> bool:
+        for factory_builder, expected_role in dependencies:
+            factory = await _factory(factory_builder)
+            if not await _database_ready(factory, expected_role):
+                return False
+        return True
+
+    async def dispose_all() -> None:
+        await _dispose_all(disposes)
+
+    return await _with_dispose(check, dispose_all)
 
 
 @inspect_command()

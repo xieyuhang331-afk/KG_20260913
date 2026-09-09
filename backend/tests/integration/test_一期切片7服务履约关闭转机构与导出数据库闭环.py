@@ -1258,7 +1258,15 @@ def test_Slice7真实RabbitMQ合同在CI中使用隔离Worker与共享私有目�
     assert "KG_TEST_SLICE7_REAL_RABBIT=1" in workflow
     assert "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" in workflow
     assert "-Q slice7-service-fulfillment-workflow" in workflow
-    assert '--destination "$worker_hostname"' in workflow
+    assert "python scripts/check_worker_readiness.py" in workflow
+    assert "--worker-kind slice7" in workflow
+    assert '--hostname "$worker_hostname"' in workflow
+    assert '--destination "$worker_hostname"' not in workflow
+    readiness_step = workflow.split("- name: Start independent Slice 7 Celery worker", 1)[1].split(
+        "- name: Run Slice 7 RabbitMQ and independent worker contract", 1
+    )[0]
+    assert "if python scripts/check_worker_readiness.py" in readiness_step
+    assert "exit 1" in readiness_step
     assert "pytest-slice7-rabbit-report.xml" in workflow
     assert "Stop independent Slice 7 Celery worker" in workflow
     assert "Verify Slice 7 worker and private storage cleanup" in workflow

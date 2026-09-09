@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,6 +148,11 @@ async def test_C2_3_R02_DB探针绑定正式角色并拒绝高权角色(tmp_path
     assert len(calls) == 1
     assert "current_user" in calls[0]
     assert "pg_roles" in calls[0]
+    assert "pg_has_role" in calls[0]
+    assert "pg_database" in calls[0]
+    assert "pg_namespace" in calls[0]
+    assert "pg_class" in calls[0]
+    assert "has_schema_privilege" in calls[0]
 
     high_privilege = ReadinessService(
         session_factory=_session_factory(
@@ -196,6 +202,7 @@ async def test_C2_3_R03_R04_文件探针单飞超时后仍受生命周期追踪(
 @pytest.mark.asyncio
 async def test_C2_3_R04_文件探针取消优先于cleanup失败() -> None:
     entered = asyncio.Event()
+    release = asyncio.Event()
 
     class Store:
         async def create_temporary(self, *_: object) -> None:
@@ -203,7 +210,7 @@ async def test_C2_3_R04_文件探针取消优先于cleanup失败() -> None:
 
         async def write_chunk(self, *_: object) -> None:
             entered.set()
-            await asyncio.Event().wait()
+            await release.wait()
 
         async def abort_temporary(self, *_: object) -> None:
             raise RuntimeError("path and credential must stay hidden")
@@ -211,6 +218,7 @@ async def test_C2_3_R04_文件探针取消优先于cleanup失败() -> None:
     task = asyncio.create_task(probe_private_object_store(Store()))
     await entered.wait()
     task.cancel()
+    release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
@@ -241,3 +249,130 @@ async def test_C2_3_R04_应用关闭取消优先于后台探针失败(tmp_path: 
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await close
+
+
+@pytest.mark.asyncio
+async def test_C2_3_R04_create线程双重取消后仍等待后像并清除临时对象(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+
+    class Store:
+        def __init__(self) -> None:
+            self.temporary: Path | None = None
+
+        async def create_temporary(self, object_key: str, *_: object) -> None:
+            self.temporary = tmp_path / object_key.replace("/", "-")
+
+            def create() -> None:
+                entered.set()
+                release.wait()
+                assert self.temporary is not None
+                self.temporary.write_bytes(b"")
+                completed.set()
+
+            await asyncio.to_thread(create)
+
+        async def abort_temporary(self, *_: object) -> None:
+            assert self.temporary is not None
+            self.temporary.unlink(missing_ok=True)
+
+        async def delete(self, *_: object) -> None:
+            return None
+
+    store = Store()
+    task = asyncio.create_task(probe_private_object_store(store))
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(completed.wait, 1)
+    assert await asyncio.to_thread(lambda: list(tmp_path.iterdir())) == []
+
+
+@pytest.mark.asyncio
+async def test_C2_3_R04_replace完成但返回前双重取消仍清除正式对象(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+
+    class Store:
+        def __init__(self) -> None:
+            self.temporary = tmp_path / "probe.part"
+            self.final = tmp_path / "probe.final"
+
+        async def create_temporary(self, *_: object) -> None:
+            self.temporary.write_bytes(b"")
+
+        async def write_chunk(self, *_: object) -> None:
+            self.temporary.write_bytes(b"ready")
+
+        async def flush(self, *_: object, **__: object) -> object:
+            return SimpleNamespace(size=5, sha256="a" * 64)
+
+        async def commit(self, *_: object) -> None:
+            def replace() -> None:
+                self.temporary.replace(self.final)
+                entered.set()
+                release.wait()
+                completed.set()
+
+            await asyncio.to_thread(replace)
+
+        async def stat(self, *_: object) -> object:
+            return SimpleNamespace(size=5, sha256="a" * 64)
+
+        async def abort_temporary(self, *_: object) -> None:
+            self.temporary.unlink(missing_ok=True)
+
+        async def delete(self, *_: object) -> None:
+            self.final.unlink(missing_ok=True)
+
+    store = Store()
+    task = asyncio.create_task(probe_private_object_store(store))
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(completed.wait, 1)
+    assert await asyncio.to_thread(lambda: list(tmp_path.iterdir())) == []
+
+
+@pytest.mark.asyncio
+async def test_C2_3_R04_shutdown有界报告后台文件线程仍待收敛(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def blocked_probe() -> bool:
+        entered.set()
+        await asyncio.to_thread(release.wait)
+        return True
+
+    service = ReadinessService(
+        session_factory=_session_factory(
+            {"probe": 1, "role": "kg_app", "high_privilege": False}, []
+        ),
+        expected_database_role="kg_app",
+        object_store=SimpleNamespace(root=tmp_path),
+        file_probe=blocked_probe,
+        total_timeout_seconds=0.02,
+    )
+    service._probe_task = asyncio.create_task(blocked_probe())
+    assert await asyncio.to_thread(entered.wait, 1)
+    asyncio.get_running_loop().call_later(0.3, release.set)
+    try:
+        with pytest.raises(RuntimeError, match="READINESS_CLEANUP_PENDING"):
+            await asyncio.wait_for(service.close(), timeout=0.2)
+        assert service.has_pending_probe is True
+    finally:
+        release.set()
+        await service.close()
+    assert service.has_pending_probe is False
