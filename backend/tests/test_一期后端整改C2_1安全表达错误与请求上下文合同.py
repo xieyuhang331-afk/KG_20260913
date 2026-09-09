@@ -93,7 +93,13 @@ def test_C21_R05_OpenAPI如实声明核心错误且不覆盖局部422410(access_
         assert "ErrorResponseDTO" not in str(local)
     private = schema["paths"]["/api/v1/private-files/{file_id}/content"]["get"]["responses"]
     assert "application/octet-stream" in private["200"]["content"]
-    assert "ErrorResponseDTO" not in str(private.get("422", {}))
+    private_validation = private["422"]
+    assert private_validation["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponseDTO"
+    }
+    assert private_validation["headers"]["Cache-Control"]["schema"]["enum"] == [
+        "no-store, private, max-age=0"
+    ]
     therapist = schema["paths"]["/api/v1/institution/therapist-invitations"]["post"]["responses"]
     assert "422" not in therapist
 

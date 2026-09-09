@@ -133,7 +133,7 @@ class Slice5Secrets:
             self._digest_id == self._phi_id
             or self._digest_keys[self._digest_id] == self._phi_keys[self._phi_id]
         ):
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+            raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
 
     @staticmethod
     def _load(current_id: str | None, raw: str | None) -> tuple[str, dict[str, bytes]]:
@@ -151,7 +151,7 @@ class Slice5Secrets:
                 raise ValueError
             return current_id, keys
         except Exception:
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+            raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
 
     @staticmethod
     def canonical(value: object) -> bytes:
@@ -163,7 +163,7 @@ class Slice5Secrets:
         if domain not in {
             "REQUEST", "SNAPSHOT", "AUDIT", "OUTBOX", "REPLAY", "RULE_FRAGMENT", "EVIDENCE"
         }:
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+            raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
         material = self.canonical({"domain": f"slice5.{domain.lower()}.v1", "value": value})
         return hmac.new(self._digest_keys[self._digest_id], material, hashlib.sha256).digest(), self._digest_id
 
@@ -191,7 +191,7 @@ class Slice5Secrets:
             )
             return json.loads(AESGCM(self._phi_keys[key_id]).decrypt(value[:12], value[12:], aad))
         except (KeyError, ValueError, TypeError, InvalidTag, json.JSONDecodeError):
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+            raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
 
 
 def _json_value(value: Any) -> Any:
@@ -232,8 +232,8 @@ async def commit_with_confirmation(
         if outcome is CommitOutcome.COMMITTED:
             return outcome
         if outcome is CommitOutcome.NOT_COMMITTED:
-            raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+            raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
 
 
 def _uuid7_from(timestamp: datetime, material: bytes, discriminator: int) -> UUID:
@@ -575,7 +575,7 @@ async def fail_assessment(
     secrets: Slice5Secrets | None = None,
 ) -> dict[str, Any]:
     if failure_code not in {"RULE_EVALUATION_UNAVAILABLE"} or failed_at.utcoffset() is None:
-        raise RuntimeError("INVALID_REQUEST") from None
+        raise HealthAssessmentError("INVALID_REQUEST") from None
     secret_box = secrets or Slice5Secrets()
     request_digest, digest_key_id = secret_box.digest(
         "REQUEST",
@@ -629,7 +629,7 @@ async def fail_assessment(
 
     outcome = await commit_with_confirmation(repository.session, confirm=confirm)
     if outcome is not CommitOutcome.COMMITTED:
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
     return result
 
 
@@ -676,7 +676,7 @@ async def start_assessment(
         or len(idempotency_key) < 8
         or request_id.version != 7
     ):
-        raise RuntimeError("INVALID_REQUEST") from None
+        raise HealthAssessmentError("INVALID_REQUEST") from None
     secret_box = secrets or Slice5Secrets()
     request_digest, digest_key_id = secret_box.digest(
         "REQUEST",
@@ -694,18 +694,18 @@ async def start_assessment(
         return replay
     authority = await repository.start_authority(service_case_id, actor_user_id)
     if authority is None:
-        raise RuntimeError("PRIMARY_THERAPIST_REQUIRED") from None
+        raise HealthAssessmentError("PRIMARY_THERAPIST_REQUIRED") from None
     if int(authority["case_version"]) != expected_case_version:
-        raise RuntimeError("VERSION_CONFLICT") from None
+        raise HealthAssessmentError("VERSION_CONFLICT") from None
     if authority.get("assembly_status") != "ASSESSMENT_READY":
-        raise RuntimeError("ASSESSMENT_NOT_READY") from None
+        raise HealthAssessmentError("ASSESSMENT_NOT_READY") from None
     if authority.get("rule_set_code") != RULE_SET_CODE:
-        raise RuntimeError("RULE_SET_NOT_ACTIVE") from None
+        raise HealthAssessmentError("RULE_SET_NOT_ACTIVE") from None
     now = authority.get("transaction_time")
     if type(now) is str:
         now = datetime.fromisoformat(now)
     if type(now) is not datetime or now.utcoffset() is None:
-        raise RuntimeError("DEPENDENCY_UNAVAILABLE") from None
+        raise HealthAssessmentError("DEPENDENCY_UNAVAILABLE") from None
     assessment_id = _uuid7_from(now, request_digest, 1)
     snapshot_id = _uuid7_from(now, request_digest, 2)
     audit_id = _uuid7_from(now, request_digest, 3)
@@ -802,7 +802,7 @@ async def start_assessment(
 
     outcome = await commit_with_confirmation(repository.session, confirm=confirm)
     if outcome is not CommitOutcome.COMMITTED:
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
     return result
 
 
@@ -860,7 +860,7 @@ def build_current_evaluation_context(
             acute_symptom_codes=symptom_codes,
         )
     except (AttributeError, TypeError, ValueError):
-        raise RuntimeError("RULE_EVALUATION_UNAVAILABLE") from None
+        raise HealthAssessmentError("RULE_EVALUATION_UNAVAILABLE") from None
 
 
 def _module_measurement_contexts(
@@ -897,11 +897,11 @@ async def execute_assessment(
 ) -> dict[str, Any]:
     claimed = await repository.claim_assessment(assessment_id, lease_owner)
     if claimed is None:
-        raise RuntimeError("ASSESSMENT_ALREADY_RUNNING") from None
+        raise HealthAssessmentError("ASSESSMENT_ALREADY_RUNNING") from None
     await repository.session.commit()
     source = await repository.assessment_input(assessment_id)
     if source is None or source.get("rule_set_code") != RULE_SET_CODE:
-        raise RuntimeError("RULE_EVALUATION_UNAVAILABLE") from None
+        raise HealthAssessmentError("RULE_EVALUATION_UNAVAILABLE") from None
     slice4_box = slice4_secrets or Slice4Secrets()
     slice5_box = slice5_secrets or Slice5Secrets()
     profile = slice4_box.decrypt_profile(
@@ -922,7 +922,7 @@ async def execute_assessment(
         or identity_summary.source_version != int(source["identity_source_version"])
         or identity_summary.tenant_public_id != UUID(str(source["tenant_public_id"]))
     ):
-        raise RuntimeError("RULE_EVALUATION_UNAVAILABLE") from None
+        raise HealthAssessmentError("RULE_EVALUATION_UNAVAILABLE") from None
     values: dict[str, object] = {}
     units: dict[str, str] = {}
     contexts: dict[str, str] = {}
@@ -1063,7 +1063,7 @@ async def execute_assessment(
 
     outcome = await commit_with_confirmation(repository.session, confirm=confirm)
     if outcome is not CommitOutcome.COMMITTED:
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
     return result
 
 
@@ -1117,7 +1117,7 @@ async def transition_high_risk_task(
         "RESOLVE": "RESOLVED",
     }.get(action_code)
     if to_status is None:
-        raise RuntimeError("INVALID_TASK_TRANSITION") from None
+        raise HealthAssessmentError("INVALID_TASK_TRANSITION") from None
     response = {"task_id": task_id, "status": to_status, "version": expected_version + 1}
     outbox_digest, _ = secret_box.digest(
         "OUTBOX",
@@ -1179,10 +1179,10 @@ async def govern_rule_set(
         "CREATE", "UPDATE_DRAFT", "SUBMIT", "REVIEW_APPROVE", "REVIEW_CORRECTION",
         "PUBLISH", "SUSPEND", "RESUME", "RETIRE",
     }:
-        raise RuntimeError("INVALID_REQUEST") from None
+        raise HealthAssessmentError("INVALID_REQUEST") from None
     now = occurred_at or datetime.now(timezone.utc)
     if now.utcoffset() is None or actor_user_id < 1 or len(idempotency_key) < 8:
-        raise RuntimeError("INVALID_REQUEST") from None
+        raise HealthAssessmentError("INVALID_REQUEST") from None
     detail_payload = dict(details or {})
     response_override = detail_payload.pop("_response", None)
     secret_box = secrets or Slice5Secrets()
@@ -1327,7 +1327,7 @@ async def govern_rule_set(
 
     outcome = await commit_with_confirmation(repository.session, confirm=confirm)
     if outcome is not CommitOutcome.COMMITTED:
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
     return result
 
 
@@ -1346,7 +1346,7 @@ async def raise_assessment_dispute(
     secrets: Slice5Secrets | None = None,
 ) -> dict[str, Any]:
     if occurred_at.utcoffset() is None:
-        raise RuntimeError("INVALID_REQUEST") from None
+        raise HealthAssessmentError("INVALID_REQUEST") from None
     secret_box = secrets or Slice5Secrets()
     request_digest, digest_key_id = secret_box.digest(
         "REQUEST",
@@ -1469,5 +1469,5 @@ async def raise_assessment_dispute(
 
     outcome = await commit_with_confirmation(repository.session, confirm=confirm)
     if outcome is not CommitOutcome.COMMITTED:
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+        raise HealthAssessmentError("COMMIT_OUTCOME_UNKNOWN") from None
     return result

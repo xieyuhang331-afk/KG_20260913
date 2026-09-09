@@ -137,7 +137,12 @@ def test_P3机构创建候选排序与并发闭环(real_db_client, pg_database):
         ), payloads))
     assert sorted(response.status_code for response in responses) == [201, 409]
     loser = next(response for response in responses if response.status_code == 409)
-    assert loser.json() == {"detail": "ORGANIZATION_VERSION_CONFLICT"}
+    loser_body = loser.json()
+    assert set(loser_body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert loser_body["code"] == "ORGANIZATION_VERSION_CONFLICT"
+    assert loser_body["request_id"] == loser.headers["x-request-id"]
+    assert loser_body["retryable"] is False and loser_body["field_errors"] == []
+    assert loser.headers["cache-control"] == "no-store, private"
     assert pg_database.fetch_value(
         "SELECT COUNT(*) FROM public.platform_org WHERE parent_id=301100"
     ) == 1
@@ -297,7 +302,12 @@ def test_tenant_descendant_scope_is_fail_closed_for_legacy_archived_and_corrupte
         headers=headers,
     )
     assert corrupted.status_code == 503
-    assert corrupted.json() == {"detail": "ORGANIZATION_DATA_CORRUPTED"}
+    corrupted_body = corrupted.json()
+    assert set(corrupted_body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert corrupted_body["code"] == "ORGANIZATION_DATA_CORRUPTED"
+    assert corrupted_body["request_id"] == corrupted.headers["x-request-id"]
+    assert corrupted_body["retryable"] is False and corrupted_body["field_errors"] == []
+    assert corrupted.headers["cache-control"] == "no-store, private"
 
 
 def test_mutation_commit_outcome_unknown_confirms_fresh_database_state(
@@ -328,7 +338,12 @@ def test_mutation_commit_outcome_unknown_confirms_fresh_database_state(
         headers=_headers(301001, "super_admin"),
     )
     assert response.status_code == 503
-    assert response.json() == {"detail": "ORGANIZATION_COMMIT_OUTCOME_UNKNOWN"}
+    response_body = response.json()
+    assert set(response_body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert response_body["code"] == "ORGANIZATION_COMMIT_OUTCOME_UNKNOWN"
+    assert response_body["request_id"] == response.headers["x-request-id"]
+    assert response_body["retryable"] is False and response_body["field_errors"] == []
+    assert response.headers["cache-control"] == "no-store, private"
     created = pg_database.fetch_rows(
         "SELECT id,parent_id,org_code,version FROM public.platform_org "
         "WHERE org_code='TEST_OUTCOME_PROVINCE'"

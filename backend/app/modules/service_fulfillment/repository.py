@@ -5,12 +5,13 @@ from datetime import datetime
 from typing import Mapping
 from uuid import UUID
 
+import asyncpg
 from sqlalchemy import BigInteger, bindparam, text
 from sqlalchemy.dialects.postgresql import UUID as UUIDType
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .service import _json_value, digest_hex
-
 
 _UUID = UUIDType(as_uuid=True)
 _PAGE_ID_FIELDS = {
@@ -19,6 +20,83 @@ _PAGE_ID_FIELDS = {
     "MILESTONE": "milestone_id",
     "TRANSFER": "transfer_id",
 }
+
+
+class ServiceFulfillmentRepositoryError(RuntimeError):
+    pass
+
+
+_COMMON_MUTATION_ERRORS = {
+    "INVALID_REQUEST": "INVALID_REQUEST",
+    "IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+}
+_CURRENTNESS_OPERATIONS = frozenset({
+    "COMPLETE_MILESTONE", "PAUSE_CASE", "RESUME_CASE",
+    "WITHDRAW_CASE", "TERMINATE_CASE", "UNABLE_TO_CONTACT", "SAFETY_TERMINATE",
+    "CREATE_CLOSING_ASSESSMENT", "CREATE_SUMMARY", "ACK_SUMMARY",
+    "CREATE_TRANSFER", "CANCEL_TRANSFER", "CONFIRM_TRANSFER_SCOPE",
+    "START_REVIEW_TRANSFER", "ACCEPT_TRANSFER", "REJECT_TRANSFER",
+    "SOURCE_CLOSE_TRANSFER", "COORDINATE_TRANSFER_CLOSE", "LINK_CONTINUATION_CASE",
+    "AUTHORIZE_PROXY_MAJOR", "REVOKE_PROXY_MAJOR", "CREATE_EXPORT", "CANCEL_EXPORT",
+    "EXPORT_DOWNLOAD_ACCESS",
+})
+_STALE_VERSION_OPERATIONS = frozenset({
+    "COMPLETE_MILESTONE", "PAUSE_CASE", "RESUME_CASE",
+    "WITHDRAW_CASE", "TERMINATE_CASE", "UNABLE_TO_CONTACT", "SAFETY_TERMINATE",
+    "CREATE_CLOSING_ASSESSMENT", "CREATE_SUMMARY", "ACK_SUMMARY",
+    "COORDINATE_TRANSFER_CLOSE", "REVOKE_PROXY_MAJOR", "CANCEL_EXPORT",
+    "EXPORT_DOWNLOAD_ACCESS",
+})
+_TRANSFER_STATE_OPERATIONS = frozenset({
+    "START_REVIEW_TRANSFER", "ACCEPT_TRANSFER", "REJECT_TRANSFER",
+    "SOURCE_CLOSE_TRANSFER", "CONFIRM_TRANSFER_SCOPE", "CANCEL_TRANSFER",
+    "COORDINATE_TRANSFER_CLOSE", "LINK_CONTINUATION_CASE",
+})
+
+
+def _mutation_errors(operation: str) -> dict[str, str]:
+    if operation not in _CURRENTNESS_OPERATIONS:
+        return {}
+    allowed = dict(_COMMON_MUTATION_ERRORS)
+    if operation in _CURRENTNESS_OPERATIONS:
+        allowed["CURRENTNESS_FORBIDDEN"] = "CURRENTNESS_FORBIDDEN"
+    if operation in _STALE_VERSION_OPERATIONS:
+        allowed["STALE_VERSION"] = "STALE_VERSION"
+    if operation in _TRANSFER_STATE_OPERATIONS:
+        allowed["TRANSFER_STATE_CONFLICT"] = "TRANSFER_STATE_CONFLICT"
+    if operation == "ACK_SUMMARY":
+        allowed["CLOSURE_PREREQUISITE_MISSING"] = "CLOSURE_PREREQUISITE_MISSING"
+    if operation == "EXPORT_DOWNLOAD_ACCESS":
+        allowed["EXPORT_NOT_READY"] = "EXPORT_NOT_READY"
+    return allowed
+
+
+def _database_error(exc: DBAPIError, allowed: Mapping[str, str]) -> str | None:
+    original = exc.orig
+    direct_cause = getattr(original, "__cause__", None)
+    driver_error = next(
+        (
+            candidate
+            for candidate in (original, direct_cause)
+            if isinstance(candidate, asyncpg.PostgresError)
+        ),
+        None,
+    )
+    if driver_error is None or driver_error.sqlstate != "P0001":
+        return None
+    if len(driver_error.args) != 1 or type(driver_error.args[0]) is not str:
+        return None
+    return allowed.get(driver_error.args[0])
+
+
+async def _execute_registered(session, statement, parameters, allowed: Mapping[str, str]):
+    try:
+        return await session.execute(statement, parameters)
+    except DBAPIError as exc:
+        code = _database_error(exc, allowed)
+        if code is None:
+            raise
+        raise ServiceFulfillmentRepositoryError(code) from None
 
 
 class ServiceFulfillmentRepository:
@@ -60,12 +138,21 @@ class ServiceFulfillmentRepository:
         statement = text(
             "SELECT public.slice7_mutation_replay_v1(:actor,:operation,:key,decode(:digest,'hex')) AS value"
         ).bindparams(bindparam("actor", type_=BigInteger()))
-        replay = (await self.session.execute(statement, {
-            "actor": actor_user_id,
-            "operation": operation,
-            "key": idempotency_key,
-            "digest": request_digest,
-        })).scalar_one_or_none()
+        replay = (
+            await _execute_registered(
+                self.session,
+                statement,
+                {
+                    "actor": actor_user_id,
+                    "operation": operation,
+                    "key": idempotency_key,
+                    "digest": request_digest,
+                },
+                {"IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT"}
+                if operation in _CURRENTNESS_OPERATIONS
+                else {},
+            )
+        ).scalar_one_or_none()
         if replay is not None:
             self.mutation_replayed = True
         return replay
@@ -103,10 +190,14 @@ class ServiceFulfillmentRepository:
             separators=(",", ":"),
             sort_keys=True,
         )
-        result = (await self.session.execute(
-            text("SELECT public.slice7_mutation_v1(CAST(:value AS jsonb)) AS value"),
-            {"value": value},
-        )).scalar_one()
+        result = (
+            await _execute_registered(
+                self.session,
+                text("SELECT public.slice7_mutation_v1(CAST(:value AS jsonb)) AS value"),
+                {"value": value},
+                _mutation_errors(operation),
+            )
+        ).scalar_one()
         return dict(result)
 
     async def confirm_mutation_outcome(self, expected: Mapping[str, object]) -> dict:

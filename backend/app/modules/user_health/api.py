@@ -8,7 +8,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import text
 
@@ -25,6 +24,28 @@ from app.core.database import (
 from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_member
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user, get_current_user_from_jwt
+from app.core.接口合同 import error_response
+from app.modules.assessment_readiness.repository import AssessmentReadinessRepository
+from app.modules.assessment_readiness.schemas import AssessmentReadinessDTO
+from app.modules.assessment_readiness.service import read_current_readiness
+from app.modules.member_enrollment.identity_authority import (
+    Slice4IdentitySummaryAuthority,
+)
+from app.modules.member_enrollment.repository import MemberEnrollmentRepository
+from app.modules.projection_read.domain import (
+    ProjectionInvalidRequest,
+    ProjectionReadUnavailable,
+)
+from app.modules.projection_read.service import (
+    INDICATOR_CATALOG_V2,
+    HealthProjectionCoverageAuthorityService,
+    LatestReadyHealthProjectionResolverService,
+    MemberHealthProjectionReadService,
+)
+from app.modules.user_health.repository import (
+    Slice4HealthRecordRepository,
+    UserHealthRepositoryError,
+)
 from app.modules.user_health.schemas import (
     DetectionReportDetailDTO,
     DetectionReportDTO,
@@ -42,50 +63,34 @@ from app.modules.user_health.schemas import (
     HealthIndicatorPageDTO,
     HealthIndicatorTrendDTO,
     HealthIndicatorTrendPointDTO,
-    HealthProfileDTO,
     HealthProfileCreateRequest,
+    HealthProfileDTO,
     InstitutionHealthRecordDTO,
     MemberSelfHealthProfileWriteRequest,
 )
-from app.modules.assessment_readiness.schemas import AssessmentReadinessDTO
-from app.modules.assessment_readiness.repository import AssessmentReadinessRepository
-from app.modules.assessment_readiness.service import read_current_readiness
 from app.modules.user_health.service import (
-    create_health_indicators,
-    create_health_profile,
+    UserHealthError,
+    correct_formal_health_fact,
     create_formal_detection_report,
     create_formal_health_facts,
     create_formal_profile_root,
-    correct_formal_health_fact,
-    get_member_self_health_profile,
-    get_member_self_detection_report_service,
-    get_member_self_latest_health_indicators,
+    create_health_indicators,
+    create_health_profile,
     get_health_profile,
     get_latest_health_indicators,
+    get_member_self_detection_report_service,
+    get_member_self_health_profile,
+    get_member_self_latest_health_indicators,
     list_health_indicators,
-    list_member_self_health_indicators,
     list_member_self_detection_reports_service,
+    list_member_self_health_indicators,
     put_member_self_health_profile,
     read_formal_detection_report,
     read_formal_detection_reports,
-    read_formal_health_profile,
     read_formal_health_fact,
+    read_formal_health_profile,
     transition_formal_health_fact_state,
 )
-from app.modules.member_enrollment.identity_authority import Slice4IdentitySummaryAuthority
-from app.modules.member_enrollment.repository import MemberEnrollmentRepository
-from app.modules.user_health.repository import Slice4HealthRecordRepository
-from app.modules.projection_read.domain import (
-    ProjectionInvalidRequest,
-    ProjectionReadUnavailable,
-)
-from app.modules.projection_read.service import (
-    HealthProjectionCoverageAuthorityService,
-    LatestReadyHealthProjectionResolverService,
-    MemberHealthProjectionReadService,
-    INDICATOR_CATALOG_V2,
-)
-
 
 router = APIRouter(prefix="/api/v1/users", tags=["user_health"])
 
@@ -353,7 +358,7 @@ def _family_error_catalog(*, proxy: bool) -> dict[tuple[str, str], tuple[str, ..
 def _therapist_codes(*codes: str) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(
-            ("AUTHENTICATION_REQUIRED", *codes, "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")
+            ("AUTHENTICATION_REQUIRED", *codes, "ACTOR_CURRENTNESS_FORBIDDEN", "THERAPIST_SCOPE_FORBIDDEN", "SERVICE_CASE_NOT_FOUND", "CONSENT_REQUIRED", "DEPENDENCY_UNAVAILABLE")
         )
     )
 
@@ -431,42 +436,33 @@ class Slice4Route(APIRoute):
                 return await original(request)
             except RequestValidationError:
                 status_code = 422 if key in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES else 400
-                return JSONResponse(
-                    status_code=status_code,
-                    content={"code": "INVALID_REQUEST", "message": "request rejected"},
-                )
+                return error_response(request, status_code, "INVALID_REQUEST")
             except HTTPException as exc:
                 allowed = SLICE4_ROUTE_ERROR_CODES[key]
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
                 if exc.status_code == 401:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"code": "AUTHENTICATION_REQUIRED", "message": "request rejected"},
-                        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
-                    )
+                    return error_response(request, 401, "AUTHENTICATION_REQUIRED", headers={"WWW-Authenticate": "Bearer"})
                 if exc.status_code == 503 and code not in allowed:
                     code = "DEPENDENCY_UNAVAILABLE"
                 if type(code) is not str or code not in allowed:
                     code = "INVALID_REQUEST" if "INVALID_REQUEST" in allowed else "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(
-                    status_code=_CODE_STATUS[code],
-                    content={"code": code, "message": "request rejected"},
-                    headers={"Cache-Control": "no-store"} if _CODE_STATUS[code] == 503 else None,
+                status = _CODE_STATUS[code]
+                return error_response(
+                    request, status, code,
+                    retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
                 )
-            except Exception as exc:
-                code = str(exc)
-                if code in SLICE4_ROUTE_ERROR_CODES[key]:
-                    return JSONResponse(
-                        status_code=_CODE_STATUS[code],
-                        content={"code": code, "message": "request rejected"},
-                        headers={"Cache-Control": "no-store"} if _CODE_STATUS[code] == 503 else None,
-                    )
-                return JSONResponse(
-                    status_code=503,
-                    content={"code": "DEPENDENCY_UNAVAILABLE", "message": "request rejected"},
-                    headers={"Cache-Control": "no-store"},
+            except (UserHealthError, UserHealthRepositoryError) as exc:
+                code = exc.args[0] if len(exc.args) == 1 and type(exc.args[0]) is str else None
+                if code not in SLICE4_ROUTE_ERROR_CODES[key]:
+                    return error_response(request, 500, "INTERNAL_ERROR")
+                status = _CODE_STATUS[code]
+                return error_response(
+                    request, status, code,
+                    retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
                 )
+            except Exception:
+                return error_response(request, 500, "INTERNAL_ERROR")
 
         return handler
 
@@ -482,20 +478,50 @@ def strip_slice4_validation_responses(schema: dict[str, object]) -> dict[str, ob
         responses = operation.get("responses", {})
         if isinstance(responses, dict) and (method, path) not in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES:
             responses.pop("422", None)
-        for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+        validation_status = (
+            422 if (method, path) in _SLICE4_HTTP_ERROR_CONTRACT_ROUTES else 400
+        )
+        statuses = {
+            *(str(_CODE_STATUS[code]) for code in codes),
+            str(validation_status),
+            "500",
+        }
+        for status in sorted(statuses, key=int):
+            example_code = "INTERNAL_ERROR" if status == "500" else next(
+                (code for code in codes if _CODE_STATUS[code] == int(status)),
+                "INVALID_REQUEST",
+            )
             response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
-            media = response.setdefault("content", {}).setdefault("application/json", {
-                "schema": {"type": "object", "required": ["code", "message"], "properties": {
-                    "code": {"type": "string"}, "message": {"type": "string"},
-                }},
-            })
-            media.setdefault("examples", {})["authentication"] = {
-                "value": {"code": auth_code, "message": "request rejected"},
+            examples = {"rejected": {"value": {
+                "code": example_code,
+                "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN", "field_errors": [],
+            }}}
+            if status in {"401", "503"}:
+                authentication_code = (
+                    "AUTHENTICATION_REQUIRED"
+                    if status == "401" and "AUTHENTICATION_REQUIRED" in codes
+                    else "UNAUTHENTICATED" if status == "401" else "DEPENDENCY_UNAVAILABLE"
+                )
+                examples["authentication"] = {"value": {
+                    "code": authentication_code,
+                    "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == "503", "field_errors": [],
+                }}
+            response.setdefault("content", {})["application/json"] = {
+                "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                "examples": examples,
             }
             headers = response.setdefault("headers", {})
-            headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+            headers.update({
+                "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+            })
             if status == "401":
                 headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
+            if status in {"429", "503"}:
+                headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 0}}
         operation["x-symbolic-error-codes"] = list(codes)
     return schema
 

@@ -4,7 +4,9 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import os
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +14,9 @@ import pytest
 from app.core.security import create_access_token
 from app.modules.health_assessment.service import encode_slice5_cursor
 from app.modules.service_fulfillment.service import encode_page_cursor
+from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
+    _assert_error_response_dto,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -27,6 +32,24 @@ def _create_user(database, role):
         "VALUES($1,$2,$3::user_role,'active') RETURNING id",
         "000" + str(uuid4().int)[-8:], "c1b-synthetic-only", role,
     )))
+
+
+def _assert_private_replay_error(
+    response, *, subject: int, access: str, credential: str
+) -> None:
+    body = _assert_error_response_dto(
+        response,
+        status_code=403,
+        error_code="PRIVATE_FILE_ACCESS_INVALID",
+        retryable=False,
+    )
+    _check(response.headers.get("Cache-Control") == "no-store, private, max-age=0",
+           "C1B_FILE_REPLAY_CACHE_UNSAFE")
+    _check(access not in response.text and credential not in response.text,
+           "C1B_FILE_REPLAY_CREDENTIAL_LEAK")
+    non_correlation_body = {key: value for key, value in body.items() if key != "request_id"}
+    _check(str(subject) not in json.dumps(non_correlation_body, sort_keys=True),
+           "C1B_FILE_REPLAY_SUBJECT_LEAK")
 
 
 def _resign(token, key, domain):
@@ -60,15 +83,34 @@ def test_C1B_R09_Fresh正式HTTP分页拒绝旧JWT用途且首页可重取(pg_da
             old = _resign(cursor, os.environ["KG_JWT_SECRET_KEY"], domain)
             rejected = real_db_client.get(path, headers=headers, params={"cursor": old, "limit": 1})
             _check(rejected.status_code == 422, "C1B_FRESH_OLD_CURSOR_NOT_REJECTED")
-            _check(rejected.json() == {"code": "INVALID_REQUEST", "message": "request rejected"},
-                   "C1B_FRESH_ERROR_CONTRACT_CHANGED")
-            _check(not any(value in rejected.text for value in (str(subject), access, old)),
-                   "C1B_FRESH_ERROR_OUTPUT_UNSAFE")
+            rejected_body = _assert_error_response_dto(
+                rejected,
+                status_code=422,
+                error_code="INVALID_REQUEST",
+                retryable=False,
+            )
+            rejected_without_request_id = {
+                key: value for key, value in rejected_body.items() if key != "request_id"
+            }
+            rejected_text = json.dumps(rejected_without_request_id, sort_keys=True)
+            _check(access not in rejected.text and old not in rejected.text,
+                   "C1B_FRESH_ERROR_CREDENTIAL_LEAK")
+            _check(str(subject) not in rejected_text,
+                   "C1B_FRESH_ERROR_SUBJECT_LEAK")
             first = real_db_client.get(path, headers=headers, params={"limit": 1})
             _check(first.status_code == 200, "C1B_FRESH_FIRST_PAGE_RECOVERY_FAILED")
             ordinary = real_db_client.get(path, headers=headers, params={"limit": 0})
-            _check(ordinary.status_code == 422 and ordinary.json() == rejected.json(),
-                   "C1B_FRESH_INVALID_REQUEST_NOT_SHARED")
+            ordinary_body = _assert_error_response_dto(
+                ordinary,
+                status_code=422,
+                error_code="INVALID_REQUEST",
+                retryable=False,
+            )
+            _check(
+                {key: value for key, value in ordinary_body.items() if key != "request_id"}
+                == {key: value for key, value in rejected_body.items() if key != "request_id"},
+                "C1B_FRESH_INVALID_REQUEST_NOT_SHARED",
+            )
         _check(pg_database.fetch_value('SELECT count(*) FROM public."user"') == before,
                "C1B_FRESH_GET_MUTATED_USERS")
     finally:
@@ -139,8 +181,12 @@ def test_C1B_R07_Fresh正式HTTP文件凭证独立一次性消费(pg_database, r
             grant["content_path"], headers={**headers, "X-Private-File-Access": grant["access_credential"]},
         )
         _check(replay.status_code == 403, "C1B_FILE_REPLAY_ACCEPTED")
-        _check(all(value not in replay.text for value in (str(subject), access, grant["access_credential"])),
-               "C1B_FILE_REPLAY_OUTPUT_UNSAFE")
+        _assert_private_replay_error(
+            replay,
+            subject=subject,
+            access=access,
+            credential=grant["access_credential"],
+        )
     finally:
         if file_id is not None:
             asyncio.run(pg_database._fetch_value(
@@ -148,3 +194,41 @@ def test_C1B_R07_Fresh正式HTTP文件凭证独立一次性消费(pg_database, r
             ))
             asyncio.run(pg_database._fetch_value("DELETE FROM public.private_file WHERE file_id=$1 RETURNING true", file_id))
         asyncio.run(pg_database._fetch_value('DELETE FROM public."user" WHERE id=$1 RETURNING true', subject))
+
+
+def test_C1B_R07_短整数与UUIDv7相关ID碰撞不误报且真实回显仍拒绝() -> None:
+    subject = 12
+    credential = "synthetic-private-credential-value"
+    access = "synthetic-access-token-value"
+    request_id = "01990012-0000-7000-8000-000000000201"
+    body = {
+        "code": "PRIVATE_FILE_ACCESS_INVALID",
+        "message": "request rejected",
+        "request_id": request_id,
+        "retryable": False,
+        "field_errors": [],
+    }
+
+    def response(value: dict[str, object]):
+        return SimpleNamespace(
+            status_code=403,
+            headers={
+                "x-request-id": request_id,
+                "Cache-Control": "no-store, private, max-age=0",
+            },
+            text=json.dumps(value, sort_keys=True),
+            json=lambda: value,
+        )
+
+    _assert_private_replay_error(
+        response(body), subject=subject, access=access, credential=credential
+    )
+    for unsafe in (
+        {**body, "subject": subject},
+        {**body, "message": f"request rejected {subject}"},
+        {**body, "code": credential},
+    ):
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
+            _assert_private_replay_error(
+                response(unsafe), subject=subject, access=access, credential=credential
+            )
