@@ -129,7 +129,7 @@ def test_逐路由typed_schema_status_error与UUIDv7():
             if status in {"200", "201"}:
                 continue
             assert response["content"]["application/json"]["schema"]["$ref"].endswith(
-                "ErrorEnvelope"
+                "ErrorResponseDTO"
             )
     for operation in operations.values():
         for parameter in operation.get("parameters", []):
@@ -179,13 +179,15 @@ def test_schema拒绝固定400安全错误信封且不进入业务依赖():
         json={},
     )
     assert response.status_code == 400
-    assert response.json() == {
-        "code": "INVALID_REQUEST",
-        "message": "request rejected",
-    }
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == "INVALID_REQUEST"
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is False and body["field_errors"] == []
 
 
-def test_依赖异常固定503安全错误信封且不暴露异常文本():
+def test_未分类依赖异常固定500安全错误信封且不暴露异常文本():
     app = create_app()
 
     async def unavailable_session():
@@ -211,11 +213,13 @@ def test_依赖异常固定503安全错误信封且不暴露异常文本():
             "totp_code": "000000",
         },
     )
-    assert response.status_code == 503
-    assert response.json() == {
-        "code": "DEPENDENCY_UNAVAILABLE",
-        "message": "request rejected",
-    }
+    assert response.status_code == 500
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == "INTERNAL_ERROR"
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is False and body["field_errors"] == []
 
 
 def test_每条路由冻结精确symbolic_error_code集合且运行时共用():
@@ -233,7 +237,7 @@ def test_每条路由冻结精确symbolic_error_code集合且运行时共用():
             for status, values in expected_errors.items():
                 assert set(codes[str(status)]) == set(values)
             assert str(success_status) in operation["responses"]
-            assert set(operation["responses"]) == {str(success_status), *codes}
+            assert set(operation["responses"]) == {str(success_status), *codes, "500"}
             success_ref = operation["responses"][str(success_status)]["content"]["application/json"]["schema"]["$ref"]
             assert success_ref == f"#/components/schemas/{response_schema}"
             headers = {parameter["name"] for parameter in operation.get("parameters", []) if parameter["in"] == "header"}
@@ -274,7 +278,12 @@ def test_每条路由冻结精确symbolic_error_code集合且运行时共用():
         },
     )
     assert response.status_code == 400
-    assert response.json() == {"code": "INVALID_REQUEST", "message": "request rejected"}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == "INVALID_REQUEST"
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is False and body["field_errors"] == []
 
 
 @pytest.mark.parametrize(

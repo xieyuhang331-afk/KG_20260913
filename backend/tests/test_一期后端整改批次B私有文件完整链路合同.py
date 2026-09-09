@@ -606,7 +606,10 @@ async def test_Batch_B显式access失败清理取消优先且只执行一次(
 
 
 def _private_file_test_app(monkeypatch, *, auth_error: HTTPException | None = None) -> FastAPI:
+    from app.core.middleware import add_request_middleware
+
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(private_file_api.router)
     app.state.private_object_store = SimpleNamespace()
 
@@ -634,7 +637,12 @@ def _private_file_test_app(monkeypatch, *, auth_error: HTTPException | None = No
 
 def _assert_private_error(response, *, status_code: int, detail: str) -> None:
     assert response.status_code == status_code
-    assert response.json() == {"detail": detail}
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == detail
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is False and body["field_errors"] == []
     for name, value in private_file_api._PRIVATE_HEADERS.items():
         assert response.headers[name] == value
 

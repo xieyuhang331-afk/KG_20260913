@@ -1,14 +1,80 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
-import json
 from typing import Mapping
 from uuid import UUID
 
+import asyncpg
 from sqlalchemy import BigInteger, DateTime, String, bindparam, text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.exc import DBAPIError
+
+
+class HealthPlanRepositoryError(RuntimeError):
+    pass
+
+
+_PUBLIC_MUTATION_OPERATIONS = frozenset({
+    "PLAN_GENERATION_REQUEST", "PLAN_TEMPLATE_CREATE", "PLAN_TEMPLATE_PUBLISH",
+    "PLAN_TEMPLATE_RETIRE", "PLAN_REVIEW_CLAIM", "PLAN_REVIEW_DECISION",
+    "PLAN_EXPLANATION", "PLAN_USER_DECISION",
+})
+_DATABASE_ERRORS = {
+    "MUTATION_REPLAY": frozenset({"IDEMPOTENCY_CONFLICT"}),
+    "GENERATION_REQUEST": frozenset({
+        "INVALID_REQUEST", "IDEMPOTENCY_CONFLICT", "SERVICE_CASE_NOT_FOUND", "STALE_VERSION",
+        "TENANT_NOT_SERVICE_READY", "SERVICE_CASE_NOT_CURRENT", "CONSENT_NOT_CURRENT",
+        "PRIMARY_THERAPIST_NOT_CURRENT", "ASSESSMENT_INPUT_NOT_READY",
+        "ASSESSMENT_DISPUTED", "ASSESSMENT_SUPERSEDED", "HIGH_RISK_BLOCKING",
+        "TEMPLATE_NOT_AVAILABLE", "ACTIVE_GENERATION_EXISTS", "ACTIVE_PLAN_CONFLICT",
+    }),
+    "REVIEW_CLAIM": frozenset({"IDEMPOTENCY_CONFLICT", "FORBIDDEN", "STALE_VERSION"}),
+    "REVIEW_DECIDE": frozenset({
+        "IDEMPOTENCY_CONFLICT", "FORBIDDEN", "STALE_VERSION",
+        "REVIEW_DECISION_CONFLICT", "REVIEW_NOT_CLAIMED",
+    }),
+    "PLAN_EXPLANATION": frozenset({"IDEMPOTENCY_CONFLICT", "PLAN_NOT_FOUND", "FORBIDDEN"}),
+    "PLAN_USER_DECISION": frozenset({
+        "IDEMPOTENCY_CONFLICT", "PLAN_NOT_FOUND", "USER_DECISION_FORBIDDEN",
+        "USER_DECISION_CONFLICT",
+    }),
+    "TEMPLATE_CREATE": frozenset({"IDEMPOTENCY_CONFLICT", "FORBIDDEN", "INVALID_REQUEST"}),
+    "TEMPLATE_PUBLISH": frozenset({"IDEMPOTENCY_CONFLICT", "FORBIDDEN", "INVALID_REQUEST", "STALE_VERSION"}),
+    "TEMPLATE_RETIRE": frozenset({"IDEMPOTENCY_CONFLICT", "FORBIDDEN", "INVALID_REQUEST", "STALE_VERSION"}),
+}
+
+
+def _database_error(exc: DBAPIError, callpoint: str) -> str | None:
+    original = exc.orig
+    direct_cause = getattr(original, "__cause__", None)
+    driver_error = next(
+        (
+            candidate
+            for candidate in (original, direct_cause)
+            if isinstance(candidate, asyncpg.PostgresError)
+        ),
+        None,
+    )
+    if driver_error is None or driver_error.sqlstate != "P0001":
+        return None
+    if len(driver_error.args) != 1 or type(driver_error.args[0]) is not str:
+        return None
+    code = driver_error.args[0]
+    return code if code in _DATABASE_ERRORS.get(callpoint, ()) else None
+
+
+async def _execute_registered(session, statement, parameters, callpoint: str):
+    try:
+        return await session.execute(statement, parameters)
+    except DBAPIError as exc:
+        code = _database_error(exc, callpoint)
+        if code is None:
+            raise
+        raise HealthPlanRepositoryError(code) from None
 
 
 def _json_value(value: object) -> object:
@@ -69,7 +135,7 @@ class HealthPlanRepository:
         ).mappings().one()
         digest = row["value"]
         if type(digest) is not str or len(digest) != 64:
-            raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+            raise HealthPlanRepositoryError("COMMIT_OUTCOME_UNKNOWN") from None
         prepared = {
             **dict(payload),
             "expected_postimage": expected,
@@ -95,13 +161,17 @@ class HealthPlanRepository:
         ).mappings().one()
         return row["value"]
 
-    async def _json_function(self, name: str, payload: Mapping[str, object]) -> dict | None:
-        row = (
-            await self.session.execute(
-                text(f"SELECT public.{name}(CAST(:payload AS jsonb)) AS value"),
-                {"payload": _payload(payload)},
-            )
-        ).mappings().one()
+    async def _json_function(
+        self, name: str, payload: Mapping[str, object], *, callpoint: str | None = None
+    ) -> dict | None:
+        statement = text(f"SELECT public.{name}(CAST(:payload AS jsonb)) AS value")
+        parameters = {"payload": _payload(payload)}
+        result = (
+            await self.session.execute(statement, parameters)
+            if callpoint is None
+            else await _execute_registered(self.session, statement, parameters, callpoint)
+        )
+        row = result.mappings().one()
         return row["value"]
 
     async def generation_authority(
@@ -127,7 +197,8 @@ class HealthPlanRepository:
         self, actor_user_id: int, idempotency_key: str, request_digest: str
     ) -> dict | None:
         row = (
-            await self.session.execute(
+            await _execute_registered(
+                self.session,
                 text(
                     "SELECT public.slice6_mutation_replay_v1("
                     ":actor_user_id,'PLAN_GENERATION_REQUEST',:idempotency_key,"
@@ -138,6 +209,7 @@ class HealthPlanRepository:
                     "idempotency_key": idempotency_key,
                     "request_digest": request_digest,
                 },
+                "MUTATION_REPLAY",
             )
         ).mappings().one()
         replay = row["value"]
@@ -147,19 +219,25 @@ class HealthPlanRepository:
     async def mutation_replay(
         self, actor_user_id: int, operation: str, idempotency_key: str, request_digest: str
     ) -> dict | None:
-        row = (
-            await self.session.execute(
-                text(
-                    "SELECT public.slice6_mutation_replay_v1("
-                    ":actor_user_id,:operation,:idempotency_key,decode(:request_digest,'hex')) AS value"
-                ),
-                {
-                    "actor_user_id": actor_user_id,
-                    "operation": operation,
-                    "idempotency_key": idempotency_key,
-                    "request_digest": request_digest,
-                },
+        statement = text(
+            "SELECT public.slice6_mutation_replay_v1("
+            ":actor_user_id,:operation,:idempotency_key,decode(:request_digest,'hex')) AS value"
+        )
+        parameters = {
+            "actor_user_id": actor_user_id,
+            "operation": operation,
+            "idempotency_key": idempotency_key,
+            "request_digest": request_digest,
+        }
+        result = (
+            await _execute_registered(
+                self.session, statement, parameters, "MUTATION_REPLAY"
             )
+            if operation in _PUBLIC_MUTATION_OPERATIONS
+            else await self.session.execute(statement, parameters)
+        )
+        row = (
+            result
         ).mappings().one()
         replay = row["value"]
         self.mutation_replayed = replay is not None
@@ -167,7 +245,9 @@ class HealthPlanRepository:
 
     async def create_generation_request(self, payload: Mapping[str, object]) -> dict:
         prepared = await self._prepare_mutation("PLAN_GENERATION_REQUEST", payload)
-        return await self._json_function("slice6_generation_request_v1", prepared)  # type: ignore[return-value]
+        return await self._json_function(
+            "slice6_generation_request_v1", prepared, callpoint="GENERATION_REQUEST"
+        )  # type: ignore[return-value]
 
     async def claim_generation(self, request_id: UUID, lease_owner: str) -> dict | None:
         return await self._json_function(
@@ -193,21 +273,29 @@ class HealthPlanRepository:
             "PLAN_REVIEW_CLAIM" if operation == "CLAIM" else "PLAN_REVIEW_DECISION",
             {"operation": operation, **payload},
         )
-        return await self._json_function("slice6_review_transition_v1", prepared)  # type: ignore[return-value]
+        return await self._json_function(
+            "slice6_review_transition_v1", prepared, callpoint=f"REVIEW_{operation}"
+        )  # type: ignore[return-value]
 
     async def explain_plan(self, payload: Mapping[str, object]) -> dict:
         prepared = await self._prepare_mutation("PLAN_EXPLANATION", payload)
-        return await self._json_function("slice6_plan_explanation_v1", prepared)  # type: ignore[return-value]
+        return await self._json_function(
+            "slice6_plan_explanation_v1", prepared, callpoint="PLAN_EXPLANATION"
+        )  # type: ignore[return-value]
 
     async def decide_plan(self, payload: Mapping[str, object]) -> dict:
         prepared = await self._prepare_mutation("PLAN_USER_DECISION", payload)
-        return await self._json_function("slice6_user_decision_v1", prepared)  # type: ignore[return-value]
+        return await self._json_function(
+            "slice6_user_decision_v1", prepared, callpoint="PLAN_USER_DECISION"
+        )  # type: ignore[return-value]
 
     async def govern_template(self, operation: str, payload: Mapping[str, object]) -> dict:
         prepared = await self._prepare_mutation(
             f"PLAN_TEMPLATE_{operation}", {"operation": operation, **payload}
         )
-        return await self._json_function("slice6_template_governance_v1", prepared)  # type: ignore[return-value]
+        return await self._json_function(
+            "slice6_template_governance_v1", prepared, callpoint=f"TEMPLATE_{operation}"
+        )  # type: ignore[return-value]
 
     async def next_template_version(self, template_code: str) -> int:
         row = (

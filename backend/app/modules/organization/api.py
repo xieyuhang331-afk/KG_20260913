@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import get_db_session, get_session_factory
 from app.core.security import CurrentUser, get_current_user_from_jwt
+from app.core.接口合同 import error_response
 from app.modules.organization.domain import OrganizationError
 from app.modules.organization.schemas import (
     MyOrganizationResponse,
@@ -35,8 +35,8 @@ from app.modules.organization.service import (
 )
 
 
-def organization_error_response(error: OrganizationError) -> JSONResponse:
-    return JSONResponse(status_code=error.status_code, content={"detail": error.code})
+def organization_error_response(request, error: OrganizationError):
+    return error_response(request, error.status_code, error.code)
 
 
 class OrganizationRoute(APIRoute):
@@ -47,34 +47,53 @@ class OrganizationRoute(APIRoute):
             try:
                 return await original(request)
             except OrganizationError as exc:
-                return organization_error_response(exc)
+                return organization_error_response(request, exc)
             except RequestValidationError:
-                return JSONResponse(status_code=422, content={"detail": "ORGANIZATION_REQUEST_INVALID"})
+                return error_response(request, 422, "ORGANIZATION_REQUEST_INVALID")
             except HTTPException as exc:
                 if exc.status_code == 401:
-                    return JSONResponse(status_code=401, content={"detail": "AUTHENTICATION_REQUIRED"}, headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
+                    return error_response(request, 401, "AUTHENTICATION_REQUIRED", headers={"WWW-Authenticate": "Bearer"})
                 if exc.status_code == 503:
-                    return JSONResponse(status_code=503, content={"detail": "DEPENDENCY_UNAVAILABLE"}, headers={"Cache-Control": "no-store"})
+                    return error_response(request, 503, "DEPENDENCY_UNAVAILABLE", retryable=True)
                 if exc.status_code == 403:
-                    return JSONResponse(status_code=403, content={"detail": "ORGANIZATION_SCOPE_FORBIDDEN"})
+                    return error_response(request, 403, "ORGANIZATION_SCOPE_FORBIDDEN")
                 raise
+            except Exception:
+                return error_response(request, 500, "INTERNAL_ERROR")
 
         return handler
 
 
 _AUTHENTICATION_RESPONSES = {
     status: {
-        "description": "Authentication rejected" if status == 401 else "Dependency unavailable",
+        "description": "Request rejected",
         "headers": {
-            "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+            "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+            "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+            "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
             **({"WWW-Authenticate": {"schema": {"type": "string", "enum": ["Bearer"]}}} if status == 401 else {}),
         },
         "content": {"application/json": {
-            "schema": {"type": "object", "required": ["detail"], "properties": {"detail": {"type": "string"}}},
-            "examples": {"authentication": {"value": {"detail": code}}},
+            "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+            "examples": {
+                "authentication" if status in {401, 503} else "rejected": {"value": {
+                    "code": {
+                        400: "ORGANIZATION_REQUEST_INVALID",
+                        401: "AUTHENTICATION_REQUIRED",
+                        403: "ORGANIZATION_SCOPE_FORBIDDEN",
+                        404: "ORGANIZATION_NOT_FOUND",
+                        409: "ORGANIZATION_STATE_CONFLICT",
+                        422: "ORGANIZATION_REQUEST_INVALID",
+                        500: "INTERNAL_ERROR",
+                        503: "DEPENDENCY_UNAVAILABLE",
+                    }[status],
+                    "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == 503, "field_errors": [],
+                }}
+            },
         }},
     }
-    for status, code in ((401, "AUTHENTICATION_REQUIRED"), (503, "DEPENDENCY_UNAVAILABLE"))
+    for status in (400, 401, 403, 404, 409, 422, 500, 503)
 }
 
 router = APIRouter(tags=["organization"], route_class=OrganizationRoute, responses=_AUTHENTICATION_RESPONSES)

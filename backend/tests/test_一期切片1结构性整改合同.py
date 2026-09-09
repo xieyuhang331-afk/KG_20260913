@@ -340,8 +340,14 @@ def test_最终_I9_邀请撤销与重发接入服务API并保持幂等审计():
     assert "async def revoke_invitation" in service
     assert 'operation="INVITATION_RESEND"' in service
     assert 'operation="INVITATION_REVOKE"' in service
-    assert '@platform_router.post("/institution-invitations/{invitation_id}/resend")' in api
-    assert '@platform_router.post("/institution-invitations/{invitation_id}/revoke")' in api
+    assert (
+        '@platform_router.post("/institution-invitations/{invitation_id}/resend", '
+        "response_model=OnboardingSuccessEnvelope[InvitationIssuedDTO])" in api
+    )
+    assert (
+        '@platform_router.post("/institution-invitations/{invitation_id}/revoke", '
+        "response_model=OnboardingSuccessEnvelope[InvitationRevokedDTO])" in api
+    )
     resend = service.split("async def resend_invitation", 1)[1].split(
         "async def revoke_invitation", 1
     )[0]

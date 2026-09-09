@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
@@ -25,12 +24,14 @@ from app.core.security import (
     get_current_user_from_jwt,
 )
 from app.core.uuid_generator import Uuid7Generator
+from app.core.接口合同 import error_response
+
 from .domain import SystemBusinessClock
 from .ports import ExportArchiveAccessPort
-from .repository import ServiceFulfillmentRepository
+from .repository import ServiceFulfillmentRepository, ServiceFulfillmentRepositoryError
 from .schemas import (
-    CaseTransitionRequest,
     CaseStatusValue,
+    CaseTransitionRequest,
     ClosingAssessmentCreateRequest,
     ClosingAssessmentDTO,
     ContinuationCaseLinkRequest,
@@ -39,8 +40,8 @@ from .schemas import (
     DataExportCreateRequest,
     DataExportDTO,
     DataExportPageDTO,
-    ExportStatusValue,
     DownloadAccessRequest,
+    ExportStatusValue,
     MilestoneCompleteRequest,
     MilestoneDTO,
     MilestonePageDTO,
@@ -59,9 +60,9 @@ from .schemas import (
     TransferDecisionRequest,
     TransferDTO,
     TransferPageDTO,
-    TransferStatusValue,
     TransferScopeConfirmRequest,
     TransferSourceCloseRequest,
+    TransferStatusValue,
     UnableToContactRequest,
     UuidV7,
 )
@@ -73,7 +74,6 @@ from .service import (
     decode_page_cursor,
     encode_page_cursor,
 )
-
 
 _STATUS = {
     "UNAUTHENTICATED": 401,
@@ -103,6 +103,88 @@ _STATUS = {
 }
 
 
+_SLICE7_BASE_ERROR_CODES = (
+    "UNAUTHENTICATED",
+    "ROLE_FORBIDDEN",
+    "INVALID_REQUEST",
+    "DEPENDENCY_UNAVAILABLE",
+)
+_SLICE7_MUTATION_ERROR_CODES = (
+    *_SLICE7_BASE_ERROR_CODES,
+    "RESOURCE_NOT_FOUND",
+    "VERSION_CONFLICT",
+    "STALE_VERSION",
+    "IDEMPOTENCY_CONFLICT",
+    "COMMIT_NOT_COMMITTED",
+    "COMMIT_OUTCOME_UNKNOWN",
+    "CURRENTNESS_FORBIDDEN",
+)
+
+
+def _slice7_error_codes(
+    *specific: str,
+    mutation: bool = False,
+) -> tuple[str, ...]:
+    common = (
+        _SLICE7_MUTATION_ERROR_CODES
+        if mutation
+        else _SLICE7_BASE_ERROR_CODES
+    )
+    return tuple(dict.fromkeys((*common, *specific)))
+
+
+# OpenAPI-only reachability catalog. Runtime error admission remains the global
+# typed _STATUS whitelist in Slice7Route; this catalog must not narrow it.
+SLICE7_ROUTE_ERROR_CODES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("GET", "/api/v1/therapist/service-cases/{case_id}/fulfillment"): _slice7_error_codes(),
+    ("GET", "/api/v1/therapist/service-cases/{case_id}/milestones"): _slice7_error_codes(),
+    ("GET", "/api/v1/therapist/milestones/{milestone_id}"): _slice7_error_codes("MILESTONE_NOT_FOUND"),
+    ("POST", "/api/v1/therapist/milestones/{milestone_id}/complete"): _slice7_error_codes("CASE_STATE_CONFLICT", "MILESTONE_WINDOW_CLOSED", mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/pause"): _slice7_error_codes("CASE_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/resume"): _slice7_error_codes("CASE_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/closing-assessments"): _slice7_error_codes("CASE_STATE_CONFLICT", "CLOSURE_PREREQUISITE_MISSING", mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/summaries"): _slice7_error_codes("CASE_STATE_CONFLICT", "CLOSURE_PREREQUISITE_MISSING", mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/unable-to-contact"): _slice7_error_codes(mutation=True),
+    ("POST", "/api/v1/therapist/service-cases/{case_id}/safety-terminate"): _slice7_error_codes(mutation=True),
+    ("POST", "/api/v1/institutions/service-cases/{case_id}/pause"): _slice7_error_codes("CASE_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/institutions/service-cases/{case_id}/resume"): _slice7_error_codes("CASE_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/institutions/service-cases/{case_id}/terminate"): _slice7_error_codes(mutation=True),
+    ("GET", "/api/v1/institutions/service-cases/{case_id}/fulfillment"): _slice7_error_codes(),
+    ("GET", "/api/v1/institutions/service-cases"): _slice7_error_codes(),
+    ("POST", "/api/v1/institutions/service-transfers/{transfer_id}/start-review"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/institutions/service-transfers/{transfer_id}/accept"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", "CURRENTNESS_FORBIDDEN", mutation=True),
+    ("POST", "/api/v1/institutions/service-transfers/{transfer_id}/reject"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/institutions/service-transfers/{transfer_id}/source-close"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", mutation=True),
+    ("GET", "/api/v1/institutions/service-transfers/{transfer_id}/continuation-handoff"): _slice7_error_codes("HANDOFF_NOT_FOUND"),
+    ("POST", "/api/v1/institutions/service-transfers/{transfer_id}/continuation-case"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", "CURRENTNESS_FORBIDDEN", mutation=True),
+    ("GET", "/api/v1/institutions/service-transfers"): _slice7_error_codes(),
+    ("GET", "/api/v1/institutions/service-transfers/{transfer_id}"): _slice7_error_codes("TRANSFER_NOT_FOUND"),
+    ("POST", "/api/v1/family/service-cases/{case_id}/withdraw"): _slice7_error_codes(mutation=True),
+    ("GET", "/api/v1/family/service-cases/{case_id}/fulfillment"): _slice7_error_codes(),
+    ("GET", "/api/v1/family/service-cases/{case_id}/milestones"): _slice7_error_codes(),
+    ("GET", "/api/v1/family/service-cases/{case_id}/summaries/current"): _slice7_error_codes(),
+    ("POST", "/api/v1/family/service-summaries/{summary_id}/acknowledge"): _slice7_error_codes("CLOSURE_PREREQUISITE_MISSING", mutation=True),
+    ("POST", "/api/v1/family/service-cases/{case_id}/transfers"): _slice7_error_codes("CURRENTNESS_FORBIDDEN", mutation=True),
+    ("GET", "/api/v1/family/service-transfers/{transfer_id}"): _slice7_error_codes("TRANSFER_NOT_FOUND"),
+    ("POST", "/api/v1/family/service-transfers/{transfer_id}/cancel"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/family/service-transfers/{transfer_id}/confirm-scope"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", mutation=True),
+    ("POST", "/api/v1/family/data-exports"): _slice7_error_codes("STEP_UP_FORBIDDEN", "PROXY_PERMISSION_FORBIDDEN", mutation=True),
+    ("GET", "/api/v1/family/data-exports/{export_id}"): _slice7_error_codes("EXPORT_NOT_FOUND", "PROXY_PERMISSION_FORBIDDEN"),
+    ("POST", "/api/v1/family/data-exports/{export_id}/download-access"): _slice7_error_codes("STEP_UP_FORBIDDEN", "PROXY_PERMISSION_FORBIDDEN", "EXPORT_NOT_READY", mutation=True),
+    ("POST", "/api/v1/family/data-exports/{export_id}/cancel"): _slice7_error_codes("PROXY_PERMISSION_FORBIDDEN", "EXPORT_NOT_READY", mutation=True),
+    ("POST", "/api/v1/platform/service-cases/{case_id}/safety-terminate"): _slice7_error_codes(mutation=True),
+    ("POST", "/api/v1/platform/service-transfers/{transfer_id}/coordinate-close"): _slice7_error_codes("TRANSFER_STATE_CONFLICT", "CURRENTNESS_FORBIDDEN", mutation=True),
+    ("POST", "/api/v1/platform/proxy-major-authorizations"): _slice7_error_codes("CURRENTNESS_FORBIDDEN", mutation=True),
+    ("POST", "/api/v1/platform/proxy-major-authorizations/{authorization_id}/revoke"): _slice7_error_codes("CURRENTNESS_FORBIDDEN", mutation=True),
+    ("GET", "/api/v1/platform/service-transfers"): _slice7_error_codes(),
+    ("GET", "/api/v1/platform/service-transfers/{transfer_id}"): _slice7_error_codes("TRANSFER_NOT_FOUND"),
+    ("GET", "/api/v1/platform/service-fulfillment/cases"): _slice7_error_codes(),
+    ("GET", "/api/v1/platform/service-fulfillment/cases/{case_id}"): _slice7_error_codes(),
+    ("GET", "/api/v1/platform/data-exports"): _slice7_error_codes(),
+    ("GET", "/api/v1/platform/data-exports/{export_id}"): _slice7_error_codes("EXPORT_NOT_FOUND"),
+}
+
+
 async def consume_personal_data_export_download(session, values: Mapping[str, object]) -> bool:
     repository = ServiceFulfillmentRepository(session)
     consumed = await repository.consume_export_download(values)
@@ -125,17 +207,12 @@ async def consume_personal_data_export_download(session, values: Mapping[str, ob
     return consumed
 
 
-def _safe_code(exc: BaseException) -> str:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        for line in str(current).splitlines():
-            token = line.strip().split()[0].strip(":") if line.strip() else ""
-            if token in _STATUS:
-                return token
-        current = current.__cause__ or current.__context__
-    return "DEPENDENCY_UNAVAILABLE"
+def _registered_service_error(
+    exc: ServiceFulfillmentError | ServiceFulfillmentRepositoryError,
+) -> str | None:
+    if len(exc.args) != 1 or type(exc.args[0]) is not str:
+        return None
+    return exc.args[0] if exc.args[0] in _STATUS else None
 
 
 class Slice7Route(APIRoute):
@@ -146,7 +223,7 @@ class Slice7Route(APIRoute):
             try:
                 response = await original(request)
             except RequestValidationError:
-                response = JSONResponse(status_code=422, content={"code": "INVALID_REQUEST", "message": "request rejected"})
+                response = error_response(request, 422, "INVALID_REQUEST")
             except HTTPException as exc:
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else None
@@ -154,12 +231,26 @@ class Slice7Route(APIRoute):
                     code = "UNAUTHENTICATED"
                 if code not in _STATUS:
                     code = "INVALID_REQUEST" if exc.status_code < 500 else "DEPENDENCY_UNAVAILABLE"
-                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"}, headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if _STATUS[code] == 401 else {"Cache-Control": "no-store"} if _STATUS[code] == 503 else None)
-            except Exception as exc:
-                code = _safe_code(exc)
-                response = JSONResponse(status_code=_STATUS[code], content={"code": code, "message": "request rejected"}, headers={"Cache-Control": "no-store"} if _STATUS[code] == 503 else None)
+                status = _STATUS[code]
+                response = error_response(
+                    request, status, code,
+                    retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    headers={"WWW-Authenticate": "Bearer"} if status == 401 else None,
+                )
+            except (ServiceFulfillmentError, ServiceFulfillmentRepositoryError) as exc:
+                code = _registered_service_error(exc)
+                if code is None:
+                    response = error_response(request, 500, "INTERNAL_ERROR")
+                else:
+                    status = _STATUS[code]
+                    response = error_response(
+                        request, status, code,
+                        retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    )
+            except Exception:
+                response = error_response(request, 500, "INTERNAL_ERROR")
             if request.method == "GET":
-                response.headers["Cache-Control"] = "no-store"
+                response.headers.setdefault("Cache-Control", "no-store")
             return response
 
         return handler
@@ -184,42 +275,63 @@ _STEP_UP_MAX_AGE_SECONDS = 10 * 60
 
 
 def strip_slice7_validation_responses(schema: dict[str, object]) -> dict[str, object]:
-    slice7_tags = {
-        "service-fulfillment-therapist",
-        "service-fulfillment-institution",
-        "service-fulfillment-family",
-        "service-fulfillment-platform",
-    }
-    for path_item in schema.get("paths", {}).values():
+    paths = schema.get("paths", {})
+    if not isinstance(paths, dict):
+        return schema
+    for (method, path), codes in SLICE7_ROUTE_ERROR_CODES.items():
+        path_item = paths.get(path)
         if not isinstance(path_item, dict):
             continue
-        for method, operation in path_item.items():
-            if (
-                isinstance(operation, dict)
-                and "responses" in operation
-                and slice7_tags.intersection(operation.get("tags", ()))
-            ):
-                for status, auth_code in (("401", "UNAUTHENTICATED"), ("503", "DEPENDENCY_UNAVAILABLE")):
-                    response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
-                    media = response.setdefault("content", {}).setdefault("application/json", {
-                        "schema": {"type": "object", "required": ["code", "message"], "properties": {
-                            "code": {"type": "string"}, "message": {"type": "string"},
-                        }},
-                    })
-                    media.setdefault("examples", {})["authentication"] = {
-                        "value": {"code": auth_code, "message": "request rejected"},
-                    }
-                    headers = response.setdefault("headers", {})
-                    headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
-                    if status == "401":
-                        headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
-                operation["x-symbolic-error-codes"] = tuple(_STATUS)
-                if method == "get":
-                    success = operation["responses"].get("200")
-                    if isinstance(success, dict):
-                        success.setdefault("headers", {})["Cache-Control"] = {
-                            "schema": {"type": "string", "const": "no-store"}
-                        }
+        operation = path_item.get(method.lower())
+        if not isinstance(operation, dict) or "responses" not in operation:
+            continue
+        statuses = {str(_STATUS[code]) for code in codes} | {"422", "500"}
+        for status in statuses:
+            example_code = next(
+                (code for code in codes if _STATUS[code] == int(status)),
+                "INTERNAL_ERROR" if status == "500" else "INVALID_REQUEST",
+            )
+            response = operation.setdefault("responses", {}).setdefault(
+                status, {"description": "Request rejected"}
+            )
+            examples = {"rejected": {"value": {
+                "code": example_code,
+                "message": "request rejected",
+                "request_id": "01990000-0000-7000-8000-000000000201",
+                "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN",
+                "field_errors": [],
+            }}}
+            if status in {"401", "503"}:
+                examples["authentication"] = {"value": {
+                    "code": "UNAUTHENTICATED" if status == "401" else "DEPENDENCY_UNAVAILABLE",
+                    "message": "request rejected",
+                    "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == "503",
+                    "field_errors": [],
+                }}
+            response.setdefault("content", {})["application/json"] = {
+                "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                "examples": examples,
+            }
+            headers = response.setdefault("headers", {})
+            headers.update({
+                "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+            })
+            if status == "401":
+                headers["WWW-Authenticate"] = {
+                    "schema": {"type": "string", "enum": ["Bearer"]}
+                }
+            if status == "503":
+                headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 1}}
+        operation["x-symbolic-error-codes"] = codes
+        if method == "GET":
+            success = operation["responses"].get("200")
+            if isinstance(success, dict):
+                success.setdefault("headers", {})["Cache-Control"] = {
+                    "schema": {"type": "string", "const": "no-store"}
+                }
     return schema
 
 

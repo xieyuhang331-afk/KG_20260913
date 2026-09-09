@@ -15,8 +15,8 @@ from tests.test_一期后端整改C1A认证当前性限流与配置合同 import
 _CASE_ID = "018f0f47-e4a8-7cc8-98f2-88d31f8b0001"
 # Explicit external expectations, independent of the production error catalogues.
 _ROUTES = [
-    pytest.param("organization", "router", "GET", "/api/v1/platform/organizations/tree", "detail", "AUTHENTICATION_REQUIRED", id="organization-read"),
-    pytest.param("organization", "router", "POST", "/api/v1/platform/organizations", "detail", "AUTHENTICATION_REQUIRED", id="organization-write"),
+    pytest.param("organization", "router", "GET", "/api/v1/platform/organizations/tree", "code", "AUTHENTICATION_REQUIRED", id="organization-read"),
+    pytest.param("organization", "router", "POST", "/api/v1/platform/organizations", "code", "AUTHENTICATION_REQUIRED", id="organization-write"),
     pytest.param("therapist_qualification", "institution_router", "GET", "/api/v1/institution/therapists", "code", "AUTHENTICATION_REQUIRED", id="slice2-read"),
     pytest.param("therapist_qualification", "institution_router", "POST", "/api/v1/institution/therapist-invitations", "code", "AUTHENTICATION_REQUIRED", id="slice2-write"),
     pytest.param("user_health", "family_health_router", "GET", "/api/v1/family/health-profile", "code", "AUTHENTICATION_REQUIRED", id="slice4-family-read"),
@@ -45,6 +45,9 @@ def test_D02_真实路由认证失败在业务前安全收敛(
 
     module = importlib.import_module(f"app.modules.{module_name}.api")
     app = FastAPI()
+    from app.core.middleware import add_request_middleware
+
+    add_request_middleware(app)
     app.include_router(getattr(module, router_name))
     matches = [r for r in iter_route_contexts(app.routes) if r.path == path and method in (r.methods or ())]
     if len(matches) != 1:
@@ -103,12 +106,18 @@ def test_D02_真实路由认证失败在业务前安全收敛(
         response = client.request(method, path.format(case_id=_CASE_ID, export_id=_CASE_ID), headers=headers, json={})
     expected_status = 503 if case in ("authority-unavailable", "unknown-503") else 401
     expected_code = "DEPENDENCY_UNAVAILABLE" if expected_status == 503 else auth_code
-    expected = {field: expected_code}
-    if field == "code":
-        expected["message"] = "request rejected"
-    if response.status_code != expected_status or response.json() != expected:
+    body = response.json()
+    if (
+        response.status_code != expected_status
+        or set(body) != {"code", "message", "request_id", "retryable", "field_errors"}
+        or body["code"] != expected_code
+        or body["message"] != "request rejected"
+        or body["request_id"] != response.headers.get("x-request-id")
+        or body["retryable"] is not (expected_status == 503)
+        or body["field_errors"] != []
+    ):
         pytest.fail("C1_D02_AUTH_STATUS_OR_ENVELOPE_MISMATCH", pytrace=False)
-    if response.headers.get("Cache-Control") != "no-store":
+    if response.headers.get("Cache-Control") not in {"no-store", "no-store, private"}:
         pytest.fail("C1_D02_AUTH_NO_STORE_MISSING", pytrace=False)
     if expected_status == 401 and response.headers.get("WWW-Authenticate") != "Bearer":
         pytest.fail("C1_D02_AUTH_BEARER_MISSING", pytrace=False)
@@ -132,14 +141,18 @@ def test_D02_局部声明与固定认证状态及安全头一致(
         if not response:
             pytest.fail("C1_D02_AUTH_RESPONSE_DECLARATION_MISSING", pytrace=False)
         media = response.get("content", {}).get("application/json", {})
-        expected = {field: code}
-        if field == "code":
-            expected["message"] = "request rejected"
+        expected = {
+            "code": code,
+            "message": "request rejected",
+            "request_id": "01990000-0000-7000-8000-000000000201",
+            "retryable": status == "503",
+            "field_errors": [],
+        }
         # 503 can also carry legitimate business codes such as COMMIT_OUTCOME_UNKNOWN.
         # Authentication examples are exact without shrinking those existing schemas.
         if media.get("examples", {}).get("authentication", {}).get("value") != expected:
             pytest.fail("C1_D02_AUTH_EXAMPLE_DECLARATION_MISSING", pytrace=False)
-        if response.get("headers", {}).get("Cache-Control", {}).get("schema", {}).get("enum") != ["no-store"]:
+        if response.get("headers", {}).get("Cache-Control", {}).get("schema", {}).get("enum") != ["no-store, private"]:
             pytest.fail("C1_D02_CACHE_DECLARATION_MISSING", pytrace=False)
         if status == "401" and response.get("headers", {}).get("WWW-Authenticate", {}).get("schema", {}).get("enum") != ["Bearer"]:
             pytest.fail("C1_D02_BEARER_DECLARATION_MISSING", pytrace=False)

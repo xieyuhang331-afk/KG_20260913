@@ -89,7 +89,7 @@ def create_celery_app(*, broker_url: str | None = None) -> Celery:
         "kg_registration",
         broker=resolved_broker or "fail://",
         backend="rpc://" if test_result_backend == "rpc" else None,
-        include=("app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks", "app.tasks.slice4_health_data_tasks", "app.tasks.slice5_assessment_tasks", "app.tasks.slice6_health_plan_tasks", "app.tasks.slice7_service_fulfillment_tasks"),
+        include=("app.tasks.readiness", "app.tasks.registration_outbox_tasks", "app.tasks.institution_onboarding_tasks", "app.tasks.therapist_qualification_tasks", "app.tasks.member_enrollment_tasks", "app.tasks.slice4_health_data_tasks", "app.tasks.slice5_assessment_tasks", "app.tasks.slice6_health_plan_tasks", "app.tasks.slice7_service_fulfillment_tasks"),
     )
     app.conf.update(
         accept_content=("json",),

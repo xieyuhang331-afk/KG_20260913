@@ -9,7 +9,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import (
@@ -21,6 +20,7 @@ from app.core.database import (
 from app.core.responses import ok_response
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
+from app.core.接口合同 import error_response
 from app.modules.therapist_qualification.repository import TherapistQualificationRepository
 from app.modules.therapist_qualification.schemas import (
     CorrectionDTO,
@@ -151,11 +151,13 @@ SLICE2_ROUTE_ERROR_CODES = {
 }
 
 
-def _error_response(status_code: int, code: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={"code": code, "message": "request rejected"},
-        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if status_code == 401 else {"Cache-Control": "no-store"} if status_code == 503 else None,
+def _error_response(request: Request, status_code: int, code: str):
+    return error_response(
+        request,
+        status_code,
+        code,
+        retryable=status_code == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+        headers={"WWW-Authenticate": "Bearer"} if status_code == 401 else None,
     )
 
 
@@ -206,15 +208,15 @@ class TherapistQualificationRoute(APIRoute):
             try:
                 return await original(request)
             except RequestValidationError:
-                return _error_response(400, "INVALID_REQUEST")
+                return _error_response(request, 400, "INVALID_REQUEST")
             except HTTPException as exc:
                 key = (next(iter(self.methods)), self.path)
                 status_code, code = _http_error_code(
                     request, exc, SLICE2_ROUTE_ERROR_CODES[key]
                 )
-                return _error_response(status_code, code)
+                return _error_response(request, status_code, code)
             except Exception:
-                return _error_response(503, "DEPENDENCY_UNAVAILABLE")
+                return _error_response(request, 500, "INTERNAL_ERROR")
 
         return handler
 
@@ -257,20 +259,39 @@ def strip_therapist_validation_responses(schema: dict[str, object]) -> dict[str,
                     for status in tuple(responses):
                         if status not in allowed_statuses:
                             responses.pop(status)
-                for status, auth_code in (("401", "AUTHENTICATION_REQUIRED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+                for status in {*map(str, SLICE2_ROUTE_ERROR_CODES[key]), "500"}:
+                    status_codes = SLICE2_ROUTE_ERROR_CODES[key].get(int(status), ())
+                    example_code = (
+                        "INTERNAL_ERROR"
+                        if status == "500"
+                        else status_codes[0]
+                    )
+                    examples = {"rejected": {"value": {
+                        "code": example_code,
+                        "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                        "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN", "field_errors": [],
+                    }}}
+                    if status in {"401", "503"}:
+                        examples["authentication"] = {"value": {
+                            "code": "AUTHENTICATION_REQUIRED" if status == "401" else "DEPENDENCY_UNAVAILABLE",
+                            "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                            "retryable": status == "503", "field_errors": [],
+                        }}
                     response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
-                    media = response.setdefault("content", {}).setdefault("application/json", {
-                        "schema": {"type": "object", "required": ["code", "message"], "properties": {
-                            "code": {"type": "string"}, "message": {"type": "string"},
-                        }},
-                    })
-                    media.setdefault("examples", {})["authentication"] = {
-                        "value": {"code": auth_code, "message": "request rejected"},
+                    response.setdefault("content", {})["application/json"] = {
+                        "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                        "examples": examples,
                     }
                     headers = response.setdefault("headers", {})
-                    headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                    headers.update({
+                        "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                        "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                        "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+                    })
                     if status == "401":
                         headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
+                    if status in {"429", "503"}:
+                        headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 0}}
                 operation["x-symbolic-error-codes"] = {
                     str(status): list(codes)
                     for status, codes in SLICE2_ROUTE_ERROR_CODES[key].items()

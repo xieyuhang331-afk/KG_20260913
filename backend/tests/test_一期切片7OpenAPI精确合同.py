@@ -126,11 +126,21 @@ def test_D_列表状态风险筛选进入正式OpenAPI而不是应用层事后�
 def test_错误目录保留401_403_404_409_422_503() -> None:
     schema = _schema()
     operation = schema["paths"]["/api/v1/family/data-exports/{export_id}"]["get"]
-    assert {"UNAUTHENTICATED", "ROLE_FORBIDDEN", "EXPORT_NOT_FOUND", "VERSION_CONFLICT", "INVALID_REQUEST", "DEPENDENCY_UNAVAILABLE"}.issubset(set(operation["x-symbolic-error-codes"]))
+    assert set(operation["x-symbolic-error-codes"]) == {
+        "UNAUTHENTICATED",
+        "ROLE_FORBIDDEN",
+        "PROXY_PERMISSION_FORBIDDEN",
+        "EXPORT_NOT_FOUND",
+        "INVALID_REQUEST",
+        "DEPENDENCY_UNAVAILABLE",
+    }
 
 
 def test_Slice7错误翻译返回冻结安全JSON信封() -> None:
+    from app.core.middleware import add_request_middleware
+
     app = FastAPI()
+    add_request_middleware(app)
     router = APIRouter()
     router.route_class = Slice7Route
 
@@ -158,14 +168,17 @@ def test_Slice7错误翻译返回冻结安全JSON信封() -> None:
             ("/domain/RESOURCE_NOT_FOUND", 404, "RESOURCE_NOT_FOUND"),
             ("/domain/VERSION_CONFLICT", 409, "VERSION_CONFLICT"),
             ("/validated?value=invalid", 422, "INVALID_REQUEST"),
-            ("/unknown", 503, "DEPENDENCY_UNAVAILABLE"),
+            ("/unknown", 500, "INTERNAL_ERROR"),
         )
         for path, status_code, code in cases:
             response = client.get(path)
             assert response.status_code == status_code
-            assert response.json() == {
-                "code": code,
-                "message": "request rejected",
-            }
+            body = response.json()
+            assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+            assert body["code"] == code
+            assert body["message"] == "request rejected"
+            assert body["request_id"] == response.headers["x-request-id"]
+            assert body["retryable"] is (status_code == 503)
+            assert body["field_errors"] == []
             assert "secret" not in response.text
             assert "private.invalid" not in response.text

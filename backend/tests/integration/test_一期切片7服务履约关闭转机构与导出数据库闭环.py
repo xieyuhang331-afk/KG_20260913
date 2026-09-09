@@ -33,6 +33,9 @@ from app.modules.private_file.service import (
 from app.modules.private_file.storage import LocalFilesystemAdapter
 from app.tasks.slice7_service_fulfillment_tasks import _generate_export, _recover
 from tests.integration.conftest import _build_alembic_config, _get_test_database_url
+from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
+    _assert_error_response_dto,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -1022,8 +1025,12 @@ def test_D31_D40_真实ASGI要求StepUp并完成幂等导出与一次性下载(
                 "X-Private-File-Access": access.json()["access_token"],
             },
         )
-        assert revoked.status_code == 401
-        assert revoked.json() == {"detail": "ACCESS_TOKEN_STALE"}
+        _assert_error_response_dto(
+            revoked,
+            status_code=401,
+            error_code="ACCESS_TOKEN_STALE",
+            retryable=False,
+        )
         assert revoked.headers["WWW-Authenticate"] == "Bearer"
         assert revoked.headers["Cache-Control"] == "no-store, private, max-age=0"
         assert pg_database.fetch_value(
@@ -1251,7 +1258,15 @@ def test_Slice7真实RabbitMQ合同在CI中使用隔离Worker与共享私有目�
     assert "KG_TEST_SLICE7_REAL_RABBIT=1" in workflow
     assert "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" in workflow
     assert "-Q slice7-service-fulfillment-workflow" in workflow
-    assert '--destination "$worker_hostname"' in workflow
+    assert "python scripts/check_worker_readiness.py" in workflow
+    assert "--worker-kind slice7" in workflow
+    assert '--hostname "$worker_hostname"' in workflow
+    assert '--destination "$worker_hostname"' not in workflow
+    readiness_step = workflow.split("- name: Start independent Slice 7 Celery worker", 1)[1].split(
+        "- name: Run Slice 7 RabbitMQ and independent worker contract", 1
+    )[0]
+    assert "if python scripts/check_worker_readiness.py" in readiness_step
+    assert "exit 1" in readiness_step
     assert "pytest-slice7-rabbit-report.xml" in workflow
     assert "Stop independent Slice 7 Celery worker" in workflow
     assert "Verify Slice 7 worker and private storage cleanup" in workflow

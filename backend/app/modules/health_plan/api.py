@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from app.core.database import (
@@ -20,8 +19,9 @@ from app.core.database import (
 )
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
+from app.core.接口合同 import error_response
 
-from .repository import HealthPlanRepository
+from .repository import HealthPlanRepository, HealthPlanRepositoryError
 from .schemas import (
     ClaimRequest,
     CreatePlanGenerationRequest,
@@ -58,7 +58,6 @@ from .service import (
     review_list_item,
     review_plan,
 )
-
 
 _STATUS = {
     "UNAUTHENTICATED": 401,
@@ -100,35 +99,28 @@ SLICE6_ROUTE_ERROR_CODES = {
     ("GET", "/api/v1/institutions/plan-generations/{request_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
     ("GET", "/api/v1/institutions/service-cases/{service_case_id}/plans"): _codes("FORBIDDEN", "SERVICE_CASE_NOT_FOUND"),
     ("GET", "/api/v1/institutions/plans/{plan_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
-    ("POST", "/api/v1/platform/health-plan-templates"): _codes("FORBIDDEN", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/platform/health-plan-templates"): _codes("FORBIDDEN", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/platform/health-plan-templates"): _codes("FORBIDDEN"),
     ("GET", "/api/v1/platform/health-plan-templates/{template_version_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
-    ("POST", "/api/v1/platform/health-plan-templates/{template_version_id}/publish"): _codes("FORBIDDEN", "STALE_VERSION", "IDEMPOTENCY_CONFLICT"),
-    ("POST", "/api/v1/platform/health-plan-templates/{template_version_id}/retire"): _codes("FORBIDDEN", "STALE_VERSION", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/platform/health-plan-templates/{template_version_id}/publish"): _codes("FORBIDDEN", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
+    ("POST", "/api/v1/platform/health-plan-templates/{template_version_id}/retire"): _codes("FORBIDDEN", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/platform/health-plan-reviews"): _codes("FORBIDDEN"),
     ("GET", "/api/v1/platform/health-plan-reviews/{review_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
-    ("POST", "/api/v1/platform/health-plan-reviews/{review_id}/claim"): _codes("FORBIDDEN", "REVIEW_NOT_CLAIMED", "STALE_VERSION", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/platform/health-plan-reviews/{review_id}/claim"): _codes("FORBIDDEN", "REVIEW_NOT_CLAIMED", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("POST", "/api/v1/platform/health-plan-reviews/{review_id}/decision"): _codes("FORBIDDEN", "REVIEW_NOT_CLAIMED", "REVIEW_DECISION_CONFLICT", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/therapist/service-cases/{service_case_id}/plans"): _codes("FORBIDDEN", "SERVICE_CASE_NOT_FOUND"),
     ("GET", "/api/v1/therapist/plans/{plan_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
-    ("POST", "/api/v1/therapist/plans/{plan_id}/explanations"): _codes("FORBIDDEN", "PLAN_NOT_FOUND", "STALE_VERSION", "IDEMPOTENCY_CONFLICT"),
+    ("POST", "/api/v1/therapist/plans/{plan_id}/explanations"): _codes("FORBIDDEN", "PLAN_NOT_FOUND", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
     ("GET", "/api/v1/family/service-cases/{service_case_id}/plans"): _codes("FORBIDDEN", "SERVICE_CASE_NOT_FOUND"),
     ("GET", "/api/v1/family/plans/{plan_id}"): _codes("FORBIDDEN", "PLAN_NOT_FOUND"),
     ("POST", "/api/v1/family/plans/{plan_id}/decision"): _codes("FORBIDDEN", "USER_DECISION_FORBIDDEN", "PLAN_NOT_FOUND", "USER_DECISION_CONFLICT", "STALE_VERSION", "IDEMPOTENCY_CONFLICT", "COMMIT_OUTCOME_UNKNOWN"),
 }
 
 
-def _safe_code(exc: BaseException) -> str:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        for line in str(current).splitlines():
-            token = line.strip().split()[0].strip(":") if line.strip() else ""
-            if token in _STATUS:
-                return token
-        current = current.__cause__ or current.__context__
-    return "DEPENDENCY_UNAVAILABLE"
+def _registered_plan_error(exc: HealthPlanError | HealthPlanRepositoryError) -> str | None:
+    if len(exc.args) != 1 or type(exc.args[0]) is not str:
+        return None
+    return exc.args[0] if exc.args[0] in _STATUS else None
 
 
 class Slice6Route(APIRoute):
@@ -140,10 +132,7 @@ class Slice6Route(APIRoute):
             try:
                 return await original(request)
             except RequestValidationError:
-                return JSONResponse(
-                    status_code=422,
-                    content={"code": "INVALID_REQUEST", "message": "request rejected"},
-                )
+                return error_response(request, 422, "INVALID_REQUEST")
             except HTTPException as exc:
                 detail = exc.detail
                 code = detail.get("code") if isinstance(detail, dict) else None
@@ -151,20 +140,23 @@ class Slice6Route(APIRoute):
                     code = "UNAUTHENTICATED"
                 if code not in SLICE6_ROUTE_ERROR_CODES[key]:
                     code = "INVALID_REQUEST" if exc.status_code < 500 else "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(
-                    status_code=_STATUS[code],
-                    content={"code": code, "message": "request rejected"},
-                    headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"} if _STATUS[code] == 401 else {"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
+                status = _STATUS[code]
+                return error_response(
+                    request, status, code,
+                    retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    headers={"WWW-Authenticate": "Bearer"} if status == 401 else None,
                 )
-            except Exception as exc:
-                code = _safe_code(exc)
-                if code not in SLICE6_ROUTE_ERROR_CODES[key]:
-                    code = "DEPENDENCY_UNAVAILABLE"
-                return JSONResponse(
-                    status_code=_STATUS[code],
-                    content={"code": code, "message": "request rejected"},
-                    headers={"Cache-Control": "no-store"} if _STATUS[code] == 503 else None,
-                )
+            except (HealthPlanError, HealthPlanRepositoryError) as exc:
+                code = _registered_plan_error(exc)
+                if code in SLICE6_ROUTE_ERROR_CODES[key]:
+                    status = _STATUS[code]
+                    return error_response(
+                        request, status, code,
+                        retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",
+                    )
+                return error_response(request, 500, "INTERNAL_ERROR")
+            except Exception:
+                return error_response(request, 500, "INTERNAL_ERROR")
 
         return handler
 
@@ -192,20 +184,37 @@ def strip_slice6_validation_responses(schema: dict[str, object]) -> dict[str, ob
     for (method, path), codes in SLICE6_ROUTE_ERROR_CODES.items():
         operation = paths.get(path, {}).get(method.lower())
         if isinstance(operation, dict):
-            for status, auth_code in (("401", "UNAUTHENTICATED"), ("503", "DEPENDENCY_UNAVAILABLE")):
+            statuses = {*(str(_STATUS[code]) for code in codes), "422", "500"}
+            for status in sorted(statuses, key=int):
+                example_code = "INTERNAL_ERROR" if status == "500" else next(
+                    code for code in codes if _STATUS[code] == int(status)
+                )
                 response = operation.setdefault("responses", {}).setdefault(status, {"description": "Request rejected"})
-                media = response.setdefault("content", {}).setdefault("application/json", {
-                    "schema": {"type": "object", "required": ["code", "message"], "properties": {
-                        "code": {"type": "string"}, "message": {"type": "string"},
-                    }},
-                })
-                media.setdefault("examples", {})["authentication"] = {
-                    "value": {"code": auth_code, "message": "request rejected"},
+                examples = {"rejected": {"value": {
+                    "code": example_code,
+                    "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                    "retryable": status == "503" and example_code != "COMMIT_OUTCOME_UNKNOWN", "field_errors": [],
+                }}}
+                if status in {"401", "503"}:
+                    examples["authentication"] = {"value": {
+                        "code": "UNAUTHENTICATED" if status == "401" else "DEPENDENCY_UNAVAILABLE",
+                        "message": "request rejected", "request_id": "01990000-0000-7000-8000-000000000201",
+                        "retryable": status == "503", "field_errors": [],
+                    }}
+                response.setdefault("content", {})["application/json"] = {
+                    "schema": {"$ref": "#/components/schemas/ErrorResponseDTO"},
+                    "examples": examples,
                 }
                 headers = response.setdefault("headers", {})
-                headers["Cache-Control"] = {"schema": {"type": "string", "enum": ["no-store"]}}
+                headers.update({
+                    "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+                    "Cache-Control": {"schema": {"type": "string", "enum": ["no-store, private"]}},
+                    "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+                })
                 if status == "401":
                     headers["WWW-Authenticate"] = {"schema": {"type": "string", "enum": ["Bearer"]}}
+                if status in {"429", "503"}:
+                    headers["Retry-After"] = {"schema": {"type": "integer", "minimum": 0}}
             operation["x-symbolic-error-codes"] = list(codes)
     return schema
 

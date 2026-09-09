@@ -52,7 +52,10 @@ def _rule_detail_payload(*, payload: dict, version: int = 1) -> dict:
 
 
 def _platform_rule_client(monkeypatch) -> TestClient:
+    from app.core.middleware import add_request_middleware
+
     app = FastAPI()
+    add_request_middleware(app)
     for router in api.routers:
         app.include_router(router)
 
@@ -274,7 +277,19 @@ def test_R24_POST创建真实路由传入unknown_commit确认工厂(monkeypatch,
         calls.append(kwargs)
         assert kwargs["confirmation_session_factory"] is expected_factory
         if not confirmed:
-            raise RuntimeError("COMMIT_OUTCOME_UNKNOWN")
+            class CommitFailureSession:
+                async def commit(self):
+                    raise RuntimeError("synthetic database failure")
+
+                async def rollback(self):
+                    return None
+
+            async def confirm():
+                return service.CommitOutcome.UNKNOWN
+
+            await service.commit_with_confirmation(
+                CommitFailureSession(), confirm=confirm
+            )
         return _rule_detail_payload(payload=typed_payload)
 
     monkeypatch.setattr(api, "get_slice5_session_factory", session_factory)
@@ -298,10 +313,17 @@ def test_R24_POST创建真实路由传入unknown_commit确认工厂(monkeypatch,
         assert response.json()["status"] == "DRAFT"
     else:
         assert response.status_code == 503
-        assert response.json() == {
-            "code": "COMMIT_OUTCOME_UNKNOWN",
-            "message": "request rejected",
+        body = response.json()
+        assert set(body) == {
+            "code", "message", "request_id", "retryable", "field_errors",
         }
+        assert body["code"] == "COMMIT_OUTCOME_UNKNOWN"
+        assert body["message"] == "request rejected"
+        assert UUID(body["request_id"]).version == 7
+        assert body["retryable"] is False
+        assert body["field_errors"] == []
+        assert response.headers["Cache-Control"] == "no-store, private"
+        assert response.headers["Pragma"] == "no-cache"
 
 
 def test_R11_R12_公开人员引用不含内部整数或实名PII() -> None:

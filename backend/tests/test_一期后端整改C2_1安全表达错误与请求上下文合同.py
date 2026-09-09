@@ -17,6 +17,8 @@ _PUBLIC = {
     ("post", "/api/v1/institution-onboarding/activate"),
     ("post", "/api/v1/therapist-onboarding/activate"),
     ("get", "/health"),
+    ("get", "/health/live"),
+    ("get", "/health/ready"),
 }
 _REQUEST_ID = "01990000-0000-7000-8000-000000000abc"
 
@@ -93,7 +95,13 @@ def test_C21_R05_OpenAPI如实声明核心错误且不覆盖局部422410(access_
         assert "ErrorResponseDTO" not in str(local)
     private = schema["paths"]["/api/v1/private-files/{file_id}/content"]["get"]["responses"]
     assert "application/octet-stream" in private["200"]["content"]
-    assert "ErrorResponseDTO" not in str(private.get("422", {}))
+    private_validation = private["422"]
+    assert private_validation["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponseDTO"
+    }
+    assert private_validation["headers"]["Cache-Control"]["schema"]["enum"] == [
+        "no-store, private, max-age=0"
+    ]
     therapist = schema["paths"]["/api/v1/institution/therapist-invitations"]["post"]["responses"]
     assert "422" not in therapist
 
@@ -111,7 +119,7 @@ def test_C21_R02_未分类公开操作必须拒绝而非默许(access_settings):
         app.openapi()
 
 
-def test_C21_R02_全部操作显式分类且只五项公开(access_settings):
+def test_C21_R02_全部操作显式分类且只七项公开(access_settings):
     from app.main import create_app
 
     schema = create_app().openapi()
@@ -129,7 +137,7 @@ def test_C21_R02_全部操作显式分类且只五项公开(access_settings):
                 assert len(operation["security"]) == 1
                 assert operation["security"][0]["AccessBearer"] == []
     assert public == _PUBLIC
-    assert count == 253
+    assert count == 255
 
 
 @pytest.mark.parametrize(("method", "path", "extra"), [

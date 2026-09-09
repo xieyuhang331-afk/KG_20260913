@@ -5,6 +5,7 @@ import pytest
 
 from tests.integration.test_一期切片3会员CurrentnessAuthority真实HTTP合同 import (
     _activate_org_admin_for_test,
+    _assert_error_response_dto,
     _login,
 )
 
@@ -112,11 +113,12 @@ def test_机构会员邀请创建与非空列表返回标准UUIDv7(
         headers={**authorization, "Idempotency-Key": idempotency_key},
         json={"mode": "SELF", "phone": "13" + "6" + ("2" * 8)},
     )
-    assert conflict.status_code == 503
-    assert conflict.json() == {
-        "code": "DEPENDENCY_UNAVAILABLE",
-        "message": "request rejected",
-    }
+    _assert_error_response_dto(
+        conflict,
+        status_code=503,
+        error_code="DEPENDENCY_UNAVAILABLE",
+        retryable=True,
+    )
 
     replay = real_db_client.post(
         "/api/v1/institution/member-invitations",

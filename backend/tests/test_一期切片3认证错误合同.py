@@ -31,7 +31,10 @@ def fixed_authority(monkeypatch):
 
 
 def _app_with_sessions(session_calls: list[str], *, unavailable: bool = False) -> FastAPI:
+    from app.core.middleware import add_request_middleware
+
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(institution_router)
 
     async def application_session():
@@ -78,13 +81,15 @@ def test_缺失或无效授权固定401且不进入业务数据库() -> None:
         )
 
         assert response.status_code == 401
-        assert response.json() == {
-            "code": "AUTHENTICATION_REQUIRED",
-            "message": "request rejected",
-        }
+        body = response.json()
+        assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+        assert body["code"] == "AUTHENTICATION_REQUIRED"
+        assert body["message"] == "request rejected"
+        assert body["request_id"] == response.headers["x-request-id"]
+        assert body["retryable"] is False and body["field_errors"] == []
         assert session_calls == []
         assert response.headers["WWW-Authenticate"] == "Bearer"
-        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Cache-Control"] == "no-store, private"
 
 
 def test_有效令牌但角色不足固定403() -> None:
@@ -100,7 +105,7 @@ def test_有效令牌但角色不足固定403() -> None:
     assert response.json()["code"] == "ACTOR_CURRENTNESS_FORBIDDEN"
 
 
-def test_有效令牌后真实依赖不可用保持503() -> None:
+def test_有效令牌后未分类依赖异常安全收敛500() -> None:
     session_calls: list[str] = []
     token = create_access_token(
         {"sub": "71", "role": "org_admin", "tenant_id": 9, "org_id": 100}
@@ -111,10 +116,12 @@ def test_有效令牌后真实依赖不可用保持503() -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert response.status_code == 503
-    assert response.json() == {
-        "code": "DEPENDENCY_UNAVAILABLE",
-        "message": "request rejected",
-    }
+    assert response.status_code == 500
+    body = response.json()
+    assert set(body) == {"code", "message", "request_id", "retryable", "field_errors"}
+    assert body["code"] == "INTERNAL_ERROR"
+    assert body["message"] == "request rejected"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert body["retryable"] is False and body["field_errors"] == []
     assert session_calls
-    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Cache-Control"] == "no-store, private"

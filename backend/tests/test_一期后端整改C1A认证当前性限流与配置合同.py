@@ -71,6 +71,7 @@ def test_C1A_D01_Slice3真实ASGI认证外壳与固定安全头(
     from fastapi.testclient import TestClient
 
     from app.core.database import get_db_session, get_member_enrollment_reader_session
+    from app.core.middleware import add_request_middleware
     from app.core.security import create_access_token, get_current_user_from_jwt
     from app.modules.member_enrollment import api
 
@@ -80,6 +81,7 @@ def test_C1A_D01_Slice3真实ASGI认证外壳与固定安全头(
     failure = RuntimeError(sentinel) if case == "authority-unavailable" else None
     _authority_factory(monkeypatch, None, events, failure=failure)
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(api.family_router)
 
     async def business_session():
@@ -118,10 +120,18 @@ def test_C1A_D01_Slice3真实ASGI认证外壳与固定安全头(
         "DEPENDENCY_UNAVAILABLE" if expected_status == 503 else
         "ACCESS_TOKEN_STALE" if case == "stale" else "AUTHENTICATION_REQUIRED"
     )
-    if (response.status_code != expected_status or
-            response.json() != {"code": expected_code, "message": "request rejected"}):
+    body = response.json()
+    if (
+        response.status_code != expected_status
+        or set(body) != {"code", "message", "request_id", "retryable", "field_errors"}
+        or body["code"] != expected_code
+        or body["message"] != "request rejected"
+        or body["retryable"] != (expected_status == 503)
+        or body["field_errors"] != []
+        or UUID(body["request_id"]).version != 7
+    ):
         pytest.fail("C1_SLICE3_AUTH_ENVELOPE_MISMATCH", pytrace=False)
-    if response.headers.get("Cache-Control") != "no-store":
+    if response.headers.get("Cache-Control") != "no-store, private":
         pytest.fail("C1_SLICE3_AUTH_NO_STORE_MISSING", pytrace=False)
     if expected_status == 401 and response.headers.get("WWW-Authenticate") != "Bearer":
         pytest.fail("C1_SLICE3_AUTH_BEARER_MISSING", pytrace=False)
@@ -139,11 +149,16 @@ def test_C1A_D01_Slice3认证码声明独立闭合(access_settings):
         "AUTHENTICATION_REQUIRED", "ACCESS_TOKEN_STALE",
     }
     response = operation["responses"]["401"]
-    assert set(response["content"]["application/json"]["schema"]["properties"]["code"]["enum"]) == {
-        "AUTHENTICATION_REQUIRED", "ACCESS_TOKEN_STALE",
+    assert response["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponseDTO"
+    }
+    component = create_app().openapi()["components"]["schemas"]["ErrorResponseDTO"]
+    assert set(component["properties"]) == {
+        "code", "message", "request_id", "retryable", "field_errors",
     }
     assert response["headers"]["WWW-Authenticate"]["schema"]["enum"] == ["Bearer"]
-    assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store"]
+    assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store, private"]
+    assert response["headers"]["Pragma"]["schema"]["const"] == "no-cache"
 
 
 def _signed(settings, payload, *, raw_payload=None, header=None):

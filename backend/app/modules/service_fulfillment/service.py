@@ -193,8 +193,8 @@ async def commit_with_confirmation(
         if outcome is CommitOutcome.COMMITTED:
             return outcome
         if outcome is CommitOutcome.NOT_COMMITTED:
-            raise RuntimeError("COMMIT_NOT_COMMITTED") from None
-        raise RuntimeError("COMMIT_OUTCOME_UNKNOWN") from None
+            raise ServiceFulfillmentError("COMMIT_NOT_COMMITTED") from None
+        raise ServiceFulfillmentError("COMMIT_OUTCOME_UNKNOWN") from None
 
 
 def _json_value(value: object) -> object:

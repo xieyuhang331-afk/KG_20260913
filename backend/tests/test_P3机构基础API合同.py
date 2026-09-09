@@ -30,9 +30,21 @@ def test_P3机构最小API闭环尚未实现():
 
 
 def test_组织错误响应固定detail_code():
+    import json
+
+    from starlette.requests import Request
+
     from app.modules.organization.api import organization_error_response
     from app.modules.organization.domain import OrganizationVersionConflict
 
-    response = organization_error_response(OrganizationVersionConflict())
+    request_id = "01990000-0000-7000-8000-000000000223"
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "state": {"request_id": request_id}})
+    response = organization_error_response(request, OrganizationVersionConflict())
     assert response.status_code == 409
-    assert response.body == b'{"detail":"ORGANIZATION_VERSION_CONFLICT"}'
+    assert json.loads(response.body) == {
+        "code": "ORGANIZATION_VERSION_CONFLICT",
+        "message": "request rejected",
+        "request_id": request_id,
+        "retryable": False,
+        "field_errors": [],
+    }

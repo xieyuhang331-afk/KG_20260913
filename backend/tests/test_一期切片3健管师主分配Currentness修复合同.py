@@ -152,6 +152,7 @@ class _RecordingTherapistAuthority(_TherapistAuthority):
 
 def _client(*, reader=None, authority=None) -> TestClient:
     from app.core.database import get_db_session, get_member_enrollment_reader_session
+    from app.core.middleware import add_request_middleware
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment.api import therapist_router
 
@@ -165,6 +166,7 @@ def _client(*, reader=None, authority=None) -> TestClient:
         yield reader or _AssignmentReader()
 
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(therapist_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
     app.dependency_overrides[get_db_session] = authority_session
@@ -173,9 +175,11 @@ def _client(*, reader=None, authority=None) -> TestClient:
 
 
 def _unauthenticated_client() -> TestClient:
+    from app.core.middleware import add_request_middleware
     from app.modules.member_enrollment.api import therapist_router
 
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(therapist_router)
     return TestClient(app)
 
@@ -272,10 +276,17 @@ def test_Repository真正不可用仍返回503且不泄漏内部异常() -> None
     )
 
     assert response.status_code == 503
-    assert response.json() == {
-        "code": "DEPENDENCY_UNAVAILABLE",
-        "message": "request rejected",
+    body = response.json()
+    assert set(body) == {
+        "code", "message", "request_id", "retryable", "field_errors",
     }
+    assert body["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert body["message"] == "request rejected"
+    assert UUID(body["request_id"]).version == 7
+    assert body["retryable"] is True
+    assert body["field_errors"] == []
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert response.headers["Pragma"] == "no-cache"
     assert "synthetic" not in response.text
 
 
@@ -412,6 +423,7 @@ def test_非被分配健管师接受时返回403(
         get_institution_onboarding_reader_session,
         get_member_case_writer_session,
     )
+    from app.core.middleware import add_request_middleware
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment import api
 
@@ -438,6 +450,7 @@ def test_非被分配健管师接受时返回403(
         yield object()
 
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(api.therapist_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
     app.dependency_overrides[get_db_session] = authority_session

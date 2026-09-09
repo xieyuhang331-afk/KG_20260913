@@ -2,11 +2,133 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import date
-from typing import Literal
+from datetime import date, datetime
+from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+T = TypeVar("T")
+
+
+class OnboardingSuccessEnvelope(BaseModel, Generic[T]):
+    model_config = ConfigDict(extra="forbid")
+    code: Literal[0]
+    message: Literal["ok"]
+    data: T
+
+
+class InvitationSummaryDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    invitation_id: UUID
+    institution_name: str
+    institution_type: Literal["HEALTH_STORE", "LICENSED_CLINIC"]
+    status: str
+    expires_at: datetime
+    version: int
+
+
+class InvitationIssuedDTO(InvitationSummaryDTO):
+    short_code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class InvitationRevokedDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    invitation_id: UUID
+    institution_name: str
+    institution_type: Literal["HEALTH_STORE", "LICENSED_CLINIC"]
+    status: str
+    version: int
+
+
+class ActivationDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    application_id: UUID
+    user_id: int
+    status: Literal["DRAFT"]
+    version: int
+
+
+class ApplicationPublicDraftDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    legal_representative_name: str | None = None
+    registered_address: str | None = None
+    service_address: str | None = None
+    contact_name: str | None = None
+    contact_email: str | None = None
+    service_tags: tuple[str, ...] | None = None
+
+
+class ApplicationReviewDraftDTO(ApplicationPublicDraftDTO):
+    credit_code: str | None = None
+    contact_phone: str | None = None
+
+
+class LicenseDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    license_type: Literal["BUSINESS_LICENSE", "MEDICAL_INSTITUTION_LICENSE"]
+    private_file_id: UUID
+    valid_from: date | None
+    valid_until: date | None
+
+
+class ApplicationDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    application_id: UUID
+    status: str
+    institution_type: Literal["HEALTH_STORE", "LICENSED_CLINIC"]
+    draft: ApplicationPublicDraftDTO
+    correction_fields: tuple[str, ...]
+    correction_reason_code: str | None
+    current_revision_no: int
+    version: int
+    tenant_id: UUID | None
+    tenant_active: bool
+    service_ready: bool
+    licenses: tuple[LicenseDTO, ...]
+
+
+class ApplicationCorrectionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str
+    fields: tuple[str, ...]
+    reason_code: str | None
+    version: int
+
+
+class ReviewQueueItemDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    application_id: UUID
+    status: str
+    submitted_at: datetime | None
+    version: int
+
+
+class ReviewRevisionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision_no: int
+    snapshot: ApplicationReviewDraftDTO
+    created_at: datetime
+
+
+class ReviewMaterialDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    license_type: Literal["BUSINESS_LICENSE", "MEDICAL_INSTITUTION_LICENSE"]
+    private_file_id: UUID
+    valid_from: date | None
+    valid_until: date | None
+    status: str
+    scanned_at: datetime | None
+
+
+class ReviewDetailDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    application_id: UUID
+    status: str
+    draft: ApplicationReviewDraftDTO
+    version: int
+    revisions: tuple[ReviewRevisionDTO, ...]
+    materials: tuple[ReviewMaterialDTO, ...]
 
 
 class InvitationCreate(BaseModel):
