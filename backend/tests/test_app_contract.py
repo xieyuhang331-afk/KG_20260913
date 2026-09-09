@@ -23,6 +23,7 @@ class BackendAppContractTests(unittest.TestCase):
                 },
             },
         )
+        self.assertEqual(response.status_code, 200)
 
     def test_module_registry_matches_d40_baseline(self):
         from app.modules.registry import get_module_registry

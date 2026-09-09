@@ -1,11 +1,17 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
-from app.core.database import dispose_database_runtimes
+from app.core.database import dispose_database_runtimes, get_session_factory
 from app.core.middleware import add_request_middleware
+from app.core.readiness import HealthResponseDTO, ReadinessService, health_response
 from app.core.responses import ok_response
-from app.core.接口合同 import express_security_contract, install_error_contract
+from app.core.接口合同 import (
+    ErrorResponseDTO,
+    error_response,
+    express_security_contract,
+    install_error_contract,
+)
 from app.core.认证配置校验 import validated_auth_settings
 from app.core.认证限流 import AuthRateLimiter
 from app.modules.auth.api import auth_router
@@ -67,13 +73,24 @@ from app.modules.user_health.api import (
     strip_slice4_validation_responses,
 )
 
+_HEALTH_RESPONSE_HEADERS = {
+    "Cache-Control": {
+        "schema": {"type": "string", "const": "no-store, private"}
+    },
+    "Pragma": {"schema": {"type": "string", "const": "no-cache"}},
+    "X-Request-ID": {"schema": {"type": "string", "format": "uuid"}},
+}
+
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await dispose_database_runtimes()
+        try:
+            await app.state.readiness_service.close()
+        finally:
+            await dispose_database_runtimes()
 
 
 def create_app() -> FastAPI:
@@ -92,6 +109,11 @@ def create_app() -> FastAPI:
     app.state.private_object_store = build_private_object_store(
         backend=settings.file_storage_backend,
         root=settings.private_file_storage_root,
+    )
+    app.state.readiness_service = ReadinessService(
+        session_factory=lambda: get_session_factory()(),
+        expected_database_role=settings.database_user,
+        object_store=app.state.private_object_store,
     )
     app.state.slice7_export_access_authorizer = authorize_generated_export_access
     app.state.slice7_export_download_consumer = consume_personal_data_export_download
@@ -139,8 +161,10 @@ def create_app() -> FastAPI:
 
     app.openapi = therapist_aware_openapi
 
-    @app.get("/health", tags=["system"])
-    async def health_check() -> dict:
+    @app.get("/health", tags=["system"], deprecated=True)
+    async def health_check(response: Response) -> dict:
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Pragma"] = "no-cache"
         return ok_response(
             {
                 "service": settings.service_name,
@@ -148,6 +172,35 @@ def create_app() -> FastAPI:
                 "version": settings.version,
             }
         )
+
+    @app.get(
+        "/health/live",
+        tags=["system"],
+        response_model=HealthResponseDTO,
+        responses={200: {"headers": _HEALTH_RESPONSE_HEADERS}},
+    )
+    async def health_live(response: Response) -> HealthResponseDTO:
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Pragma"] = "no-cache"
+        return health_response("LIVE")
+
+    @app.get(
+        "/health/ready",
+        tags=["system"],
+        response_model=HealthResponseDTO,
+        responses={
+            200: {"headers": _HEALTH_RESPONSE_HEADERS},
+            503: {"model": ErrorResponseDTO, "description": "Dependency unavailable"},
+        },
+    )
+    async def health_ready(request: Request, response: Response):
+        if not await request.app.state.readiness_service.ready():
+            return error_response(
+                request, 503, "DEPENDENCY_UNAVAILABLE", retryable=True
+            )
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Pragma"] = "no-cache"
+        return health_response("READY")
 
     return app
 

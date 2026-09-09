@@ -194,6 +194,8 @@ _PUBLIC_OPERATIONS = frozenset({
     ("POST", "/api/v1/institution-onboarding/activate"),
     ("POST", "/api/v1/therapist-onboarding/activate"),
     ("GET", "/health"),
+    ("GET", "/health/live"),
+    ("GET", "/health/ready"),
 })
 _ADDITIONAL_CREDENTIALS = {
     ("GET", "/api/v1/reviews/users/{user_id}/identity"): ("IdentityReviewStepUp", "X-Identity-Review-Step-Up"),

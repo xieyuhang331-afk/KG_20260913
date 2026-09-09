@@ -17,6 +17,8 @@ _PUBLIC = {
     ("post", "/api/v1/institution-onboarding/activate"),
     ("post", "/api/v1/therapist-onboarding/activate"),
     ("get", "/health"),
+    ("get", "/health/live"),
+    ("get", "/health/ready"),
 }
 _REQUEST_ID = "01990000-0000-7000-8000-000000000abc"
 
@@ -117,7 +119,7 @@ def test_C21_R02_未分类公开操作必须拒绝而非默许(access_settings):
         app.openapi()
 
 
-def test_C21_R02_全部操作显式分类且只五项公开(access_settings):
+def test_C21_R02_全部操作显式分类且只七项公开(access_settings):
     from app.main import create_app
 
     schema = create_app().openapi()
@@ -135,7 +137,7 @@ def test_C21_R02_全部操作显式分类且只五项公开(access_settings):
                 assert len(operation["security"]) == 1
                 assert operation["security"][0]["AccessBearer"] == []
     assert public == _PUBLIC
-    assert count == 253
+    assert count == 255
 
 
 @pytest.mark.parametrize(("method", "path", "extra"), [
