@@ -3,22 +3,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
+import inspect
 import json
 import os
 from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import HTTPException
+
 from app.core.database import dispose_slice1_runtime, get_slice1_session_factory
+from app.core.readiness import probe_private_object_store
 from app.core.sqlalchemy_mapping import build_sqlalchemy_table
 from app.modules.auth.models import USER_TABLE
 from app.modules.institution_onboarding.ports import InstitutionApprovalDeliveryPort
-from app.modules.institution_onboarding.repository import InstitutionOnboardingRepository
+from app.modules.institution_onboarding.repository import (
+    InstitutionOnboardingRepository,
+)
 from app.modules.private_file.ports import PrivateFileScannerUnavailable
 from app.modules.private_file.repository import PrivateFileRepository
-from app.modules.system.models import PLATFORM_ORG_TABLE
-from app.modules.tenant.models import TENANT_TABLE
 from app.modules.private_file.service import cleanup_orphan_private_file, record_scan
 from app.modules.private_file.storage import build_private_object_store
+from app.modules.system.models import PLATFORM_ORG_TABLE
+from app.modules.tenant.models import TENANT_TABLE
 from app.tasks.celery_app import (
     PRIVATE_FILE_CLEANUP_TASK_NAME,
     PRIVATE_FILE_QUEUE,
@@ -26,7 +31,6 @@ from app.tasks.celery_app import (
     PRIVATE_FILE_SCAN_TASK_NAME,
     celery_app,
 )
-
 
 for _table_spec in (PLATFORM_ORG_TABLE, TENANT_TABLE, USER_TABLE):
     build_sqlalchemy_table(_table_spec)
@@ -83,6 +87,22 @@ def _object_store_for_worker():
         backend=settings.file_storage_backend,
         root=settings.private_file_storage_root,
     )
+
+
+async def check_private_file_worker_readiness() -> bool:
+    scanner = _scanner_for_worker()
+    health = getattr(scanner, "health", None)
+    if not callable(health):
+        return False
+    try:
+        scanner_result = health()
+        if not inspect.isawaitable(scanner_result) or await scanner_result is not True:
+            return False
+        return await probe_private_object_store(_object_store_for_worker())
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return False
 
 
 def configure_private_file_scanner_for_test(scanner) -> None:
