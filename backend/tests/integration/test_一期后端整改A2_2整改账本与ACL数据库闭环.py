@@ -196,7 +196,7 @@ def test_A2_2_L账本幂等与完整前后像确认(
 ) -> None:
     writer = a2_identity_remediation_writer_database
     confirmation_db = a2_identity_remediation_confirmation_database
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
     batch_ref = uuid4()
     plan_args, planned = _plan(
         writer,
@@ -708,7 +708,7 @@ def test_A2_2_L_upgrade_downgrade_reupgrade只影响0035对象(
             a2_identity_remediation_writer_database.fetch_rows(WRITER_SQL, *(None,) * 29)
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
     for table in TABLES:
         assert pg_database.fetch_value(f"SELECT to_regclass('{table}')") is not None
     assert {

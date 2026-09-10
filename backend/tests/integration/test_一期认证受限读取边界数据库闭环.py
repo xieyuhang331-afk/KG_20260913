@@ -33,10 +33,12 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypatch) -> None:
+def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("KG_PRIVATE_FILE_STORAGE_ROOT", str(tmp_path / "private-files"))
     from app.core import database, 认证当前性
     from app.core.config import get_settings
     from app.core.database import get_db_session
+    get_settings.cache_clear()
     from app.main import create_app
     from app.modules.auth.service import hash_password
 
@@ -351,9 +353,13 @@ def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypa
                 "INSERT INTO public.therapist_profile("
                 "therapist_id,user_id,tenant_id,invitation_id,status,capacity_limit,"
                 "active_case_count,current_revision_no,totp_secret_ciphertext,"
-                "totp_encryption_key_id,totp_enabled,activated_at,created_at,"
-                "updated_at,version) VALUES($1,$2,$3,$4,'DRAFT',30,0,0,$5,$6,"
-                "true,now(),now(),now(),1)",
+                "totp_encryption_key_id,totp_enabled,real_name_ciphertext,"
+                "real_name_encryption_key_id,real_name_digest,"
+                "real_name_digest_key_id,display_name,practice_summary,service_tags,"
+                "activated_at,created_at,updated_at,version) VALUES($1,$2,$3,$4,"
+                "'DRAFT',30,0,0,$5,$6,true,$7,$8,$9,$10,'Synthetic Therapist',"
+                "'Synthetic practice summary','[\"OBESITY\"]'::jsonb,now(),now(),"
+                "now(),1)",
                 therapist_id,
                 therapist_user_id,
                 tenant_id,
@@ -362,6 +368,17 @@ def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypa
                     therapist_totp, tenant_public_id, therapist_id
                 ),
                 therapist.totp_key_id,
+                therapist.encrypt_pii(
+                    "Synthetic Therapist",
+                    field="profile-real-name",
+                    tenant_public_id=tenant_public_id,
+                    object_id=therapist_id,
+                ),
+                therapist.pii_key_id,
+                therapist.digest_pii(
+                    "Synthetic Therapist", field="profile-real-name"
+                ),
+                therapist.digest_key_id,
             )
         finally:
             await admin.close()
@@ -574,19 +591,11 @@ def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypa
                     "/api/v1/therapist-onboarding/profile",
                     headers=therapist_headers,
                 )
-                # Independent Slice 2 business-currentness boundary remains
-                # unresolved. Its registered dependency failure keeps the C2.2
-                # retryable 503 classification.
-                assert therapist_read.status_code == 503
-                assert therapist_read.json()["code"] == "DEPENDENCY_UNAVAILABLE"
-                assert therapist_read.json()["message"] == "request rejected"
-                assert therapist_read.json()["retryable"] is True
-                assert therapist_read.json()["field_errors"] == []
-                assert UUID(therapist_read.json()["request_id"]).version == 7
-                assert (
-                    therapist_read.json()["request_id"]
-                    == therapist_read.headers["x-request-id"]
-                )
+                assert therapist_read.status_code == 200
+                profile = therapist_read.json()["data"]["profile"]
+                assert profile["status"] == "DRAFT"
+                assert UUID(profile["therapist_id"]).version == 7
+                assert UUID(profile["tenant_id"]).version == 7
         finally:
             app.dependency_overrides.clear()
             await engine.dispose()

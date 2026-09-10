@@ -141,13 +141,17 @@ def test_十条机构路由只使用受限Currentness且其他路径保留Instit
         api.claim_review,
         api.pii_access,
         api.platform_decision,
-        api.accept_assignment,
-        api.decline_assignment,
     )
     for endpoint in remaining_reader_sites:
         source = inspect.getsource(endpoint)
         assert "institution_authority=Depends(get_institution_onboarding_reader_session)" in source
         assert "_tenant_public_id(authority" not in source
+
+    for endpoint in (api.accept_assignment, api.decline_assignment):
+        source = inspect.getsource(endpoint)
+        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" not in source
+        assert "session=Depends(get_member_case_writer_session)" in source
+        assert "_therapist_current(session,actor)" in source.replace(" ", "")
 
 
 def test_平台实名审核不得用ApplicationAuthority读取Slice3或机构基表() -> None:

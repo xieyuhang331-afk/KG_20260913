@@ -364,7 +364,11 @@ def _verify_qualification_http_journey(database, client, therapist_headers, ther
                 **therapist_headers, "Idempotency-Key": "gate-fault-" + fault,
                 "X-Request-ID": str(Uuid7Generator().generate()),
             })
-            require(failure_response.status_code == 503, "GATE_FAULT_TRANSLATION_INVALID")
+        expected_status = 503 if fault == "commit_not_committed" else 500
+        require(
+            failure_response.status_code == expected_status,
+            "GATE_FAULT_TRANSLATION_INVALID",
+        )
         require(bool(entered), "GATE_FAULT_NOT_EXECUTED")
         require(before_fault == business_snapshot(), "GATE_FAULT_BUSINESS_ROLLBACK_INCOMPLETE")
     asyncio.run(_verify_real_service_cancellation(therapist_id, valid_initial, monkeypatch))
@@ -1085,7 +1089,7 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         ) for signature in signatures)
 
     config = _build_alembic_config(_get_test_database_url())
-    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042",
+    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043",
             "GATE_CURRENT_HEAD_INVALID")
     try:
         command.downgrade(config, "20260906_0039")
@@ -1133,5 +1137,5 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         require(function_before == approved_functions(), "GATE_REUPGRADE_FUNCTION_CONTRACT_DRIFT")
     finally:
         command.upgrade(config, "head")
-        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042",
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043",
                 "GATE_LATEST_HEAD_RESTORE_FAILED")

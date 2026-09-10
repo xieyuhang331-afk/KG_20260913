@@ -13,6 +13,14 @@ from zoneinfo import ZoneInfo
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SATimeoutError,
+)
 
 from app.core.security import CurrentUser
 from app.core.uuid_generator import Uuid7Generator
@@ -703,52 +711,97 @@ def _audit(scope: str, action: str, object_id: str, request_id: str, preimage: o
     )
 
 
-async def require_institution_actor(session, actor: CurrentUser) -> None:
+async def require_institution_actor(session, actor: CurrentUser) -> str:
     if actor.role not in {"org_admin", "org_operator"} or actor.tenant_id is None:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
-    row = (await session.execute(
-        __import__("sqlalchemy").text(
-            "SELECT u.role,u.status,u.tenant_id,t.status FROM public.\"user\" u "
-            "JOIN public.tenant t ON t.id=u.tenant_id WHERE u.id=:id FOR SHARE OF u,t"
-        ), {"id": actor.id}
-    )).one_or_none()
-    if row is None or row[0] != actor.role or row[1] != "active" or row[2] != actor.tenant_id or row[3] != "active":
+    public_id = (
+        await session.execute(
+            text(
+                "SELECT public.slice2_institution_business_currentness_v1("
+                ":actor_user_id,:claimed_tenant_id,:claimed_role)"
+            ),
+            {
+                "actor_user_id": actor.id,
+                "claimed_tenant_id": actor.tenant_id,
+                "claimed_role": actor.role,
+            },
+        )
+    ).scalar_one_or_none()
+    if public_id is None:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+    return str(public_id)
 
 
-async def require_therapist(session, actor: CurrentUser) -> None:
+async def require_therapist(session, actor: CurrentUser) -> dict[str, object]:
     if actor.role != "therapist" or actor.tenant_id is None or actor.org_id is not None:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
-    row = (await session.execute(
-        __import__("sqlalchemy").text(
-            "SELECT u.role,u.status,u.tenant_id,t.status,p.tenant_id,p.therapist_status,p.totp_enabled "
-            "FROM public.\"user\" u JOIN public.tenant t ON t.id=u.tenant_id "
-            "JOIN LATERAL public.therapist_totp_for_login_v1(u.id) p ON TRUE "
-            "WHERE u.id=:id FOR SHARE OF u,t"
-        ), {"id": actor.id}
-    )).one_or_none()
-    allowed = {"ACTIVATED", "DRAFT", "SUBMITTED", "UNDER_REVIEW", "NEEDS_CORRECTION", "RESUBMITTED", "APPROVED_ACTIVE", "SUSPENDED"}
-    if (
-        row is None
-        or row[0] != "therapist"
-        or row[1] != "active"
-        or row[2] != actor.tenant_id
-        or row[3] != "active"
-        or row[4] != actor.tenant_id
-        or row[5] not in allowed
-        or row[6] is not True
-    ):
+    row = (
+        await session.execute(
+            text(
+                "SELECT therapist_id,tenant_public_id FROM "
+                "public.slice2_therapist_onboarding_currentness_v1("
+                ":actor_user_id,:claimed_tenant_id)"
+            ),
+            {"actor_user_id": actor.id, "claimed_tenant_id": actor.tenant_id},
+        )
+    ).mappings().one_or_none()
+    if row is None:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+    return dict(row)
+
+
+def status_request_digest(expected_version: int, decision: str, reason_code: str) -> str:
+    return _digest(
+        {
+            "expected_version": expected_version,
+            "decision": decision,
+            "reason_code": reason_code,
+        }
+    )
+
+
+async def require_therapist_self_exit(
+    session,
+    actor: CurrentUser,
+    *,
+    idempotency_key: str,
+    request_digest: str,
+) -> dict[str, object]:
+    if actor.role != "therapist" or actor.tenant_id is None or actor.org_id is not None:
+        raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+    row = (
+        await session.execute(
+            text(
+                "SELECT therapist_id,tenant_public_id FROM "
+                "public.slice2_therapist_self_exit_currentness_v1("
+                ":actor_user_id,:claimed_tenant_id,:idempotency_key,:request_digest)"
+            ),
+            {
+                "actor_user_id": actor.id,
+                "claimed_tenant_id": actor.tenant_id,
+                "idempotency_key": idempotency_key,
+                "request_digest": request_digest,
+            },
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+    return dict(row)
 
 
 async def require_reviewer(session, actor: CurrentUser) -> None:
     if actor.role != "super_admin" or actor.tenant_id is not None or actor.org_id is not None:
         raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
-    row = (await session.execute(
-        __import__("sqlalchemy").text("SELECT role,status,tenant_id FROM public.\"user\" WHERE id=:id FOR SHARE"),
-        {"id": actor.id},
-    )).one_or_none()
-    if row != ("super_admin", "active", None):
+    current = (
+        await session.execute(
+            text(
+                "SELECT public.slice2_therapist_reviewer_currentness_v1("
+                ":actor_user_id)"
+            ),
+            {"actor_user_id": actor.id},
+        )
+    ).scalar_one_or_none()
+    if current is not True:
         raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
 
 
@@ -1691,4 +1744,16 @@ def translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, TherapistConflict):
         code = str(exc)
         return HTTPException(409, code)
-    return HTTPException(503, "DEPENDENCY_UNAVAILABLE")
+    if isinstance(exc, (InterfaceError, OperationalError, DisconnectionError, SATimeoutError)):
+        return HTTPException(503, "DEPENDENCY_UNAVAILABLE")
+    if isinstance(exc, DBAPIError):
+        sqlstate = getattr(exc.orig, "sqlstate", None)
+        if (
+            exc.connection_invalidated
+            or sqlstate == "42501"
+            or sqlstate == "42883"
+            or (isinstance(sqlstate, str) and sqlstate.startswith("08"))
+            or sqlstate in {"53300", "53400", "57P01", "57P02", "57P03"}
+        ):
+            return HTTPException(503, "DEPENDENCY_UNAVAILABLE")
+    return HTTPException(500, "INTERNAL_ERROR")

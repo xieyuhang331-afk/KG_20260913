@@ -67,7 +67,7 @@ def test_A2_2_P_0034修订与历史0033保持单一Head():
     assert module.down_revision == "20260830_0033"
     assert module.branch_labels is None
     assert module.depends_on is None
-    assert _revision_heads() == {"20260911_0042"}
+    assert _revision_heads() == {"20260912_0043"}
     assert _normalized_lf_sha256(HISTORICAL_0033) == HISTORICAL_0033_SHA256
 
 

@@ -156,7 +156,9 @@ def test_旧JWT在四类actor_currentness漂移后拒绝() -> None:
     assert "FOR SHARE OF u,t" not in institution_source
     assert "institution_application" not in institution_source
     assert "get_institution_onboarding_reader_session" in source
-    assert "JOIN public.\"user\" u" in inspect.getsource(api._therapist_current)
+    therapist_source = inspect.getsource(api._therapist_current)
+    assert "slice3_therapist_service_currentness_v1" in therapist_source
+    assert "JOIN public.\"user\" u" not in therapist_source
     assert "await _current_reviewer(authority,actor)" in inspect.getsource(api.identity_reviews)
     assert "await _current_reviewer(authority,actor)" in inspect.getsource(api.identity_review)
 

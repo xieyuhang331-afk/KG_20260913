@@ -12,7 +12,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
 from app.core.database import (
-    get_db_session,
     get_therapist_onboarding_writer_session,
     get_therapist_reader_session,
     get_therapist_review_writer_session,
@@ -61,6 +60,7 @@ from app.modules.therapist_qualification.service import (
     require_institution_actor,
     require_reviewer,
     require_therapist,
+    require_therapist_self_exit,
     read_readiness_fail_closed,
     renewal_resubmit,
     resubmit,
@@ -69,6 +69,7 @@ from app.modules.therapist_qualification.service import (
     revoke_invitation,
     save_profile,
     submit,
+    status_request_digest,
     translate_error,
 )
 from app.tasks.celery_app import celery_app
@@ -171,6 +172,8 @@ def _http_error_code(request: Request, exc: HTTPException, allowed: dict[int, tu
 
     status_code = 400 if exc.status_code == 422 else exc.status_code
     detail = exc.detail
+    if status_code == 500 and detail == "INTERNAL_ERROR":
+        return 500, "INTERNAL_ERROR"
     if status_code == 401:
         return 401, "AUTHENTICATION_REQUIRED"
     if status_code == 503 and detail not in allowed.get(503, ()):
@@ -454,26 +457,122 @@ async def _tenant_public_id(authority_session, tenant_id: int) -> str:
 def _actor_precommit(authority_session, actor: CurrentUser, kind: str, tenant_public_id: str | None = None):
     async def check() -> None:
         if kind == "institution":
-            await require_institution_actor(authority_session, actor)
+            current_public_id = await require_institution_actor(authority_session, actor)
         elif kind == "therapist":
-            await require_therapist(authority_session, actor)
+            current = await require_therapist(authority_session, actor)
+            current_public_id = str(current["tenant_public_id"])
         elif kind == "reviewer":
             await require_reviewer(authority_session, actor)
+            current_public_id = None
         else:
             raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
-        if tenant_public_id is not None:
-            current = await _tenant_public_id(authority_session, actor.tenant_id)
-            if current != tenant_public_id:
-                raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
-    return check
-
-
-def _tenant_precommit(authority_session, tenant_id: int, tenant_public_id: str):
-    async def check() -> None:
-        current = await _tenant_public_id(authority_session, tenant_id)
-        if current != tenant_public_id:
+        if tenant_public_id is not None and current_public_id != tenant_public_id:
             raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
     return check
+
+
+def _self_exit_precommit(
+    authority_session,
+    actor: CurrentUser,
+    *,
+    therapist_id: str,
+    tenant_public_id: str,
+    idempotency_key: str,
+    request_digest: str,
+):
+    async def check() -> None:
+        current = await require_therapist_self_exit(
+            authority_session,
+            actor,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+        )
+        if (
+            str(current["therapist_id"]) != therapist_id
+            or str(current["tenant_public_id"]) != tenant_public_id
+        ):
+            raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+
+    return check
+
+
+async def _activation_currentness(session, invitation_id: UUID | str) -> dict[str, object]:
+    row = (
+        await session.execute(
+            __import__("sqlalchemy").text(
+                "SELECT tenant_id,tenant_public_id FROM "
+                "public.slice2_therapist_activation_currentness_v1(:invitation_id)"
+            ),
+            {"invitation_id": str(invitation_id)},
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(401, "THERAPIST_INVITATION_INVALID")
+    return dict(row)
+
+
+def _activation_precommit(session, invitation_id: UUID | str, tenant_id: int, tenant_public_id: str):
+    async def check() -> None:
+        current = await _activation_currentness(session, invitation_id)
+        if current["tenant_id"] != tenant_id or str(current["tenant_public_id"]) != tenant_public_id:
+            raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
+    return check
+
+
+async def _review_target_currentness(session, actor: CurrentUser, therapist_id: UUID | str) -> None:
+    if actor.role != "super_admin" or actor.tenant_id is not None or actor.org_id is not None:
+        raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
+    current = (
+        await session.execute(
+            __import__("sqlalchemy").text(
+                "SELECT public.slice2_therapist_review_target_currentness_v1("
+                ":actor_user_id,:therapist_id)"
+            ),
+            {"actor_user_id": actor.id, "therapist_id": str(therapist_id)},
+        )
+    ).scalar_one_or_none()
+    if current is not True:
+        raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
+
+
+async def _review_item_currentness(session, actor: CurrentUser, review_item_id: UUID | str) -> str:
+    if actor.role != "super_admin" or actor.tenant_id is not None or actor.org_id is not None:
+        raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
+    therapist_id = (
+        await session.execute(
+            __import__("sqlalchemy").text(
+                "SELECT public.slice2_therapist_review_item_currentness_v1("
+                ":actor_user_id,:review_item_id)"
+            ),
+            {"actor_user_id": actor.id, "review_item_id": str(review_item_id)},
+        )
+    ).scalar_one_or_none()
+    if therapist_id is None:
+        raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
+    return str(therapist_id)
+
+
+def _review_target_precommit(session, actor: CurrentUser, therapist_id: UUID | str):
+    async def check() -> None:
+        await _review_target_currentness(session, actor, therapist_id)
+    return check
+
+
+def _review_item_precommit(session, actor: CurrentUser, review_item_id: UUID | str, therapist_id: str):
+    async def check() -> None:
+        current = await _review_item_currentness(session, actor, review_item_id)
+        if current != therapist_id:
+            raise HTTPException(403, "REVIEWER_CURRENTNESS_FORBIDDEN")
+    return check
+
+
+async def _reviewer_read_currentness(session, actor: CurrentUser) -> None:
+    await session.execute(
+        __import__("sqlalchemy").text(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+        )
+    )
+    await require_reviewer(session, actor)
 
 
 async def _review_decision_dto(repo, therapist_id: str, result: dict[str, object]) -> dict[str, object]:
@@ -505,10 +604,9 @@ async def _review_decision_dto(repo, therapist_id: str, result: dict[str, object
     response_model=SuccessEnvelope[InvitationCreatedDTO],
     responses=_errors(400, 401, 403, 409, 503),
 )
-async def post_invitation(payload: TherapistInvitationCreate, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_institution_actor(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    value = await _safe(create_invitation(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "institution", public_id)))
+async def post_invitation(payload: TherapistInvitationCreate, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    public_id = await _safe(require_institution_actor(session, actor))
+    value = await _safe(create_invitation(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "institution", public_id)))
     return _ok(InvitationCreatedDTO, value)
 
 
@@ -517,9 +615,9 @@ async def post_invitation(payload: TherapistInvitationCreate, request: Request, 
     response_model=SuccessEnvelope[PageDTO[InvitationDTO]],
     responses=_errors(400, 401, 403, 503),
 )
-async def get_invitations(status: InvitationStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_invitations(status: InvitationStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "invitation")
-    await _safe(require_institution_actor(authority_session, actor))
+    await _safe(require_institution_actor(session, actor))
     rows = await _safe(TherapistQualificationRepository(session).list_invitations(actor.tenant_id, status=status, cursor=decoded, limit=limit))
     public_rows = tuple(_invitation_dto(row) for row in rows)
     page = _page(
@@ -534,9 +632,9 @@ async def get_invitations(status: InvitationStatusValue | None = None, cursor: s
     response_model=SuccessEnvelope[InvitationDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_revoke(invitation_id: UUID, payload: TherapistInvitationRevoke, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_institution_actor(authority_session, actor))
-    value = await _safe(revoke_invitation(session, actor, str(invitation_id), payload, _request_id(request), idempotency_key, precommit_check=_actor_precommit(authority_session, actor, "institution")))
+async def post_revoke(invitation_id: UUID, payload: TherapistInvitationRevoke, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    await _safe(require_institution_actor(session, actor))
+    value = await _safe(revoke_invitation(session, actor, str(invitation_id), payload, _request_id(request), idempotency_key, precommit_check=_actor_precommit(session, actor, "institution")))
     return _ok(InvitationDTO, value)
 
 
@@ -545,9 +643,9 @@ async def post_revoke(invitation_id: UUID, payload: TherapistInvitationRevoke, r
     response_model=SuccessEnvelope[PageDTO[ProfileDTO]],
     responses=_errors(400, 401, 403, 503),
 )
-async def get_therapists(status: ProfileStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_therapists(status: ProfileStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "profile")
-    await _safe(require_institution_actor(authority_session, actor))
+    await _safe(require_institution_actor(session, actor))
     repo = TherapistQualificationRepository(session)
     guard = await _safe(repo.readiness_guard(actor.tenant_id))
     if guard is None:
@@ -565,8 +663,8 @@ async def get_therapists(status: ProfileStatusValue | None = None, cursor: str |
     "/therapists/{therapist_id}", response_model=SuccessEnvelope[TherapistDetailDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_therapist(therapist_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
-    await _safe(require_institution_actor(authority_session, actor))
+async def get_therapist(therapist_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(require_institution_actor(session, actor))
     repo = TherapistQualificationRepository(session)
     profile = await _safe(repo.profile_summary(str(therapist_id)))
     if profile is None or profile["tenant_id"] != actor.tenant_id:
@@ -585,8 +683,8 @@ async def get_therapist(therapist_id: UUID, actor: CurrentUser = Depends(get_cur
     "/service-readiness", response_model=SuccessEnvelope[ReadinessDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_service_readiness(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
-    await _safe(require_institution_actor(authority_session, actor))
+async def get_service_readiness(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(require_institution_actor(session, actor))
     value, stale = await _safe(read_readiness_fail_closed(session, actor.tenant_id))
     if value is None:
         raise HTTPException(404, "READINESS_NOT_FOUND")
@@ -600,9 +698,9 @@ async def get_service_readiness(actor: CurrentUser = Depends(get_current_user_fr
     response_model=SuccessEnvelope[PageDTO[EvidenceDTO]],
     responses=_errors(400, 401, 403, 503),
 )
-async def get_readiness_evidence(cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_readiness_evidence(cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "evidence")
-    await _safe(require_institution_actor(authority_session, actor))
+    await _safe(require_institution_actor(session, actor))
     repo = TherapistQualificationRepository(session)
     guard = await _safe(repo.readiness_guard(actor.tenant_id))
     if guard is None:
@@ -621,14 +719,11 @@ async def get_readiness_evidence(cursor: str | None = Query(None, max_length=512
     response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 409, 503),
 )
-async def post_activate(payload: TherapistActivate, request: Request, idempotency_key: IdempotencyKey, session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    tenant_id = await _safe(
-        TherapistQualificationRepository(session).invitation_tenant_id(str(payload.invitation_id))
-    )
-    if tenant_id is None:
-        raise HTTPException(401, "THERAPIST_INVITATION_INVALID")
-    public_id = await _safe(_tenant_public_id(authority_session, tenant_id))
-    value = await _safe(activate(session, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_tenant_precommit(authority_session, tenant_id, public_id)))
+async def post_activate(payload: TherapistActivate, request: Request, idempotency_key: IdempotencyKey, session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(_activation_currentness(session, payload.invitation_id))
+    tenant_id = current["tenant_id"]
+    public_id = str(current["tenant_public_id"])
+    value = await _safe(activate(session, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_activation_precommit(session, payload.invitation_id, tenant_id, public_id)))
     return _ok(MutationProfileDTO, value)
 
 
@@ -636,13 +731,13 @@ async def post_activate(payload: TherapistActivate, request: Request, idempotenc
     "/profile", response_model=SuccessEnvelope[SelfTherapistDetailDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_profile(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), private_session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
+async def get_profile(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), private_session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
     repo = TherapistQualificationRepository(session)
     row = await _safe(repo.profile_for_user_summary(actor.id))
     if row is None or actor.role != "therapist" or row["tenant_id"] != actor.tenant_id:
         raise HTTPException(403, "ACTOR_CURRENTNESS_FORBIDDEN")
-    tenant_public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
+    tenant_public_id = str(current["tenant_public_id"])
     real_name = None
     if row["status"] != "ACTIVATED":
         private_row = await _safe(TherapistQualificationRepository(private_session).self_profile_private(actor.id))
@@ -672,10 +767,10 @@ async def get_profile(actor: CurrentUser = Depends(get_current_user_from_jwt), s
     "/profile", response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def put_profile(payload: TherapistProfileDraft, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    return _ok(MutationProfileDTO, await _safe(save_profile(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "therapist", public_id))))
+async def put_profile(payload: TherapistProfileDraft, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
+    public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(save_profile(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "therapist", public_id))))
 
 
 @therapist_router.post(
@@ -683,18 +778,18 @@ async def put_profile(payload: TherapistProfileDraft, request: Request, idempote
     response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 409, 503),
 )
-async def post_submit(payload: TherapistSubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    return _ok(MutationProfileDTO, await _safe(submit(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "therapist", public_id))))
+async def post_submit(payload: TherapistSubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
+    public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(submit(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "therapist", public_id))))
 
 
 @therapist_router.get(
     "/corrections", response_model=SuccessEnvelope[CorrectionDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_corrections(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
+async def get_corrections(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(require_therapist(session, actor))
     repo = TherapistQualificationRepository(session)
     row = await _safe(repo.profile_for_user_summary(actor.id))
     if row is None or row["status"] != "NEEDS_CORRECTION":
@@ -710,10 +805,10 @@ async def get_corrections(actor: CurrentUser = Depends(get_current_user_from_jwt
     response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 409, 503),
 )
-async def post_resubmit(payload: TherapistResubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    return _ok(MutationProfileDTO, await _safe(resubmit(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "therapist", public_id))))
+async def post_resubmit(payload: TherapistResubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
+    public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(resubmit(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "therapist", public_id))))
 
 
 @therapist_router.post(
@@ -721,10 +816,10 @@ async def post_resubmit(payload: TherapistResubmit, request: Request, idempotenc
     response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 409, 503),
 )
-async def post_renew(payload: TherapistRenew, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    return _ok(MutationProfileDTO, await _safe(renew(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "therapist", public_id))))
+async def post_renew(payload: TherapistRenew, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
+    public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(renew(session, actor, payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "therapist", public_id))))
 
 
 @therapist_router.post(
@@ -732,31 +827,40 @@ async def post_renew(payload: TherapistRenew, request: Request, idempotency_key:
     response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_renewal_resubmit(review_item_id: UUID, payload: TherapistRenewalResubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    public_id = await _safe(_tenant_public_id(authority_session, actor.tenant_id))
-    return _ok(MutationProfileDTO, await _safe(renewal_resubmit(session, actor, str(review_item_id), payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(authority_session, actor, "therapist", public_id))))
+async def post_renewal_resubmit(review_item_id: UUID, payload: TherapistRenewalResubmit, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_onboarding_writer_session)):
+    current = await _safe(require_therapist(session, actor))
+    public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(renewal_resubmit(session, actor, str(review_item_id), payload, _request_id(request), idempotency_key, tenant_public_id=public_id, precommit_check=_actor_precommit(session, actor, "therapist", public_id))))
 
 
 @therapist_router.post(
     "/exit", response_model=SuccessEnvelope[MutationProfileDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_self_exit(payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_therapist(authority_session, actor))
-    profile = await _safe(TherapistQualificationRepository(session).current_profile_for_user(actor.id))
-    if profile is None:
-        raise HTTPException(404, "THERAPIST_NOT_FOUND")
-    return _ok(MutationProfileDTO, await _safe(change_status(session, actor, profile.therapist_id, expected_version=payload.expected_version, decision="EXITED", reason_code=payload.reason_code, request_id=_request_id(request), idempotency_key=idempotency_key, precommit_check=_actor_precommit(authority_session, actor, "therapist"))))
+async def post_self_exit(payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    request_digest = status_request_digest(
+        payload.expected_version, "EXITED", payload.reason_code
+    )
+    current = await _safe(
+        require_therapist_self_exit(
+            session,
+            actor,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+        )
+    )
+    therapist_id = str(current["therapist_id"])
+    tenant_public_id = str(current["tenant_public_id"])
+    return _ok(MutationProfileDTO, await _safe(change_status(session, actor, therapist_id, expected_version=payload.expected_version, decision="EXITED", reason_code=payload.reason_code, request_id=_request_id(request), idempotency_key=idempotency_key, precommit_check=_self_exit_precommit(session, actor, therapist_id=therapist_id, tenant_public_id=tenant_public_id, idempotency_key=idempotency_key, request_digest=request_digest))))
 
 
 @platform_router.get(
     "/therapist-reviews", response_model=SuccessEnvelope[PageDTO[ReviewItemDTO]],
     responses=_errors(400, 401, 403, 503),
 )
-async def get_reviews(kind: Annotated[str | None, Query(pattern="^(INITIAL|RENEWAL)$")] = None, status: ReviewStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_reviews(kind: Annotated[str | None, Query(pattern="^(INITIAL|RENEWAL)$")] = None, status: ReviewStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "review")
-    await _safe(require_reviewer(authority_session, actor))
+    await _safe(_reviewer_read_currentness(session, actor))
     rows = await _safe(TherapistQualificationRepository(session).review_items(kind=kind, status=status, cursor=decoded, limit=limit))
     page = _page(
         rows, limit, item_schema=ReviewItemDTO,
@@ -769,8 +873,8 @@ async def get_reviews(kind: Annotated[str | None, Query(pattern="^(INITIAL|RENEW
     "/therapist-reviews/{therapist_id}", response_model=SuccessEnvelope[ReviewDetailDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_review_detail(therapist_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
-    await _safe(require_reviewer(authority_session, actor))
+async def get_review_detail(therapist_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(_reviewer_read_currentness(session, actor))
     repo = TherapistQualificationRepository(session)
     profile = await _safe(repo.profile_summary(str(therapist_id)))
     if profile is None:
@@ -796,9 +900,9 @@ async def get_review_detail(therapist_id: UUID, actor: CurrentUser = Depends(get
     response_model=SuccessEnvelope[ReviewDecisionDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_review_decision(therapist_id: UUID, payload: TherapistReviewDecisionRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_reviewer(authority_session, actor))
-    result = await _safe(review_decision(session, actor, str(therapist_id), payload, _request_id(request), idempotency_key, precommit_check=_actor_precommit(authority_session, actor, "reviewer")))
+async def post_review_decision(therapist_id: UUID, payload: TherapistReviewDecisionRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    await _safe(_review_target_currentness(session, actor, therapist_id))
+    result = await _safe(review_decision(session, actor, str(therapist_id), payload, _request_id(request), idempotency_key, precommit_check=_review_target_precommit(session, actor, therapist_id)))
     value = await _safe(_review_decision_dto(TherapistQualificationRepository(session), str(therapist_id), result))
     return _ok(ReviewDecisionDTO, value)
 
@@ -807,9 +911,9 @@ async def post_review_decision(therapist_id: UUID, payload: TherapistReviewDecis
     "/therapist-renewal-reviews", response_model=SuccessEnvelope[PageDTO[ReviewItemDTO]],
     responses=_errors(400, 401, 403, 503),
 )
-async def get_renewal_reviews(status: ReviewStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_renewal_reviews(status: ReviewStatusValue | None = None, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "review")
-    await _safe(require_reviewer(authority_session, actor))
+    await _safe(_reviewer_read_currentness(session, actor))
     rows = await _safe(TherapistQualificationRepository(session).review_items(kind="RENEWAL", status=status, cursor=decoded, limit=limit))
     page = _page(
         rows, limit, item_schema=ReviewItemDTO,
@@ -823,54 +927,53 @@ async def get_renewal_reviews(status: ReviewStatusValue | None = None, cursor: s
     response_model=SuccessEnvelope[ReviewDecisionDTO],
     responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_renewal_decision(review_item_id: UUID, payload: TherapistReviewDecisionRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    await _safe(require_reviewer(authority_session, actor))
+async def post_renewal_decision(review_item_id: UUID, payload: TherapistReviewDecisionRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    therapist_id = await _safe(_review_item_currentness(session, actor, review_item_id))
     repo = TherapistQualificationRepository(session)
     item = await _safe(repo.review_item_for_update(str(review_item_id)))
-    if item is None:
+    if item is None or str(item.therapist_id) != therapist_id:
         raise HTTPException(404, "THERAPIST_REVIEW_ITEM_NOT_FOUND")
-    result = await _safe(review_decision(session, actor, item.therapist_id, payload, _request_id(request), idempotency_key, review_item_id=str(review_item_id), precommit_check=_actor_precommit(authority_session, actor, "reviewer")))
+    result = await _safe(review_decision(session, actor, item.therapist_id, payload, _request_id(request), idempotency_key, review_item_id=str(review_item_id), precommit_check=_review_item_precommit(session, actor, review_item_id, therapist_id)))
     value = await _safe(_review_decision_dto(repo, item.therapist_id, result))
     return _ok(ReviewDecisionDTO, value)
 
 
-async def _platform_status(therapist_id: str, decision: str, payload, request, key, actor, session, authority_session):
-    await _safe(require_reviewer(authority_session, actor))
+async def _platform_status(therapist_id: str, decision: str, payload, request, key, actor, session):
+    await _safe(_review_target_currentness(session, actor, therapist_id))
     reason = "QUALIFICATION_RENEWED" if decision == "RESUMED" else payload.reason_code
-    return _ok(MutationProfileDTO, await _safe(change_status(session, actor, therapist_id, expected_version=payload.expected_version, decision=decision, reason_code=reason, request_id=_request_id(request), idempotency_key=key, precommit_check=_actor_precommit(authority_session, actor, "reviewer"))))
+    return _ok(MutationProfileDTO, await _safe(change_status(session, actor, therapist_id, expected_version=payload.expected_version, decision=decision, reason_code=reason, request_id=_request_id(request), idempotency_key=key, precommit_check=_review_target_precommit(session, actor, therapist_id))))
 
 
 @platform_router.post(
     "/therapists/{therapist_id}/suspend",
     response_model=SuccessEnvelope[MutationProfileDTO], responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_suspend(therapist_id: UUID, payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    return await _platform_status(str(therapist_id), "SUSPENDED", payload, request, idempotency_key, actor, session, authority_session)
+async def post_suspend(therapist_id: UUID, payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    return await _platform_status(str(therapist_id), "SUSPENDED", payload, request, idempotency_key, actor, session)
 
 
 @platform_router.post(
     "/therapists/{therapist_id}/resume",
     response_model=SuccessEnvelope[MutationProfileDTO], responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_resume(therapist_id: UUID, payload: TherapistResumeRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    return await _platform_status(str(therapist_id), "RESUMED", payload, request, idempotency_key, actor, session, authority_session)
+async def post_resume(therapist_id: UUID, payload: TherapistResumeRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    return await _platform_status(str(therapist_id), "RESUMED", payload, request, idempotency_key, actor, session)
 
 
 @platform_router.post(
     "/therapists/{therapist_id}/exit",
     response_model=SuccessEnvelope[MutationProfileDTO], responses=_errors(400, 401, 403, 404, 409, 503),
 )
-async def post_exit(therapist_id: UUID, payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session), authority_session=Depends(get_db_session)):
-    return await _platform_status(str(therapist_id), "EXITED", payload, request, idempotency_key, actor, session, authority_session)
+async def post_exit(therapist_id: UUID, payload: TherapistStatusRequest, request: Request, idempotency_key: IdempotencyKey, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_review_writer_session)):
+    return await _platform_status(str(therapist_id), "EXITED", payload, request, idempotency_key, actor, session)
 
 
 @platform_router.get(
     "/tenants/{tenant_id}/service-readiness",
     response_model=SuccessEnvelope[ReadinessDTO], responses=_errors(401, 403, 404, 503),
 )
-async def get_platform_readiness(tenant_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
-    await _safe(require_reviewer(authority_session, actor))
-    await session.execute(__import__("sqlalchemy").text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+async def get_platform_readiness(tenant_id: UUID, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(_reviewer_read_currentness(session, actor))
     guard = await _safe(TherapistQualificationRepository(session).readiness_guard_by_public_id(str(tenant_id)))
     if guard is None:
         raise HTTPException(404, "READINESS_NOT_FOUND")
@@ -886,9 +989,9 @@ async def get_platform_readiness(tenant_id: UUID, actor: CurrentUser = Depends(g
     "/tenants/{tenant_id}/service-readiness/evidence",
     response_model=SuccessEnvelope[PageDTO[EvidenceDTO]], responses=_errors(400, 401, 403, 404, 503),
 )
-async def get_platform_evidence(tenant_id: UUID, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session), authority_session=Depends(get_db_session)):
+async def get_platform_evidence(tenant_id: UUID, cursor: str | None = Query(None, max_length=512), limit: int = Query(20, ge=1, le=100), actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
     decoded = _decode_cursor(cursor, "evidence")
-    await _safe(require_reviewer(authority_session, actor))
+    await _safe(_reviewer_read_currentness(session, actor))
     guard = await _safe(TherapistQualificationRepository(session).readiness_guard_by_public_id(str(tenant_id)))
     if guard is None:
         raise HTTPException(404, "READINESS_NOT_FOUND")
