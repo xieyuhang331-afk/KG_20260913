@@ -300,33 +300,25 @@ async def _tenant_public_id(institution_authority, tenant_id: int) -> UUID:
     return public_id
 
 
-async def _current_institution(
-    authority, institution_authority, actor: CurrentUser
-) -> tuple[int, UUID]:
+async def _current_institution(authority, actor: CurrentUser) -> tuple[int, UUID]:
     tenant_id = _require_institution(actor)
     result = await authority.execute(
         text(
-            'SELECT u.id,u.role,u.status,u.tenant_id,t.status AS tenant_status '
-            'FROM public."user" u JOIN public.tenant t ON t.id=u.tenant_id '
-            "WHERE u.id=:user_id FOR SHARE OF u,t"
+            "SELECT actor_current,institution_current,tenant_public_id "
+            "FROM public.slice3_institution_currentness_authority_v1"
+            "(:actor_user_id,:claimed_tenant_id)"
         ),
-        {"user_id": actor.id},
+        {"actor_user_id": actor.id, "claimed_tenant_id": tenant_id},
     )
     row = result.mappings().one_or_none()
-    if (
-        row is None
-        or row["role"] not in {"org_admin", "org_operator"}
-        or row["status"] != "active"
-        or row["tenant_id"] != tenant_id
-        or row["tenant_status"] != "active"
-    ):
+    if row is None or row["actor_current"] is not True:
         raise _error("ACTOR_CURRENTNESS_FORBIDDEN")
-    approved_tenant_id, tenant_public_id = await _approved_institution(
-        institution_authority, tenant_id=tenant_id
-    )
-    if approved_tenant_id != tenant_id:
+    if (
+        row["institution_current"] is not True
+        or row["tenant_public_id"] is None
+    ):
         raise _error("TENANT_SCOPE_FORBIDDEN")
-    return tenant_id, tenant_public_id
+    return tenant_id, UUID(str(row["tenant_public_id"]))
 
 
 def _context(request: Request, actor: CurrentUser, tenant_id: int | None, tenant_public_id: UUID, key: str, *, platform_scope: bool = False) -> MutationContext:
@@ -929,8 +921,8 @@ async def _therapist_current(
 
 
 @institution_router.post("/member-invitations", response_model=InvitationSecretDTO, status_code=201)
-async def create_invitation(payload: CreateMemberInvitationRequest, request: Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_writer_session), authority=Depends(get_db_session), institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id, public_id = await _current_institution(authority, institution_authority, actor); context = _context(request, actor, tenant_id, public_id, key)
+async def create_invitation(payload: CreateMemberInvitationRequest, request: Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_writer_session), authority=Depends(get_db_session)):
+    tenant_id, public_id = await _current_institution(authority, actor); context = _context(request, actor, tenant_id, public_id, key)
     request_value = _request_value(payload); target, secrets, replay = await _begin_mutation(session, context, "INVITATION_CREATE", request_value)
     if replay is not None: return replay
     invitation_id, short_code = await _safe(_service(session).create_invitation(context, payload))
@@ -940,16 +932,16 @@ async def create_invitation(payload: CreateMemberInvitationRequest, request: Req
 
 
 @institution_router.get("/member-invitations", response_model=InvitationPageDTO)
-async def list_invitations(status: str|None=None, cursor: str|None=None, limit: int=Query(50,ge=1,le=100), actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_reader_session), authority=Depends(get_db_session), institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id, public_id = await _current_institution(authority, institution_authority, actor)
+async def list_invitations(status: str|None=None, cursor: str|None=None, limit: int=Query(50,ge=1,le=100), actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_reader_session), authority=Depends(get_db_session)):
+    tenant_id, public_id = await _current_institution(authority, actor)
     predicates = {"tenant_public_id": public_id}
     if status is not None: predicates["status"] = status
     return await _safe(_view_page(session, "slice3_institution_enrollment_read_v1", predicates, "invitation_id", limit, cursor=cursor))
 
 
 @institution_router.post("/member-invitations/{invitation_id}/resend", response_model=InvitationSecretDTO)
-async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, request:Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
+async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, request:Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
     target,secrets,replay=await _begin_mutation(session,context,"INVITATION_RESEND",request_value,target_id=invitation_id)
     if replay is not None: return replay
     _,code=await _safe(_service(session).resend_invitation(context,invitation_id,expected_version=payload.expected_version))
@@ -958,8 +950,8 @@ async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, requ
 
 
 @institution_router.post("/member-invitations/{invitation_id}/revoke", response_model=InvitationDTO)
-async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequest, request:Request,key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
+async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequest, request:Request,key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
     target,secrets,replay=await _begin_mutation(session,context,"INVITATION_REVOKE",request_value,target_id=invitation_id)
     if replay is not None: return replay
     await _safe(_service(session).revoke_invitation(context,invitation_id,payload)); row=await MemberEnrollmentRepository(session).invitation_for_update(invitation_id); result=_invitation(row,public_id)
@@ -967,23 +959,23 @@ async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequ
 
 
 @institution_router.get("/member-enrollments", response_model=EnrollmentSummaryPageDTO)
-async def institution_enrollments(status: str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); predicates={"tenant_public_id":public_id}
+async def institution_enrollments(status: str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); predicates={"tenant_public_id":public_id}
     if status is not None: predicates["status"]=status
     page=await _safe(_view_page(session,"slice3_family_enrollment_read_v1",predicates,"enrollment_id",limit,cursor=cursor))
     page["items"]=tuple({k:v for k,v in item.items() if k in {"enrollment_id","mode","status","accepted_at","identity_verified_at","case_created_at","version"}} for item in page["items"]); return page
 
 
 @institution_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
-async def institution_enrollment(enrollment_id: UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_family_enrollment_read_v1",predicates={"tenant_public_id":public_id,"enrollment_id":enrollment_id},order="enrollment_id",limit=2))
+async def institution_enrollment(enrollment_id: UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_family_enrollment_read_v1",predicates={"tenant_public_id":public_id,"enrollment_id":enrollment_id},order="enrollment_id",limit=2))
     if len(rows)!=1: raise _error("ENROLLMENT_NOT_FOUND")
     return _enrollment_detail(rows[0])
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/identity-check", response_model=IdentityStatusDTO)
-async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionIdentityCheckRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); context=_context(request,actor,tenant_id,public_id,key); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
+async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionIdentityCheckRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
     if enrollment is None or enrollment["tenant_id"]!=tenant_id: raise _error("ENROLLMENT_NOT_FOUND")
     verification=await repo.verification_by_enrollment_for_update(enrollment_id)
     if verification is None: raise _error("IDENTITY_REVIEW_NOT_FOUND")
@@ -995,8 +987,8 @@ async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionId
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/primary-assignments", response_model=AssignmentDTO,status_code=201)
-async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,enrollment_id)
+async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,enrollment_id)
     target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_CREATE",request_value,target_id=enrollment_id)
     if replay is not None: return replay
     assignment_id=await _safe(_service(session).create_assignment(context,enrollment_id,payload)); row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id); result=_assignment(row,public_id)
@@ -1004,8 +996,8 @@ async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest
 
 
 @institution_router.post("/primary-assignments/{assignment_id}/cancel", response_model=AssignmentDTO)
-async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,assignment_id)
+async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,assignment_id)
     target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_CANCEL",request_value,target_id=assignment_id)
     if replay is not None: return replay
     await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="CANCELLED")); row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id); result=_assignment(row,public_id)
@@ -1013,8 +1005,8 @@ async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest
 
 
 @institution_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
-async def institution_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    tenant_id,public_id=await _current_institution(authority,institution_authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"tenant_public_id":public_id,"case_id":case_id},order="case_id",limit=2))
+async def institution_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+    tenant_id,public_id=await _current_institution(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"tenant_public_id":public_id,"case_id":case_id},order="case_id",limit=2))
     if len(rows)!=1: raise _error("CASE_NOT_FOUND")
     return _public_row(rows[0])
 

@@ -622,4 +622,4 @@ def test_Z_A2_2_RP_upgrade_downgrade_reupgrade只影响0036对象(pg_database) -
         )
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260910_0041"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"

@@ -288,12 +288,13 @@ def test_G02_唯一新修订与历史Hash():
     assert 'down_revision = "20260904_0038"' in source
     versions = []
     for path in sorted(MIGRATION.parent.glob("*.py")):
-        # 0040 and 0041 have their own revision, down-revision, and graph contracts.
+        # 0040 through 0042 have their own revision, down-revision, and graph contracts.
         if path.name in {
             "__init__.py",
             MIGRATION.name,
             "20260909_0040_认证主体与当前身份受限读取.py",
             "20260910_0041_注册会员受限写入.py",
+            "20260911_0042_机构当前性受限读取.py",
         }:
             continue
         value = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
@@ -301,6 +302,16 @@ def test_G02_唯一新修订与历史Hash():
     assert len(versions) == 38
     digest = hashlib.sha256(json.dumps(versions, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     assert digest == "d030940842b215299aa5db9db9adec26b4bdb2a7e9d280e48bc6359ea63ced83"
+
+
+def test_G02_0042不得改写或替代0039机构身份权威():
+    currentness = (
+        MIGRATION.parent / "20260911_0042_机构当前性受限读取.py"
+    ).read_text(encoding="utf-8")
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert SIGNATURE in source
+    assert "slice2_institution_identity_authority_v1" not in currentness
+    assert "DROP FUNCTION public.slice2_institution_identity_authority_v1" not in currentness
 
 
 def test_G02_强类型锁与最小权限静态合同():

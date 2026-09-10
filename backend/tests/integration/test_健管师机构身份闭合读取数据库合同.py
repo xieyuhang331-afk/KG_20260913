@@ -1085,7 +1085,7 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         ) for signature in signatures)
 
     config = _build_alembic_config(_get_test_database_url())
-    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260910_0041",
+    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042",
             "GATE_CURRENT_HEAD_INVALID")
     try:
         command.downgrade(config, "20260906_0039")
@@ -1133,5 +1133,5 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         require(function_before == approved_functions(), "GATE_REUPGRADE_FUNCTION_CONTRACT_DRIFT")
     finally:
         command.upgrade(config, "head")
-        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260910_0041",
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042",
                 "GATE_LATEST_HEAD_RESTORE_FAILED")
