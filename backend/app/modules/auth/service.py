@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    InterfaceError,
+    OperationalError,
+)
+from sqlalchemy.exc import (
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 
 from app.core.config import get_settings
 from app.core.security import CurrentUser, create_access_token
 from app.modules.auth.repository import (
-    create_user_record,
+    RegisteredMember,
+    create_registered_member,
     get_user_by_phone,
-    user_exists_by_phone,
 )
 from app.modules.auth.schemas import (
     AuthLoginRequest,
@@ -38,6 +48,8 @@ def hash_password(password: str) -> str:
 
 # Not an account credential: keeps unknown subjects on the same PBKDF2 path.
 _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+_CANCELLATIONS = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+_PHONE_UNIQUE_CONSTRAINT = "uq_user_phone"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -56,6 +68,160 @@ def verify_password(password: str, password_hash: str) -> bool:
         iterations,
     ).hex()
     return secrets.compare_digest(digest, expected_digest)
+
+
+def _driver_error_sources(error: BaseException):
+    if not isinstance(error, DBAPIError):
+        return
+    original = error.orig
+    if isinstance(original, BaseException):
+        yield original
+        driver_cause = original.__cause__
+        if isinstance(driver_cause, BaseException) and driver_cause is not original:
+            yield driver_cause
+
+
+def _driver_sqlstate(error: BaseException) -> str | None:
+    value = getattr(error, "sqlstate", None) or getattr(error, "pgcode", None)
+    return str(value) if value is not None else None
+
+
+def _driver_constraint(error: BaseException) -> str | None:
+    value = getattr(error, "constraint_name", None)
+    if value is None:
+        value = getattr(getattr(error, "diag", None), "constraint_name", None)
+    return str(value) if value is not None else None
+
+
+def _phone_unique_conflict(error: BaseException) -> bool:
+    if not isinstance(error, IntegrityError):
+        return False
+    identities = [
+        (_driver_sqlstate(item), _driver_constraint(item))
+        for item in _driver_error_sources(error)
+    ]
+    sqlstates = {sqlstate for sqlstate, _ in identities if sqlstate is not None}
+    constraints = {
+        constraint for _, constraint in identities if constraint is not None
+    }
+    return (
+        sqlstates == {"23505"}
+        and constraints == {_PHONE_UNIQUE_CONSTRAINT}
+        and ("23505", _PHONE_UNIQUE_CONSTRAINT) in identities
+    )
+
+
+def _registered_dependency_failure(error: BaseException) -> bool:
+    if isinstance(
+        error,
+        (
+            asyncio.TimeoutError,
+            ConnectionError,
+            DisconnectionError,
+            InterfaceError,
+            OperationalError,
+            SQLAlchemyTimeoutError,
+        ),
+    ):
+        return True
+    if isinstance(error, DBAPIError) and error.connection_invalidated:
+        return True
+    return any(
+        (sqlstate := _driver_sqlstate(item)) is not None
+        and sqlstate.startswith("08")
+        for item in _driver_error_sources(error)
+    )
+
+
+def _commit_outcome_uncertain(error: BaseException) -> bool:
+    if isinstance(
+        error,
+        (
+            asyncio.TimeoutError,
+            ConnectionError,
+            DisconnectionError,
+            SQLAlchemyTimeoutError,
+        ),
+    ):
+        return True
+    if not isinstance(error, DBAPIError):
+        return False
+    sources = list(_driver_error_sources(error))
+    sqlstates = {
+        sqlstate
+        for item in sources
+        if (sqlstate := _driver_sqlstate(item)) is not None
+    }
+    if sqlstates:
+        return all(sqlstate.startswith("08") for sqlstate in sqlstates)
+    return error.connection_invalidated or any(
+        isinstance(item, ConnectionError) for item in sources
+    )
+
+
+async def _rollback_failed_operation(session, primary: BaseException) -> bool:
+    try:
+        await session.rollback()
+        return True
+    except _CANCELLATIONS:
+        raise
+    except Exception:
+        primary.add_note("REGISTRATION_ROLLBACK_FAILED")
+        return False
+
+
+async def _close_uncertain_session(session, primary: BaseException) -> bool:
+    clean = await _rollback_failed_operation(session, primary)
+    try:
+        await session.close()
+    except _CANCELLATIONS:
+        raise
+    except Exception:
+        primary.add_note("REGISTRATION_SESSION_CLOSE_FAILED")
+        clean = False
+    return clean
+
+
+def _application_session_factory():
+    from app.core.database import get_session_factory
+
+    return get_session_factory()
+
+
+async def _registration_insert_is_visible(
+    expected: UserRegisterResponse, password_hash: str
+) -> bool:
+    try:
+        factory = _application_session_factory()
+        async with factory() as fresh:
+            subject = await get_user_by_phone(fresh, expected.phone)
+            matched = bool(
+                subject is not None
+                and subject.id == expected.id
+                and subject.phone == expected.phone
+                and subject.role == "member"
+                and subject.status == "active"
+                and subject.tenant_id is None
+                and secrets.compare_digest(subject.password_hash, password_hash)
+            )
+            await fresh.rollback()
+            return matched
+    except _CANCELLATIONS:
+        raise
+    except Exception:
+        return False
+
+
+def _registration_response(user: RegisteredMember) -> UserRegisterResponse:
+    return UserRegisterResponse(
+        id=user.id,
+        phone=user.phone,
+        role=user.role,
+        status=user.status,
+        verify_status=user.verify_status,
+        tenant_id=user.tenant_id,
+        created_at=user.created_at,
+    )
 
 
 def get_controlled_auth_context(user) -> dict:
@@ -215,34 +381,48 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
 
 
 async def register_user(session, payload: UserRegisterRequest) -> UserRegisterResponse:
-    if await user_exists_by_phone(session, payload.phone):
-        raise HTTPException(status_code=409, detail="User already exists")
-
+    password_hash = hash_password(payload.password)
     try:
-        user = await create_user_record(
-            session,
-            user_data={
-                "phone": payload.phone,
-                "password_hash": hash_password(payload.password),
-                "role": "member",
-                "status": "active",
-                "tenant_id": None,
-            },
+        user = await create_registered_member(
+            session, phone=payload.phone, password_hash=password_hash
         )
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail="User already exists") from exc
+    except _CANCELLATIONS:
+        raise
+    except BaseException as error:
+        clean = await _rollback_failed_operation(session, error)
+        if clean and _phone_unique_conflict(error):
+            raise HTTPException(status_code=409, detail="User already exists") from None
+        if clean and _registered_dependency_failure(error):
+            raise HTTPException(
+                status_code=503, detail="Authentication service unavailable"
+            ) from None
+        raise
 
-    return UserRegisterResponse(
-        id=user.id,
-        phone=user.phone,
-        role=user.role,
-        status=user.status,
-        verify_status=user.verify_status,
-        tenant_id=user.tenant_id,
-        created_at=user.created_at,
-    )
+    response = _registration_response(user)
+    try:
+        await session.commit()
+        return response
+    except _CANCELLATIONS:
+        raise
+    except BaseException as error:
+        clean = await _close_uncertain_session(session, error)
+        if clean and _phone_unique_conflict(error):
+            raise HTTPException(status_code=409, detail="User already exists") from None
+        if not _registered_dependency_failure(error):
+            raise
+        if not _commit_outcome_uncertain(error):
+            raise HTTPException(
+                status_code=503, detail="Authentication service unavailable"
+            ) from None
+        if not clean:
+            raise HTTPException(
+                status_code=503, detail="Authentication service unavailable"
+            ) from None
+        if await _registration_insert_is_visible(response, password_hash):
+            return response
+        raise HTTPException(
+            status_code=503, detail="Authentication service unavailable"
+        ) from None
 
 
 async def submit_user_identity(

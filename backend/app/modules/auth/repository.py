@@ -33,6 +33,17 @@ class UserCurrentness:
     tenant_org_id: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class RegisteredMember:
+    id: int
+    phone: str
+    role: str
+    status: str | None
+    verify_status: str | None
+    tenant_id: int | None
+    created_at: datetime | None
+
+
 def _ensure_mapped() -> None:
     map_core_model_classes()
 
@@ -41,6 +52,21 @@ async def user_exists_by_phone(session, phone: str) -> bool:
     _ensure_mapped()
     result = await session.execute(select(User.id).where(User.phone == phone).limit(1))
     return result.scalar_one_or_none() is not None
+
+
+async def create_registered_member(
+    session, *, phone: str, password_hash: str
+) -> RegisteredMember:
+    statement = text(
+        "SELECT id,phone,role,status,verify_status,tenant_id,created_at "
+        "FROM public.auth_register_member_v1(:phone,:password_hash)"
+    ).bindparams(
+        bindparam("phone", type_=String(11)),
+        bindparam("password_hash", type_=String(255)),
+    ).params(phone=phone, password_hash=password_hash)
+    result = await session.execute(statement)
+    row = result.mappings().one()
+    return RegisteredMember(**row)
 
 
 async def get_user_by_phone(session, phone: str):
