@@ -1530,3 +1530,15 @@ def test_A2_2_L整改账本双角色与数据库URL按闭合CI合同传播():
             f'--set={cli_name}_password="$KG_TEST_{cli_name.upper()}_ROLE_PASSWORD"'
             in backend_integration_job
         )
+
+
+def test_BackendIntegration完整门禁具有四十五分钟累计时间预算():
+    backend_integration_job = _workflow_job_block("backend-integration")
+
+    timeout_lines = [
+        line.strip()
+        for line in backend_integration_job.splitlines()
+        if line.strip().startswith("timeout-minutes:")
+    ]
+
+    assert timeout_lines == ["timeout-minutes: 45"]
