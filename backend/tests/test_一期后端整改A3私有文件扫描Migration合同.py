@@ -44,7 +44,7 @@ def test_A3_0037从0036派生且保持单一Head():
     module = _load_migration()
     assert module.revision == "20260904_0037"
     assert module.down_revision == "20260903_0036"
-    assert _heads() == {"20260910_0041"}
+    assert _heads() == {"20260911_0042"}
 
 
 def test_A3_0037字段约束历史回填与索引合同闭合():

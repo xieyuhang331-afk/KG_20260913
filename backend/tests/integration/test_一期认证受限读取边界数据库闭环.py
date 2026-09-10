@@ -550,17 +550,10 @@ def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypa
                 org_read = client.get(
                     "/api/v1/institution/member-invitations", headers=org_headers
                 )
-                # Independent Slice 3 business-currentness boundary remains
-                # unresolved. C2.2 now classifies its unregistered database error
-                # as a safe, non-retryable internal error instead of inventing a
-                # dependency classification.
-                assert org_read.status_code == 500
-                assert org_read.json()["code"] == "INTERNAL_ERROR"
-                assert org_read.json()["message"] == "request rejected"
-                assert org_read.json()["retryable"] is False
-                assert org_read.json()["field_errors"] == []
-                assert UUID(org_read.json()["request_id"]).version == 7
-                assert org_read.json()["request_id"] == org_read.headers["x-request-id"]
+                # R2 resolves Slice 3 institution currentness through the bounded
+                # authority while the application role keeps zero base-table reads.
+                assert org_read.status_code == 200
+                assert org_read.json() == {"items": [], "next_cursor": None}
                 await execute_admin(
                     "UPDATE public.tenant SET org_id=NULL WHERE id=$1",
                     int(totp_subjects["tenant_id"]),

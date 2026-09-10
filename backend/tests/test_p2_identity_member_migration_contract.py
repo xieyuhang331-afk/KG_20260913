@@ -67,7 +67,7 @@ def test_approved_identity_member_revision_contract():
 
     revisions, heads = _load_revision_graph(versions)
     assert "20260728_0006" in revisions
-    assert heads == {"20260910_0041"}
+    assert heads == {"20260911_0042"}
 
     module = revisions["20260803_0007"]
     assert module.revision == "20260803_0007"

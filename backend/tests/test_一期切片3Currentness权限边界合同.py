@@ -26,18 +26,24 @@ class _Result:
 
 
 class _ApplicationAuthority:
+    def __init__(self, row=None):
+        self.row = row or {
+            "actor_current": True,
+            "institution_current": True,
+            "tenant_public_id": UUID("0198b963-38f0-7d7d-8000-000000000071"),
+        }
+        self.calls = []
+
     async def execute(self, statement, parameters=None):
-        del parameters
         sql = str(statement)
-        if "institution_application" in sql:
+        self.calls.append((sql, parameters))
+        if (
+            'FROM public."user"' in sql
+            or "FROM public.tenant" in sql
+            or "FROM public.institution_application" in sql
+        ):
             raise RuntimeError("APPLICATION_ROLE_BASE_TABLE_DENIED")
-        return _Result(({
-            "id": 71,
-            "role": "org_admin",
-            "status": "active",
-            "tenant_id": 9,
-            "tenant_status": "active",
-        },))
+        return _Result((self.row,))
 
 
 class _InstitutionAuthority:
@@ -62,30 +68,52 @@ class _MemberReader:
         return _Result(self.rows)
 
 
-def test_通用ApplicationAuthority仅验证User与Tenant() -> None:
+def test_通用ApplicationAuthority只调用受限机构Currentness函数() -> None:
     from app.modules.member_enrollment import api
 
     source = inspect.getsource(api._current_institution)
-    assert 'public."user"' in source
-    assert "public.tenant" in source
-    assert "institution_application" not in source
-    assert "FOR SHARE OF u,t" in source
+    assert "slice3_institution_currentness_authority_v1" in source
+    assert 'public."user"' not in source
+    assert "FROM public.tenant" not in source
+    assert "FROM public.institution_application" not in source
 
 
-def test_批准机构事实仅由正式InstitutionOnboardingReader读取() -> None:
+def test_受限机构Currentness调用只传Actor和声明Tenant() -> None:
+    from app.core.security import CurrentUser
+    from app.modules.member_enrollment import api
+
+    authority = _ApplicationAuthority()
+    actor = CurrentUser(id=71, role="org_admin", tenant_id=9, org_id=100)
+    assert asyncio.run(api._current_institution(authority, actor)) == (
+        9,
+        UUID("0198b963-38f0-7d7d-8000-000000000071"),
+    )
+    assert len(authority.calls) == 1
+    sql, parameters = authority.calls[0]
+    assert sql == (
+        "SELECT actor_current,institution_current,tenant_public_id "
+        "FROM public.slice3_institution_currentness_authority_v1"
+        "(:actor_user_id,:claimed_tenant_id)"
+    )
+    assert parameters == {"actor_user_id": 71, "claimed_tenant_id": 9}
+
+
+def test_批准机构事实由受限函数读取且其他路径保留正式Reader() -> None:
     from app.modules.member_enrollment import api
 
     source = inspect.getsource(api)
     assert "get_institution_onboarding_reader_session" in source
     assert "async def _approved_institution" in source
     assert "institution_application" in inspect.getsource(api._approved_institution)
-    assert "institution_application" not in inspect.getsource(api._tenant_public_id)
+    assert "slice3_institution_currentness_authority_v1" in inspect.getsource(
+        api._current_institution
+    )
 
 
-def test_全部TenantPublicId调用路径显式使用InstitutionAuthority() -> None:
+def test_十条机构路由只使用受限Currentness且其他路径保留InstitutionReader() -> None:
     from app.modules.member_enrollment import api
 
-    call_sites = (
+    institution_sites = (
         api.create_invitation,
         api.list_invitations,
         api.resend_invitation,
@@ -96,6 +124,14 @@ def test_全部TenantPublicId调用路径显式使用InstitutionAuthority() -> N
         api.create_assignment,
         api.cancel_assignment,
         api.institution_case,
+    )
+    for endpoint in institution_sites:
+        source = inspect.getsource(endpoint)
+        assert "authority=Depends(get_db_session)" in source
+        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" not in source
+        assert "_current_institution(authority,actor)" in source.replace(" ", "")
+
+    remaining_reader_sites = (
         api.accept_enrollment,
         api.identity_submission,
         api.identity_resubmit,
@@ -108,7 +144,7 @@ def test_全部TenantPublicId调用路径显式使用InstitutionAuthority() -> N
         api.accept_assignment,
         api.decline_assignment,
     )
-    for endpoint in call_sites:
+    for endpoint in remaining_reader_sites:
         source = inspect.getsource(endpoint)
         assert "institution_authority=Depends(get_institution_onboarding_reader_session)" in source
         assert "_tenant_public_id(authority" not in source
@@ -126,23 +162,38 @@ def test_平台实名审核不得用ApplicationAuthority读取Slice3或机构基
         assert "await authority.execute" not in source
 
 
-def test_Application与OnboardingReader租户映射不一致时FailClosed() -> None:
+@pytest.mark.parametrize(
+    ("row", "code"),
+    (
+        (
+            {
+                "actor_current": False,
+                "institution_current": False,
+                "tenant_public_id": None,
+            },
+            "ACTOR_CURRENTNESS_FORBIDDEN",
+        ),
+        (
+            {
+                "actor_current": True,
+                "institution_current": False,
+                "tenant_public_id": None,
+            },
+            "TENANT_SCOPE_FORBIDDEN",
+        ),
+    ),
+)
+def test_受限机构Currentness失败精确FailClosed(row, code) -> None:
     from app.core.security import CurrentUser
     from app.modules.member_enrollment import api
 
     actor = CurrentUser(id=71, role="org_admin", tenant_id=9, org_id=100)
     with pytest.raises(HTTPException) as failure:
-        asyncio.run(
-            api._current_institution(
-                _ApplicationAuthority(),
-                _InstitutionAuthority(tenant_internal_id=10),
-                actor,
-            )
-    )
+        asyncio.run(api._current_institution(_ApplicationAuthority(row), actor))
     assert failure.value.status_code == 403
     assert failure.value.detail == {
-        "code": "TENANT_SCOPE_FORBIDDEN",
-        "message": "TENANT_SCOPE_FORBIDDEN",
+        "code": code,
+        "message": code,
     }
 
 
@@ -163,14 +214,12 @@ def test_平台审核租户由MemberReader与OnboardingReader共同确认() -> N
 def test_机构邀请列表HTTP不再因Application角色拒绝机构表而503() -> None:
     from app.core.database import (
         get_db_session,
-        get_institution_onboarding_reader_session,
         get_member_enrollment_reader_session,
     )
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment.api import institution_router
 
     application_authority = _ApplicationAuthority()
-    institution_authority = _InstitutionAuthority()
     member_reader = _MemberReader()
 
     async def current_user():
@@ -179,9 +228,6 @@ def test_机构邀请列表HTTP不再因Application角色拒绝机构表而503()
     async def application_session():
         yield application_authority
 
-    async def institution_session():
-        yield institution_authority
-
     async def member_session():
         yield member_reader
 
@@ -189,7 +235,6 @@ def test_机构邀请列表HTTP不再因Application角色拒绝机构表而503()
     app.include_router(institution_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
     app.dependency_overrides[get_db_session] = application_session
-    app.dependency_overrides[get_institution_onboarding_reader_session] = institution_session
     app.dependency_overrides[get_member_enrollment_reader_session] = member_session
 
     response = TestClient(app).get("/api/v1/institution/member-invitations")
