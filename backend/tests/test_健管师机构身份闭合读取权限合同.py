@@ -295,6 +295,7 @@ def test_G02_唯一新修订与历史Hash():
             "20260909_0040_认证主体与当前身份受限读取.py",
             "20260910_0041_注册会员受限写入.py",
             "20260911_0042_机构当前性受限读取.py",
+            "20260912_0043_健管师业务当前性受限读取.py",
         }:
             continue
         value = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
@@ -393,8 +394,7 @@ async def test_G03_空标量保留403且取消透传():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["actor", "tenant"])
-async def test_G06_两个precommit保留原session与身份比较(monkeypatch, kind):
+async def test_G06_actor_precommit保留原专用session与身份比较(monkeypatch):
     from fastapi import HTTPException
 
     from app.core.security import CurrentUser
@@ -402,23 +402,30 @@ async def test_G06_两个precommit保留原session与身份比较(monkeypatch, k
     session = object()
     actor = CurrentUser(id=1, role="org_admin", tenant_id=17, org_id=None)
     authority = AsyncMock()
-    lookup = AsyncMock(return_value="different")
     monkeypatch.setattr(api, "require_institution_actor", authority)
-    monkeypatch.setattr(api, "_tenant_public_id", lookup)
-    check = api._actor_precommit(session, actor, "institution", "expected") if kind == "actor" else api._tenant_precommit(session, 17, "expected")
+    authority.return_value = "different"
+    check = api._actor_precommit(session, actor, "institution", "expected")
     with pytest.raises(HTTPException) as caught:
         await check()
     assert caught.value.status_code == 403
-    lookup.assert_awaited_once_with(session, 17)
-    if kind == "actor":
-        authority.assert_awaited_once_with(session, actor)
+    authority.assert_awaited_once_with(session, actor)
 
 
-def test_G05_八入口及提交次序保持():
+def test_G05_八入口使用原生业务权威且提交次序保持():
     from app.modules.therapist_qualification import api, service
-    for name in ("post_invitation", "post_activate", "get_profile", "put_profile",
-                 "post_submit", "post_resubmit", "post_renew", "post_renewal_resubmit"):
+    expected = {
+        "post_invitation": "require_institution_actor(session, actor)",
+        "post_activate": "_activation_currentness(session, payload.invitation_id)",
+        "get_profile": "require_therapist(session, actor)",
+        "put_profile": "require_therapist(session, actor)",
+        "post_submit": "require_therapist(session, actor)",
+        "post_resubmit": "require_therapist(session, actor)",
+        "post_renew": "require_therapist(session, actor)",
+        "post_renewal_resubmit": "require_therapist(session, actor)",
+    }
+    for name, authority_call in expected.items():
         source = inspect.getsource(getattr(api, name))
-        assert "_tenant_public_id(authority_session," in source
+        assert authority_call in source
+        assert "authority_session" not in source
     source = inspect.getsource(service._commit_receipt)
     assert source.index("await precommit_check()") < source.index("await _commit(")

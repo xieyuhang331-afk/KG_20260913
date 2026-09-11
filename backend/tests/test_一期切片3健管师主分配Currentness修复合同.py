@@ -94,17 +94,30 @@ class _TherapistAuthority:
         )
 
     async def execute(self, statement, parameters=None):
-        del statement, parameters
+        del parameters
+        if "slice3_therapist_service_currentness_v1" not in str(statement):
+            raise AssertionError("UNEXPECTED_THERAPIST_AUTHORITY_QUERY")
+        if (
+            self.status != "APPROVED_ACTIVE"
+            or self.tenant_id != 81
+            or self.qualification_valid_until < datetime(2026, 8, 24).date()
+        ):
+            return _Result(())
         return _Result(({
             "therapist_id": THERAPIST_ID,
-            "tenant_id": self.tenant_id,
-            "status": self.status,
-            "current_qualification_version_id": ASSIGNMENT_ID,
-            "qualification_valid_until": self.qualification_valid_until,
-            "role": "therapist",
-            "user_status": "active",
-            "user_tenant_id": self.tenant_id,
+            "tenant_public_id": TENANT_PUBLIC_ID,
         },))
+
+
+class _TherapistSession:
+    def __init__(self, authority, reader):
+        self.authority = authority
+        self.reader = reader
+
+    async def execute(self, statement, parameters=None):
+        if "slice3_therapist_service_currentness_v1" in str(statement):
+            return await self.authority.execute(statement, parameters)
+        return await self.reader.execute(statement, parameters)
 
 
 class _AssignmentReader:
@@ -151,7 +164,7 @@ class _RecordingTherapistAuthority(_TherapistAuthority):
 
 
 def _client(*, reader=None, authority=None) -> TestClient:
-    from app.core.database import get_db_session, get_member_enrollment_reader_session
+    from app.core.database import get_member_enrollment_reader_session
     from app.core.middleware import add_request_middleware
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment.api import therapist_router
@@ -159,17 +172,16 @@ def _client(*, reader=None, authority=None) -> TestClient:
     async def current_user():
         return CurrentUser(id=81, role="therapist", tenant_id=81)
 
-    async def authority_session():
-        yield authority or _TherapistAuthority()
-
     async def reader_session():
-        yield reader or _AssignmentReader()
+        yield _TherapistSession(
+            authority or _TherapistAuthority(),
+            reader or _AssignmentReader(),
+        )
 
     app = FastAPI()
     add_request_middleware(app)
     app.include_router(therapist_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
-    app.dependency_overrides[get_db_session] = authority_session
     app.dependency_overrides[get_member_enrollment_reader_session] = reader_session
     return TestClient(app)
 
@@ -290,7 +302,7 @@ def test_Repository真正不可用仍返回503且不泄漏内部异常() -> None
     assert "synthetic" not in response.text
 
 
-def test_接受写事务前仅锁定User当前身份且写事务再校验Profile() -> None:
+def test_读写均通过0043受限函数且写事务precommit再次校验() -> None:
     from app.core.security import CurrentUser
     from app.modules.member_enrollment import api
     from app.modules.member_enrollment.service import MemberEnrollmentService
@@ -300,12 +312,13 @@ def test_接受写事务前仅锁定User当前身份且写事务再校验Profile
         api._therapist_current(
             authority,
             CurrentUser(id=81, role="therapist", tenant_id=81),
-            lock_profile=False,
         )
     )
 
-    assert "FOR SHARE OF u" in authority.sql
-    assert "FOR SHARE OF p,u" not in authority.sql
+    assert "slice3_therapist_service_currentness_v1" in authority.sql
+    assert 'public."user"' not in authority.sql
+    assert "therapist_profile" not in authority.sql
+    assert "_therapist_precommit(" in inspect.getsource(api.accept_assignment)
     assert "therapist_for_case_update" in inspect.getsource(
         MemberEnrollmentService.accept_assignment
     )
@@ -418,11 +431,7 @@ def test_新建ServiceCase返回读取不要求额外Update权限() -> None:
 def test_非被分配健管师接受时返回403(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core.database import (
-        get_db_session,
-        get_institution_onboarding_reader_session,
-        get_member_case_writer_session,
-    )
+    from app.core.database import get_member_case_writer_session
     from app.core.middleware import add_request_middleware
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment import api
@@ -440,24 +449,23 @@ def test_非被分配健管师接受时返回403(
         assignment_for_update,
     )
 
+    async def begin_mutation(*args, **kwargs):
+        del args, kwargs
+        return ASSIGNMENT_ID, None, None
+
+    monkeypatch.setattr(api, "_begin_mutation", begin_mutation)
+
     async def current_user():
         return CurrentUser(id=81, role="therapist", tenant_id=81)
 
-    async def authority_session():
+    async def case_writer_session():
         yield _TherapistAuthority()
-
-    async def unused_session():
-        yield object()
 
     app = FastAPI()
     add_request_middleware(app)
     app.include_router(api.therapist_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
-    app.dependency_overrides[get_db_session] = authority_session
-    app.dependency_overrides[get_member_case_writer_session] = unused_session
-    app.dependency_overrides[
-        get_institution_onboarding_reader_session
-    ] = unused_session
+    app.dependency_overrides[get_member_case_writer_session] = case_writer_session
 
     response = TestClient(app).post(
         f"/api/v1/therapist/primary-assignments/{ASSIGNMENT_ID}/accept",
@@ -472,11 +480,8 @@ def test_非被分配健管师接受时返回403(
 def test_合法当前且被分配健管师接受本人分配保持HTTP201(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core.database import (
-        get_db_session,
-        get_institution_onboarding_reader_session,
-        get_member_case_writer_session,
-    )
+    from app.core.database import get_member_case_writer_session
+    from app.core.middleware import add_request_middleware
     from app.core.security import CurrentUser, get_current_user_from_jwt
     from app.modules.member_enrollment import api
 
@@ -554,23 +559,14 @@ def test_合法当前且被分配健管师接受本人分配保持HTTP201(
     async def current_user():
         return CurrentUser(id=81, role="therapist", tenant_id=81)
 
-    async def authority_session():
+    async def case_writer_session():
         yield _TherapistAuthority()
 
-    async def case_writer_session():
-        yield object()
-
-    async def institution_session():
-        yield object()
-
     app = FastAPI()
+    add_request_middleware(app)
     app.include_router(api.therapist_router)
     app.dependency_overrides[get_current_user_from_jwt] = current_user
-    app.dependency_overrides[get_db_session] = authority_session
     app.dependency_overrides[get_member_case_writer_session] = case_writer_session
-    app.dependency_overrides[
-        get_institution_onboarding_reader_session
-    ] = institution_session
 
     response = TestClient(app).post(
         f"/api/v1/therapist/primary-assignments/{ASSIGNMENT_ID}/accept",

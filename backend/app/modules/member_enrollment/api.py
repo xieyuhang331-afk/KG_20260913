@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import NAMESPACE_URL, UUID, uuid5
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -225,6 +225,7 @@ def _error(code: str) -> HTTPException:
         "INVITATION_NOT_FOUND": 404, "ENROLLMENT_NOT_FOUND": 404,
         "IDENTITY_REVIEW_NOT_FOUND": 404, "ASSIGNMENT_NOT_FOUND": 404,
         "CASE_NOT_FOUND": 404,
+        "INTERNAL_ERROR": 500,
         "DEPENDENCY_UNAVAILABLE": 503, "COMMIT_OUTCOME_UNKNOWN": 503,
     }
     return HTTPException(status_code=statuses.get(code, 409), detail={"code": code, "message": code})
@@ -604,7 +605,7 @@ async def _begin_mutation(
 async def _finish_mutation(
     session, *, kind: str, context: MutationContext, operation: str,
     target_id: UUID, request_value: object, result: object,
-    secrets: MemberEnrollmentSecrets,
+    secrets: MemberEnrollmentSecrets, precommit_check=None,
 ) -> object:
     request_digest = secrets.request_digest(request_value)
     expectation_key = ("slice3-prewrite", operation, target_id, context.idempotency_key)
@@ -733,6 +734,8 @@ async def _finish_mutation(
             return CommitOutcome(row["outcome"])
 
     try:
+        if precommit_check is not None:
+            await precommit_check()
         outcome = await commit_with_confirmation(session, confirm=confirm)
     except Exception as error:
         raise _error(safe_error_code(error)) from None
@@ -909,15 +912,44 @@ async def _platform_tenant(
     )
 
 
-async def _therapist_current(
-    authority, actor: CurrentUser, *, lock_profile: bool = True
-):
-    if actor.role != "therapist" or actor.tenant_id is None: raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
-    lock_clause = "FOR SHARE OF p,u" if lock_profile else "FOR SHARE OF u"
-    result=await authority.execute(text(f'SELECT p.therapist_id,p.tenant_id,p.status,p.current_qualification_version_id,p.qualification_valid_until,u.role,u.status AS user_status,u.tenant_id AS user_tenant_id FROM public.therapist_profile p JOIN public."user" u ON u.id=p.user_id WHERE u.id=:user_id {lock_clause}'),{"user_id":actor.id}); row=result.mappings().one_or_none()
-    business_date = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).date()
-    if row is None or row["status"]!="APPROVED_ACTIVE" or row["current_qualification_version_id"] is None or row["qualification_valid_until"] is None or row["qualification_valid_until"]<business_date or row["role"]!="therapist" or row["user_status"]!="active" or row["tenant_id"]!=actor.tenant_id or row["user_tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
+async def _therapist_current(session, actor: CurrentUser):
+    if actor.role != "therapist" or actor.tenant_id is None or actor.org_id is not None:
+        raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
+    try:
+        result = await session.execute(
+            text(
+                "SELECT therapist_id,tenant_public_id FROM "
+                "public.slice3_therapist_service_currentness_v1("
+                ":actor_user_id,:claimed_tenant_id)"
+            ),
+            {"actor_user_id": actor.id, "claimed_tenant_id": actor.tenant_id},
+        )
+        row = result.mappings().one_or_none()
+    except asyncio.CancelledError:
+        raise
+    except DBAPIError as error:
+        sqlstate = getattr(error.orig, "sqlstate", None)
+        if error.connection_invalidated or sqlstate == "42501" or sqlstate == "42883" or (
+            isinstance(sqlstate, str) and sqlstate.startswith("08")
+        ):
+            raise _error("DEPENDENCY_UNAVAILABLE") from None
+        raise _error("INTERNAL_ERROR") from None
+    except Exception:
+        raise _error("INTERNAL_ERROR") from None
+    if row is None:
+        raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
     return row
+
+
+def _therapist_precommit(session, actor: CurrentUser, therapist_id: UUID, tenant_public_id: UUID):
+    async def check() -> None:
+        current = await _therapist_current(session, actor)
+        if (
+            UUID(str(current["therapist_id"])) != therapist_id
+            or UUID(str(current["tenant_public_id"])) != tenant_public_id
+        ):
+            raise _error("THERAPIST_CURRENTNESS_FORBIDDEN")
+    return check
 
 
 @institution_router.post("/member-invitations", response_model=InvitationSecretDTO, status_code=201)
@@ -1219,44 +1251,45 @@ async def retire_document(document_version_id:UuidV7,payload:ConsentRetireReques
 
 
 @therapist_router.get("/primary-assignments", response_model=AssignmentPageDTO)
-async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    therapist=await _therapist_current(authority,actor); predicates={"therapist_id":therapist["therapist_id"]}
+async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+    therapist=await _therapist_current(session,actor); predicates={"therapist_id":therapist["therapist_id"]}
     if status is not None: predicates["status"]=status
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_assignment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
 
 
 @therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO, summary="Therapist Assignment")
-async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    therapist=await _therapist_current(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
+async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+    therapist=await _therapist_current(session,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
     if len(rows)!=1: raise _error("ASSIGNMENT_NOT_FOUND")
     return _public_row(rows[0])
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/accept", response_model=PreparingCaseDTO,status_code=201)
-async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    therapist=await _therapist_current(authority,actor,lock_profile=False); repo=MemberEnrollmentRepository(session); assignment=await repo.assignment_for_update(assignment_id)
-    if assignment is None: raise _error("ASSIGNMENT_NOT_FOUND")
-    if str(assignment["therapist_id"])!=str(therapist["therapist_id"]): raise _error("THERAPIST_SCOPE_FORBIDDEN")
-    enrollment=await repo.case_enrollment_for_update(assignment["enrollment_id"]); public_id=await _tenant_public_id(institution_authority,assignment["tenant_id"]); context=_context(request,actor,assignment["tenant_id"],public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
+async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
+    therapist=await _therapist_current(session,actor); public_id=UUID(str(therapist["tenant_public_id"])); context=_context(request,actor,actor.tenant_id,public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
     if replay is not None: return replay
+    repo=MemberEnrollmentRepository(session); assignment=await repo.assignment_for_update(assignment_id)
+    if assignment is None: raise _error("ASSIGNMENT_NOT_FOUND")
+    if str(assignment["therapist_id"])!=str(therapist["therapist_id"]) or assignment["tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_SCOPE_FORBIDDEN")
+    enrollment=await repo.case_enrollment_for_update(assignment["enrollment_id"])
     required=("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK") + (("PROXY_AUTHORIZATION",) if enrollment["mode"]=="PROXY_ELDER" else ())
     case_id=await _safe(_service(session).accept_assignment(context,assignment_id,expected_version=payload.expected_version,required_document_types=required)); row=await repo.service_case_after_create(case_id); result=_case(row,public_id)
-    return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_ACCEPT",target_id=target,request_value=request_value,result=result,secrets=secrets)
+    return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_ACCEPT",target_id=target,request_value=request_value,result=result,secrets=secrets,precommit_check=_therapist_precommit(session,actor,UUID(str(therapist["therapist_id"])),public_id))
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/decline", response_model=AssignmentDTO)
-async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    therapist=await _therapist_current(authority,actor); repo=MemberEnrollmentRepository(session); row=await repo.assignment_for_update(assignment_id)
-    if row is None: raise _error("ASSIGNMENT_NOT_FOUND")
-    if row["therapist_id"]!=therapist["therapist_id"]: raise _error("THERAPIST_SCOPE_FORBIDDEN")
-    public_id=await _tenant_public_id(institution_authority,row["tenant_id"]); context=_context(request,actor,row["tenant_id"],public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_DECLINE",request_value,target_id=assignment_id)
+async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
+    therapist=await _therapist_current(session,actor); public_id=UUID(str(therapist["tenant_public_id"])); context=_context(request,actor,actor.tenant_id,public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_DECLINE",request_value,target_id=assignment_id)
     if replay is not None: return replay
+    repo=MemberEnrollmentRepository(session); row=await repo.assignment_for_update(assignment_id)
+    if row is None: raise _error("ASSIGNMENT_NOT_FOUND")
+    if row["therapist_id"]!=therapist["therapist_id"] or row["tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_SCOPE_FORBIDDEN")
     await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="DECLINED")); updated=await repo.assignment_for_update(assignment_id); result=_assignment(updated,public_id)
-    return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_DECLINE",target_id=target,request_value=request_value,result=result,secrets=secrets)
+    return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_DECLINE",target_id=target,request_value=request_value,result=result,secrets=secrets,precommit_check=_therapist_precommit(session,actor,UUID(str(therapist["therapist_id"])),public_id))
 
 
 @therapist_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
-async def therapist_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    therapist=await _therapist_current(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"primary_therapist_id":therapist["therapist_id"],"case_id":case_id},order="case_id",limit=2))
+async def therapist_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+    therapist=await _therapist_current(session,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"primary_therapist_id":therapist["therapist_id"],"case_id":case_id},order="case_id",limit=2))
     if len(rows)!=1: raise _error("CASE_NOT_FOUND")
     return _public_row(rows[0])

@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260911_0042"
+EXPECTED_HEAD = "20260912_0043"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260911_0042; found stale revision 20260816_0020"
+    "20260912_0043; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -1530,3 +1530,15 @@ def test_A2_2_L整改账本双角色与数据库URL按闭合CI合同传播():
             f'--set={cli_name}_password="$KG_TEST_{cli_name.upper()}_ROLE_PASSWORD"'
             in backend_integration_job
         )
+
+
+def test_BackendIntegration完整门禁具有四十五分钟累计时间预算():
+    backend_integration_job = _workflow_job_block("backend-integration")
+
+    timeout_lines = [
+        line.strip()
+        for line in backend_integration_job.splitlines()
+        if line.strip().startswith("timeout-minutes:")
+    ]
+
+    assert timeout_lines == ["timeout-minutes: 45"]
