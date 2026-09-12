@@ -276,12 +276,12 @@ async def _assert_direct_tables_denied(environment_name: str) -> None:
         await connection.close()
 
 
-def test_0044原生ACL及Harness收紧后均拒绝通用Application与Readonly直表访问(
+def test_0045原生ACL及Harness收紧后均拒绝通用Application与Readonly直表访问(
     pg_database,
 ) -> None:
     config = _build_alembic_config(_get_test_database_url())
     command.downgrade(config, "20260912_0043")
-    command.upgrade(config, "20260913_0044")
+    command.upgrade(config, "20260913_0045")
 
     for environment_name in (
         "KG_TEST_DATABASE_URL",
@@ -381,7 +381,7 @@ async def _insert_receipt_response(
         await connection.close()
 
 
-def test_0044Receipt按Operation闭合校验公开响应并拒绝非法形状() -> None:
+def test_0045Receipt按Operation闭合校验公开响应并拒绝非法形状() -> None:
     valid_activation = {
         "onboarding_id": "01900000-0000-7000-8000-000000000001",
         "tenant_id": "01900000-0000-7000-8000-000000000002",

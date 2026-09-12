@@ -16,7 +16,7 @@ from tests.integration.conftest import _build_alembic_config, _get_test_database
 pytestmark = pytest.mark.integration
 
 
-async def _seed_pre_0044(database_url: str, values: dict[str, object]) -> None:
+async def _seed_pre_0045(database_url: str, values: dict[str, object]) -> None:
     connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg://", "postgresql://", 1))
     try:
         async with connection.transaction():
@@ -113,14 +113,14 @@ async def _cleanup(database_url: str, values: dict[str, object]) -> None:
         await connection.close()
 
 
-def test_0044在DDL前解析非空账号手机号并原子建立全局claim(pg_database) -> None:
+def test_0045在DDL前解析非空账号手机号并原子建立全局claim(pg_database) -> None:
     config = _build_alembic_config(_get_test_database_url())
     command.downgrade(config, "20260912_0043")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
     application_role = os.environ["KG_DATABASE_USER"]
     legacy_signature = "public.auth_register_member_v1(character varying,character varying)"
     assert pg_database.fetch_value(
-        "SELECT has_function_privilege(" 
+        "SELECT has_function_privilege("
         f"'{application_role}',to_regprocedure('{legacy_signature}'),'EXECUTE')"
     ) is True
 
@@ -161,17 +161,17 @@ def test_0044在DDL前解析非空账号手机号并原子建立全局claim(pg_d
     )
     values["therapist_key_id"] = therapist_key_id
 
-    asyncio.run(_seed_pre_0044(_get_test_database_url(), values))
+    asyncio.run(_seed_pre_0045(_get_test_database_url(), values))
     try:
-        command.upgrade(config, "20260913_0044")
+        command.upgrade(config, "20260913_0045")
 
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
         assert pg_database.fetch_value(
-            "SELECT has_function_privilege(" 
+            "SELECT has_function_privilege("
             f"'{application_role}',to_regprocedure('{legacy_signature}'),'EXECUTE')"
         ) is False
         assert pg_database.fetch_value(
-            "SELECT has_function_privilege(" 
+            "SELECT has_function_privilege("
             f"'{application_role}',to_regprocedure('public.auth_register_member_v2(uuid,character varying,character varying,character,character varying,jsonb)'),'EXECUTE')"
         ) is True
         assert pg_database.fetch_value(
@@ -186,11 +186,11 @@ def test_0044在DDL前解析非空账号手机号并原子建立全局claim(pg_d
             "FROM public.identity_phone_claim WHERE state IN ('PENDING','BOUND')"
         ) is True
     finally:
-        if pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044":
+        if pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045":
             asyncio.run(_cleanup(_get_test_database_url(), values))
 
 
-def test_0044下游Runtime只能经既有外层受限入口使用机构来源权威(pg_database) -> None:
+def test_0045下游Runtime只能经既有外层受限入口使用机构来源权威(pg_database) -> None:
     runtime_roles = (
         os.environ["KG_HEALTH_RECORD_WRITER_ROLE"],
         os.environ["KG_ASSESSMENT_READINESS_WRITER_ROLE"],

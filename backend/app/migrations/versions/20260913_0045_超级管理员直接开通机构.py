@@ -1,7 +1,7 @@
 """Add controlled direct institution onboarding and canonical institution origin.
 
-Revision ID: 20260913_0044
-Revises: 20260912_0043
+Revision ID: 20260913_0045
+Revises: 20260913_0044
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from sqlalchemy.engine import make_url
 
 from app.core.uuid_generator import Uuid7Generator
 
-revision = "20260913_0044"
-down_revision = "20260912_0043"
+revision = "20260913_0045"
+down_revision = "20260913_0044"
 branch_labels = None
 depends_on = None
 

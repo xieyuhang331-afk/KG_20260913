@@ -899,7 +899,7 @@ def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
     finally:
         if pg_database.fetch_value(
             "SELECT version_num FROM public.alembic_version"
-        ) != "20260913_0044":
+        ) != "20260913_0045":
             command.upgrade(config, "head")
         asyncio.run(admin_execute(f'DROP ROLE IF EXISTS "{external}"'))
 

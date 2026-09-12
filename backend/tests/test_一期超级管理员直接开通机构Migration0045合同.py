@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "app/migrations/versions/20260913_0044_超级管理员直接开通机构.py"
+MIGRATION = ROOT / "app/migrations/versions/20260913_0045_超级管理员直接开通机构.py"
 SERVICE = ROOT / "app/modules/direct_institution_onboarding/service.py"
 FUNCTIONS = (
     "institution_tenant_origin_current_v1",
@@ -65,21 +65,21 @@ FUNCTIONS = (
 
 
 def _source() -> str:
-    assert MIGRATION.is_file(), "Expected RED: Migration 0044尚未创建"
+    assert MIGRATION.is_file(), "Expected RED: Migration 0045尚未创建"
     return MIGRATION.read_text(encoding="utf-8")
 
 
-def test_0044线性继承0043且手机号唯一性只约束活跃状态() -> None:
+def test_0045线性继承0044且手机号唯一性只约束活跃状态() -> None:
     source = _source()
-    assert 'revision = "20260913_0044"' in source
-    assert 'down_revision = "20260912_0043"' in source
+    assert 'revision = "20260913_0045"' in source
+    assert 'down_revision = "20260913_0044"' in source
     assert "claim_id UUID PRIMARY KEY" in source
     assert "uq_identity_phone_claim_active_digest" in source
     assert "WHERE state IN ('PENDING','BOUND')" in source
     assert "phone_digest CHAR(64) PRIMARY KEY" not in source
 
 
-def test_0044匿名激活由数据库派生User且Runtime无Sequence权限() -> None:
+def test_0045匿名激活由数据库派生User且Runtime无Sequence权限() -> None:
     source = _source()
     assert "direct_institution_activate_v1" in source
     assert "admin_handoff_activation_v1" in source
@@ -91,7 +91,7 @@ def test_0044匿名激活由数据库派生User且Runtime无Sequence权限() -> 
     assert "p_envelope->>'phone'" in source
 
 
-def test_0044匿名激活AAD使用受限强类型Authority且不开放基础表() -> None:
+def test_0045匿名激活AAD使用受限强类型Authority且不开放基础表() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.direct_activation_authority_v1(", 1
@@ -127,7 +127,7 @@ def test_0044匿名激活AAD使用受限强类型Authority且不开放基础表(
     assert "p_envelope->>'new_phone'" in source
 
 
-def test_0044直开管理员TOTP绑定唯一凭证来源且登录读取受限() -> None:
+def test_0045直开管理员TOTP绑定唯一凭证来源且登录读取受限() -> None:
     source = _source()
     table = source.split(
         "CREATE TABLE public.direct_institution_admin_account (", 1
@@ -153,7 +153,7 @@ def test_0044直开管理员TOTP绑定唯一凭证来源且登录读取受限() 
     assert '("direct_org_admin_login_v1(BIGINT)", (application,))' in source
 
 
-def test_0044降级先删除管理员账户再删除其凭证父表() -> None:
+def test_0045降级先删除管理员账户再删除其凭证父表() -> None:
     source = _source()
     downgrade = source.split("def downgrade() -> None:", 1)[1]
     drop_tables = downgrade.split("for table in (", 1)[1].split("):", 1)[0]
@@ -165,7 +165,7 @@ def test_0044降级先删除管理员账户再删除其凭证父表() -> None:
     )
 
 
-def test_0044当前机构管理员合规读取不接受客户端Tenant选址() -> None:
+def test_0045当前机构管理员合规读取不接受客户端Tenant选址() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_compliance_current_v1(", 1)[1].split(
         "END $$;", 1
@@ -183,7 +183,7 @@ def test_0044当前机构管理员合规读取不接受客户端Tenant选址() -
     assert '("direct_compliance_current_v1(BIGINT)", (reader,))' in source
 
 
-def test_0044直开列表在同一语句返回完整授权集合UUID上界() -> None:
+def test_0045直开列表在同一语句返回完整授权集合UUID上界() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_institution_read_v1(", 1)[1].split(
         "END $$;", 1
@@ -200,7 +200,7 @@ def test_0044直开列表在同一语句返回完整授权集合UUID上界() -> 
     )
 
 
-def test_0044合规PUT追加不可变草稿且POST只提交当前草稿() -> None:
+def test_0045合规PUT追加不可变草稿且POST只提交当前草稿() -> None:
     source = _source()
     table = source.split(
         "CREATE TABLE public.direct_institution_compliance_revision (", 1
@@ -237,7 +237,7 @@ def test_0044合规PUT追加不可变草稿且POST只提交当前草稿() -> Non
     assert '("direct_compliance_save_v1(JSONB)", (onboarding,))' in source
 
 
-def test_0044合规草稿保存使用独立幂等域且提交确认不要求Outbox() -> None:
+def test_0045合规草稿保存使用独立幂等域且提交确认不要求Outbox() -> None:
     source = _source()
     replay = source.split(
         "CREATE FUNCTION public.direct_compliance_save_replay_v1(", 1
@@ -267,7 +267,7 @@ def test_0044合规草稿保存使用独立幂等域且提交确认不要求Outb
     assert '("direct_compliance_save_commit_confirm_v1(JSONB)", (onboarding,))' in source
 
 
-def test_0044受限当前草稿读取只追加提交所需历史摘要元数据() -> None:
+def test_0045受限当前草稿读取只追加提交所需历史摘要元数据() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.direct_compliance_current_v1(", 1
@@ -288,7 +288,7 @@ def test_0044受限当前草稿读取只追加提交所需历史摘要元数据(
     assert "address" not in body
 
 
-def test_0044会员注册claim由调用方提供UUIDv7且数据库拒绝其他版本() -> None:
+def test_0045会员注册claim由调用方提供UUIDv7且数据库拒绝其他版本() -> None:
     source = _source()
     assert (
         "auth_register_member_v2(p_claim_id UUID,p_phone VARCHAR,"
@@ -305,7 +305,7 @@ def test_0044会员注册claim由调用方提供UUIDv7且数据库拒绝其他�
     assert f"GRANT EXECUTE ON FUNCTION public.{legacy_signature}" in downgrade
 
 
-def test_0044五类手机号占用入口统一使用有界候选与全局确定性锁() -> None:
+def test_0045五类手机号占用入口统一使用有界候选与全局确定性锁() -> None:
     source = _source()
     internal = source.split(
         "CREATE FUNCTION public.identity_phone_claim_internal_v1(", 1
@@ -338,7 +338,7 @@ def test_0044五类手机号占用入口统一使用有界候选与全局确定�
         assert "identity_phone_claim_internal_v1" in body
 
 
-def test_0044会员注册函数返回既有受控注册最小字段合同() -> None:
+def test_0045会员注册函数返回既有受控注册最小字段合同() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.auth_register_member_v2", 1)[1].split(
         "CREATE FUNCTION public.direct_review_replay_v1", 1
@@ -356,7 +356,7 @@ def test_0044会员注册函数返回既有受控注册最小字段合同() -> N
         assert field in body
 
 
-def test_0044直开机构只接受有效区县并由完整祖先链派生省市() -> None:
+def test_0045直开机构只接受有效区县并由完整祖先链派生省市() -> None:
     source = _source()
     assert "county_row.org_type<>'county'" in source
     assert "city_row.org_type<>'city'" in source
@@ -371,7 +371,7 @@ def test_0044直开机构只接受有效区县并由完整祖先链派生省市(
     assert "org_path" not in source
 
 
-def test_0044平台StepUp在业务事务内按数据库窗口原子消费() -> None:
+def test_0045平台StepUp在业务事务内按数据库窗口原子消费() -> None:
     source = _source()
     assert "accepted_totp_step" in source
     assert "extract(epoch FROM clock_timestamp())/30" in source
@@ -386,7 +386,7 @@ def test_0044平台StepUp在业务事务内按数据库窗口原子消费() -> N
     assert "INTERVAL '5 minutes'" not in step_up_bodies
 
 
-def test_0044九个TOTP步信封在锁与写入前只接受BIGINT范围内的整数JSON数() -> None:
+def test_0045九个TOTP步信封在锁与写入前只接受BIGINT范围内的整数JSON数() -> None:
     source = _source()
     functions = {
         "direct_institution_create_v1": "DIRECT_CREATE_ENVELOPE_INVALID",
@@ -422,7 +422,7 @@ def test_0044九个TOTP步信封在锁与写入前只接受BIGINT范围内的整
                 assert guard_position < body.index(statement)
 
 
-def test_0044合规PII使用封闭载荷AEAD与独立版本化摘要() -> None:
+def test_0045合规PII使用封闭载荷AEAD与独立版本化摘要() -> None:
     source = _source()
     table = source.split(
         "CREATE TABLE public.direct_institution_compliance_revision (", 1
@@ -438,7 +438,7 @@ def test_0044合规PII使用封闭载荷AEAD与独立版本化摘要() -> None:
     assert "\n  payload_digest CHAR(64) NOT NULL" not in table
 
 
-def test_0044合规PII的AAD由同一权威Revision范围固定构造() -> None:
+def test_0045合规PII的AAD由同一权威Revision范围固定构造() -> None:
     source = SERVICE.read_text(encoding="utf-8")
     migration = _source()
     assert "phase1/direct-institution/compliance-pii/v1" in source
@@ -450,7 +450,7 @@ def test_0044合规PII的AAD由同一权威Revision范围固定构造() -> None:
     assert "compliance_payload_digest_key_id" in migration
 
 
-def test_0044合规保存只保存密文摘要并绑定CLEAN私有文件() -> None:
+def test_0045合规保存只保存密文摘要并绑定CLEAN私有文件() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_compliance_save_v1(", 1)[1].split(
         "END $$;", 1
@@ -471,7 +471,7 @@ def test_0044合规保存只保存密文摘要并绑定CLEAN私有文件() -> No
     assert "file_row.owner_user_id<>actor_row.id" in body
 
 
-def test_0044合规决定权威规范化长密文且响应投影读取Root字段() -> None:
+def test_0045合规决定权威规范化长密文且响应投影读取Root字段() -> None:
     source = _source()
     authority = source.split(
         "CREATE FUNCTION public.direct_compliance_decide_step_up_begin_v1(", 1
@@ -490,7 +490,7 @@ def test_0044合规决定权威规范化长密文且响应投影读取Root字段
     assert "'institution_name',root.institution_name" in decision
 
 
-def test_0044所有平台TOTP受限前像均输出无换行Base64() -> None:
+def test_0045所有平台TOTP受限前像均输出无换行Base64() -> None:
     migration = _source()
     raw_expression = "encode(profile_row.secret_ciphertext,'base64')"
     normalized_expression = (
@@ -501,7 +501,7 @@ def test_0044所有平台TOTP受限前像均输出无换行Base64() -> None:
     assert migration.count("'profile_secret_ciphertext'," + raw_expression) == 0
 
 
-def test_0044合规批准在同一事务写现有Tenant信用代码且不复制唯一真相() -> None:
+def test_0045合规批准在同一事务写现有Tenant信用代码且不复制唯一真相() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_compliance_decide_v1(", 1)[1].split(
         "END $$;", 1
@@ -520,7 +520,7 @@ def test_0044合规批准在同一事务写现有Tenant信用代码且不复制�
     assert "unified_social_credit_code" not in receipt_body
 
 
-def test_0044全部PII密文均保存独立AEAD密钥版本() -> None:
+def test_0045全部PII密文均保存独立AEAD密钥版本() -> None:
     source = _source()
     assert "admin_phone_key_id VARCHAR(64) NOT NULL" in source
     assert "new_phone_key_id VARCHAR(64) NOT NULL" in source
@@ -530,7 +530,7 @@ def test_0044全部PII密文均保存独立AEAD密钥版本() -> None:
     assert "new_phone_key_id,new_phone_digest_key_id" in source
 
 
-def test_0044许可证号密文与摘要版本严格执行全空或全非空() -> None:
+def test_0045许可证号密文与摘要版本严格执行全空或全非空() -> None:
     source = _source()
     table = source.split("CREATE TABLE public.direct_institution_license (", 1)[1].split(
         ");", 1
@@ -545,7 +545,7 @@ def test_0044许可证号密文与摘要版本严格执行全空或全非空() -
         assert f"{field} IS NOT NULL" in table
 
 
-def test_0044Receipt只保存严格非敏感JSONB结果() -> None:
+def test_0045Receipt只保存严格非敏感JSONB结果() -> None:
     source = _source()
     table = source.split("CREATE TABLE public.direct_onboarding_receipt (", 1)[1].split(
         ");", 1
@@ -560,7 +560,7 @@ def test_0044Receipt只保存严格非敏感JSONB结果() -> None:
     assert "activation_code" not in table
 
 
-def test_0044Receipt重放精确使用落库摘要Key且缺失旧Key安全失败() -> None:
+def test_0045Receipt重放精确使用落库摘要Key且缺失旧Key安全失败() -> None:
     source = _source()
     helper = source.split(
         "CREATE FUNCTION public.direct_keyed_digest_candidate_v1(", 1
@@ -586,7 +586,7 @@ def test_0044Receipt重放精确使用落库摘要Key且缺失旧Key安全失败
         assert "direct_keyed_digest_candidate_v1" in body
 
 
-def test_0044Receipt允许激活公开DTO但继续拒绝凭据与PII字段() -> None:
+def test_0045Receipt允许激活公开DTO但继续拒绝凭据与PII字段() -> None:
     source = _source()
     table = source.split("CREATE TABLE public.direct_onboarding_receipt (", 1)[1].split(
         ");", 1
@@ -609,7 +609,7 @@ def test_0044Receipt允许激活公开DTO但继续拒绝凭据与PII字段() -> 
         assert f"'{forbidden}'" not in table
 
 
-def test_0044不实现产品待决的逾期状态自动化() -> None:
+def test_0045不实现产品待决的逾期状态自动化() -> None:
     source = _source()
     assert "compliance_due_at" in source
     assert "((now_value AT TIME ZONE 'Asia/Shanghai')::DATE+30)::TIMESTAMP AT TIME ZONE 'Asia/Shanghai'" in source
@@ -635,7 +635,7 @@ def test_canonical机构权威允许任一标识且双标识必须同时匹配()
     assert "direct_expiry" not in combined
 
 
-def test_0044受限对象均撤销PUBLIC且没有基础表Runtime授权() -> None:
+def test_0045受限对象均撤销PUBLIC且没有基础表Runtime授权() -> None:
     source = _source()
     assert "REVOKE ALL ON FUNCTION" in source
     assert "FROM PUBLIC" in source
@@ -644,7 +644,7 @@ def test_0044受限对象均撤销PUBLIC且没有基础表Runtime授权() -> Non
     assert "GRANT UPDATE ON public.identity_phone_claim" not in source
 
 
-def test_0044机构来源权威仅接纳已存在外层受限入口的真实调用角色() -> None:
+def test_0045机构来源权威仅接纳已存在外层受限入口的真实调用角色() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.institution_tenant_origin_current_v1(", 1
@@ -678,7 +678,7 @@ def test_0044机构来源权威仅接纳已存在外层受限入口的真实调�
     assert "GRANT EXECUTE ON FUNCTION public.institution_tenant_origin_current_v1" not in source
 
 
-def test_0044精确兼容重定义Slice2至Slice7的封闭下游对象() -> None:
+def test_0045精确兼容重定义Slice2至Slice7的封闭下游对象() -> None:
     source = _source()
     required_objects = (
         "institution_readiness_source_v1",
@@ -713,7 +713,7 @@ def test_0044精确兼容重定义Slice2至Slice7的封闭下游对象() -> None
     assert "slice7_proxy_plan_decision_guard_v1" not in source
 
 
-def test_0044操作函数目录封闭且不使用通用action分派() -> None:
+def test_0045操作函数目录封闭且不使用通用action分派() -> None:
     source = _source()
     for name in FUNCTIONS:
         assert f"CREATE FUNCTION public.{name}(" in source
@@ -721,7 +721,7 @@ def test_0044操作函数目录封闭且不使用通用action分派() -> None:
     assert "direct_expiry_claim" not in source
 
 
-def test_0044交接凭据重发与撤销保持同一领取权威和手机号声明边界() -> None:
+def test_0045交接凭据重发与撤销保持同一领取权威和手机号声明边界() -> None:
     source = _source()
     regenerate = source.split(
         "CREATE FUNCTION public.institution_admin_handoff_regenerate_v1(", 1
@@ -752,7 +752,7 @@ def test_0044交接凭据重发与撤销保持同一领取权威和手机号声�
     assert "ADMIN_HANDOFF_REVOKED" in revoke
 
 
-def test_0044幂等重放按Runtime和动作封闭且不恢复一次性明文() -> None:
+def test_0045幂等重放按Runtime和动作封闭且不恢复一次性明文() -> None:
     source = _source()
     review = source.split("CREATE FUNCTION public.direct_review_replay_v1(", 1)[1].split(
         "END $$;", 1
@@ -777,7 +777,7 @@ def test_0044幂等重放按Runtime和动作封闭且不恢复一次性明文() 
     assert "actor_user_id" not in handoff
 
 
-def test_0044激活类Receipt持久化并回放同一非敏感响应() -> None:
+def test_0045激活类Receipt持久化并回放同一非敏感响应() -> None:
     source = _source()
     pairs = (
         (
@@ -816,7 +816,7 @@ def test_0044激活类Receipt持久化并回放同一非敏感响应() -> None:
             )[1].split(";", 1)[0]
 
 
-def test_0044重生成与撤销Authority返回唯一活动凭据且Mutation锁后复核() -> None:
+def test_0045重生成与撤销Authority返回唯一活动凭据且Mutation锁后复核() -> None:
     source = _source()
     begin = source.split(
         "CREATE FUNCTION public.direct_regenerate_step_up_begin_v1", 1
@@ -848,7 +848,7 @@ def test_0044重生成与撤销Authority返回唯一活动凭据且Mutation锁�
     assert "credential_digest' IS NULL" in confirmation
 
 
-def test_0044列表UUID快照上界使用PostgreSQL原生排序且空集仍返回一行CTE() -> None:
+def test_0045列表UUID快照上界使用PostgreSQL原生排序且空集仍返回一行CTE() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.direct_institution_read_v1(", 1
@@ -860,7 +860,7 @@ def test_0044列表UUID快照上界使用PostgreSQL原生排序且空集仍返�
     assert "candidate.onboarding_id::text" not in snapshot
 
 
-def test_0044凭据签发时间由数据库固化且确认不要求调用方预知() -> None:
+def test_0045凭据签发时间由数据库固化且确认不要求调用方预知() -> None:
     source = _source()
     receipt_table = source.split(
         "CREATE TABLE public.direct_onboarding_receipt", 1
@@ -897,7 +897,7 @@ def test_0044凭据签发时间由数据库固化且确认不要求调用方预�
     assert "r.response_payload->>'credential_expires_at'" in confirmation
 
 
-def test_0044Review提交确认同时核验目标与三类不可变证据() -> None:
+def test_0045Review提交确认同时核验目标与三类不可变证据() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_review_commit_confirm_v1(", 1)[1].split(
         "END $$;", 1
@@ -914,7 +914,7 @@ def test_0044Review提交确认同时核验目标与三类不可变证据() -> N
     assert "UNKNOWN" in body
 
 
-def test_0044_CREATE确认从Root推导内部Tenant并在同幂等锁域裁决() -> None:
+def test_0045_CREATE确认从Root推导内部Tenant并在同幂等锁域裁决() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.direct_review_commit_confirm_v1(", 1
@@ -929,7 +929,7 @@ def test_0044_CREATE确认从Root推导内部Tenant并在同幂等锁域裁决()
     assert "NOT receipt_present AND NOT audit_present AND NOT outbox_present" in body
 
 
-def test_0044各Runtime提交确认不共享登录Actor并核验三类证据() -> None:
+def test_0045各Runtime提交确认不共享登录Actor并核验三类证据() -> None:
     source = _source()
     for function in (
         "direct_activation_commit_confirm_v1",
@@ -955,7 +955,7 @@ def test_0044各Runtime提交确认不共享登录Actor并核验三类证据() -
     assert "actor_user_id" not in handoff
 
 
-def test_0044匿名激活确认从Root和凭据后像派生内部标识与数据库时间() -> None:
+def test_0045匿名激活确认从Root和凭据后像派生内部标识与数据库时间() -> None:
     source = _source()
     body = source.split(
         "CREATE FUNCTION public.direct_activation_commit_confirm_v1(", 1
@@ -974,7 +974,7 @@ def test_0044匿名激活确认从Root和凭据后像派生内部标识与数据
     assert "c.expires_at>c.issued_at" in body
 
 
-def test_0044StepUp失败预算独立持久化且不产生业务副作用() -> None:
+def test_0045StepUp失败预算独立持久化且不产生业务副作用() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_create_step_up_failure_v1(", 1)[1].split(
         "END $$;", 1
@@ -990,7 +990,7 @@ def test_0044StepUp失败预算独立持久化且不产生业务副作用() -> N
     assert "p_phone_digest" in body
 
 
-def test_0044所有JSON字段拼接锁键均显式限定提取运算优先级() -> None:
+def test_0045所有JSON字段拼接锁键均显式限定提取运算优先级() -> None:
     source = _source()
     assert re.search(r"p_envelope->>'[a-z_]+'\|\|", source) is None
     assert re.search(r"\|\|p_envelope->>'[a-z_]+'", source) is None

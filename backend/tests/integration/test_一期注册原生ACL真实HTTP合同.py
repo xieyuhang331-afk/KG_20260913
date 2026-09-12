@@ -501,7 +501,7 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
         command.upgrade(config, "head")
         _run(
             assert_migration_state(
-                registration_exists=True, revision="20260913_0044"
+                registration_exists=True, revision="20260913_0045"
             )
         )
         _run(assert_native_acl())
@@ -515,7 +515,7 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
             command.downgrade(config, "20260909_0040")
         _run(
             assert_migration_state(
-                registration_exists=True, revision="20260913_0044"
+                registration_exists=True, revision="20260913_0045"
             )
         )
         assert _run(user_count()) == users_before_rejected_downgrade
