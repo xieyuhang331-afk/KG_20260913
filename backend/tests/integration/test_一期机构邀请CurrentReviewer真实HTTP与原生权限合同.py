@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic
 
 import asyncpg
 import pytest
@@ -75,6 +77,93 @@ def _post_invitation(client, authorization: dict[str, str], suffix: str):
             "expires_in_minutes": 60,
         },
     )
+
+
+def _mutate_reviewer_with_observable_pid(
+    database_url: str,
+    mutation_sql: str,
+    started: threading.Event,
+    finished: threading.Event,
+    backend_pid: queue.Queue[int],
+) -> None:
+    async def run() -> None:
+        connection = await asyncpg.connect(database_url)
+        try:
+            transaction = connection.transaction()
+            await transaction.start()
+            await connection.execute("SET LOCAL lock_timeout = '15s'")
+            backend_pid.put(await connection.fetchval("SELECT pg_backend_pid()"))
+            started.set()
+            await connection.execute(mutation_sql)
+            await transaction.commit()
+        finally:
+            await connection.close()
+            finished.set()
+
+    asyncio.run(run())
+
+
+def _wait_for_currentness_blocker(
+    pg_database, waiter_pid: int, expected_holder_pid: int
+) -> None:
+    deadline = monotonic() + 10
+    while monotonic() < deadline:
+        blockers = pg_database.fetch_rows(
+            "SELECT holder.pid "
+            "FROM pg_catalog.pg_stat_activity waiter "
+            "CROSS JOIN LATERAL "
+            "unnest(pg_catalog.pg_blocking_pids(waiter.pid)) blocker(pid) "
+            "JOIN pg_catalog.pg_stat_activity holder ON holder.pid=blocker.pid "
+            f"WHERE waiter.pid={waiter_pid}"
+        )
+        if blockers:
+            assert any(
+                row["pid"] == expected_holder_pid for row in blockers
+            ), "CURRENT_REVIEWER_WRONG_LOCK_HOLDER"
+            return
+        threading.Event().wait(0.025)
+    pytest.fail("CURRENT_REVIEWER_DATABASE_BLOCK_NOT_OBSERVED")
+
+
+def _hold_currentness_then_fail(
+    *,
+    outcome: str,
+    locked: threading.Event,
+    release: threading.Event,
+    holder_pid: queue.Queue[int],
+) -> None:
+    async def run() -> None:
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from app.core.security import CurrentUser
+        from app.modules.institution_onboarding.service import require_current_reviewer
+
+        engine = create_async_engine(
+            os.environ["KG_TEST_DATABASE_URL"],
+            poolclass=NullPool,
+        )
+        try:
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            async with sessions() as session:
+                holder_pid.put(
+                    (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+                )
+                await require_current_reviewer(
+                    session,
+                    CurrentUser(id=_REVIEWER_ID, role="super_admin"),
+                )
+                locked.set()
+                if not await asyncio.to_thread(release.wait, 10):
+                    raise AssertionError("CURRENT_REVIEWER_RELEASE_TIMEOUT")
+                if outcome == "cancel":
+                    raise asyncio.CancelledError
+                raise RuntimeError("SYNTHETIC_BUSINESS_FAILURE")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_真实登录与机构邀请通过闭合CurrentReviewer持久化(
@@ -260,10 +349,22 @@ def test_审核先取得CurrentReviewer锁则撤权等待邀请事务结束(
     before = _invitation_count(pg_database)
     currentness_passed = threading.Event()
     allow_business_write = threading.Event()
+    mutation_started = threading.Event()
     mutation_finished = threading.Event()
+    mutation_pid: queue.Queue[int] = queue.Queue(maxsize=1)
+    identity_pid: queue.Queue[int] = queue.Queue(maxsize=1)
     original_create = onboarding_api.create_invitation
 
     async def gated_create(*args, **kwargs):
+        from sqlalchemy import text
+
+        identity_pid.put(
+            (
+                await kwargs["region_session"].execute(
+                    text("SELECT pg_backend_pid()")
+                )
+            ).scalar_one()
+        )
         currentness_passed.set()
         if not await asyncio.to_thread(allow_business_write.wait, 10):
             pytest.fail("CURRENT_REVIEWER_BUSINESS_GATE_TIMEOUT")
@@ -271,33 +372,97 @@ def test_审核先取得CurrentReviewer锁则撤权等待邀请事务结束(
 
     monkeypatch.setattr(onboarding_api, "create_invitation", gated_create)
 
-    def mutate_reviewer() -> None:
-        pg_database.execute(mutation_sql)
-        mutation_finished.set()
-
+    executor = ThreadPoolExecutor(max_workers=2)
     try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            request_future = executor.submit(
-                _post_invitation,
-                real_db_client,
-                authorization,
-                f"locked-{suffix}",
+        request_future = executor.submit(
+            _post_invitation,
+            real_db_client,
+            authorization,
+            f"locked-{suffix}",
+        )
+        assert currentness_passed.wait(10), "CURRENT_REVIEWER_GATE_NOT_REACHED"
+        mutation_future = executor.submit(
+            _mutate_reviewer_with_observable_pid,
+            pg_database.database_url,
+            mutation_sql,
+            mutation_started,
+            mutation_finished,
+            mutation_pid,
+        )
+        try:
+            assert mutation_started.wait(10), "CURRENT_REVIEWER_MUTATION_NOT_SENT"
+            _wait_for_currentness_blocker(
+                pg_database,
+                mutation_pid.get(timeout=2),
+                identity_pid.get(timeout=2),
             )
-            assert currentness_passed.wait(10), "CURRENT_REVIEWER_GATE_NOT_REACHED"
-            mutation_future = executor.submit(mutate_reviewer)
-            try:
-                assert not mutation_finished.wait(1), "CURRENT_REVIEWER_LOCK_NOT_HELD"
-            finally:
-                allow_business_write.set()
-            response = request_future.result(timeout=20)
-            mutation_future.result(timeout=20)
+            assert not mutation_finished.is_set(), "CURRENT_REVIEWER_LOCK_NOT_HELD"
+        finally:
+            allow_business_write.set()
+        response = request_future.result(timeout=20)
+        mutation_future.result(timeout=20)
     finally:
         allow_business_write.set()
+        executor.shutdown(wait=False, cancel_futures=True)
         pg_database.execute(restore_sql)
 
     assert response.status_code == 200
     assert _invitation_count(pg_database) == before + 1
     assert mutation_finished.is_set()
+
+
+@pytest.mark.parametrize("outcome", ("error", "cancel"), ids=("error", "cancel"))
+def test_CurrentReviewer业务异常或取消后释放锁且等待更新有界完成(
+    pg_database,
+    reviewer_and_region,
+    outcome: str,
+):
+    del reviewer_and_region
+    locked = threading.Event()
+    release = threading.Event()
+    mutation_started = threading.Event()
+    mutation_finished = threading.Event()
+    mutation_pid: queue.Queue[int] = queue.Queue(maxsize=1)
+    holder_pid: queue.Queue[int] = queue.Queue(maxsize=1)
+    mutation_sql = (
+        f'UPDATE public."user" SET status=\'disabled\' WHERE id={_REVIEWER_ID}'
+    )
+    restore_sql = f'UPDATE public."user" SET status=\'active\' WHERE id={_REVIEWER_ID}'
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        holder_future = executor.submit(
+            _hold_currentness_then_fail,
+            outcome=outcome,
+            locked=locked,
+            release=release,
+            holder_pid=holder_pid,
+        )
+        assert locked.wait(10), "CURRENT_REVIEWER_GATE_NOT_REACHED"
+        mutation_future = executor.submit(
+            _mutate_reviewer_with_observable_pid,
+            pg_database.database_url,
+            mutation_sql,
+            mutation_started,
+            mutation_finished,
+            mutation_pid,
+        )
+        assert mutation_started.wait(10), "CURRENT_REVIEWER_MUTATION_NOT_SENT"
+        _wait_for_currentness_blocker(
+            pg_database,
+            mutation_pid.get(timeout=2),
+            holder_pid.get(timeout=2),
+        )
+        release.set()
+        expected_error = asyncio.CancelledError if outcome == "cancel" else RuntimeError
+        with pytest.raises(expected_error):
+            holder_future.result(timeout=20)
+        mutation_future.result(timeout=20)
+    finally:
+        release.set()
+        executor.shutdown(wait=False, cancel_futures=True)
+        pg_database.execute(restore_sql)
+
+    assert mutation_finished.is_set(), "CURRENT_REVIEWER_LOCK_NOT_RELEASED"
 
 
 def test_0044仅Application角色可执行且没有User底表权限(pg_database):
