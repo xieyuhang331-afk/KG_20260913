@@ -1337,6 +1337,7 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
 def test_direct_onboarding_keyrings_are_random_masked_and_exported():
     for job_name in ("backend-unit", "backend-integration"):
         job = _workflow_job_block(job_name)
+        assert job.index("import json") < job.index("json.dumps(")
         mask_position = job.index('print(f"::add-mask::{value}")')
         export_position = job.index("with open(os.environ", mask_position)
         for prefix, purpose in {
