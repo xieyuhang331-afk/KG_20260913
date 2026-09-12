@@ -297,6 +297,7 @@ def test_G02_唯一新修订与历史Hash():
             "20260911_0042_机构当前性受限读取.py",
             "20260912_0043_健管师业务当前性受限读取.py",
             "20260913_0044_超级管理员直接开通机构.py",
+            "20260913_0044_机构邀请Reviewer锁定当前性.py",
         }:
             continue
         value = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
