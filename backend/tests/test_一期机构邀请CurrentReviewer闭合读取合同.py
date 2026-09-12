@@ -64,7 +64,8 @@ def test_CurrentReviewer只调用既有闭合当前性函数且不依赖UserORM�
     }
     assert len(session.statements) == 1
     rendered = str(session.statements[0])
-    assert "public.auth_user_currentness_v1" in rendered
+    assert "public.institution_onboarding_reviewer_currentness_v1" in rendered
+    assert "public.auth_user_currentness_v1" not in rendered
     assert "public.user" not in rendered.lower()
     assert session.statements[0].compile().params == {"user_id": 95001}
 
@@ -80,7 +81,8 @@ def test_CurrentReviewer生产方法没有直接User列或mapping逃生通道():
         "map_core_model_classes",
     ):
         assert forbidden not in source
-    assert "auth_user_currentness_v1" in source or "get_user_currentness" in source
+    assert "institution_onboarding_reviewer_currentness_v1" in source
+    assert "get_user_currentness" not in source
 
 
 def test_CurrentReviewer依赖故障保持失败不伪造当前用户():

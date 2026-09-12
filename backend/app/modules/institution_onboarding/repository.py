@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import and_, insert, or_, select, text, update
+from fastapi import HTTPException
+from sqlalchemy import BigInteger, and_, bindparam, insert, or_, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import load_only
 
 from app.modules.auth.models import User
-from app.modules.auth.repository import get_user_currentness
 from app.modules.institution_onboarding.models import (
     InstitutionApplicationModel,
     InstitutionApplicationRevisionModel,
@@ -236,14 +237,22 @@ class InstitutionOnboardingRepository:
         return tuple(result.all())
 
     async def reviewer_currentness(self, user_id: int):
-        current = await get_user_currentness(self.session, user_id)
+        statement = text(
+            "SELECT id,role,status,tenant_id "
+            "FROM public.institution_onboarding_reviewer_currentness_v1(:user_id)"
+        ).bindparams(bindparam("user_id", value=user_id, type_=BigInteger))
+        try:
+            result = await self.session.execute(statement)
+        except SQLAlchemyError:
+            raise HTTPException(503, "DEPENDENCY_UNAVAILABLE") from None
+        current = result.mappings().one_or_none()
         if current is None:
             return None
         return {
-            "id": current.id,
-            "role": current.role,
-            "status": current.status,
-            "tenant_id": current.tenant_id,
+            "id": current["id"],
+            "role": current["role"],
+            "status": current["status"],
+            "tenant_id": current["tenant_id"],
         }
 
     async def add(self, value) -> None:

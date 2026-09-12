@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import asyncpg
 import pytest
+from alembic import command
+from alembic.config import Config
 
 from app.modules.auth.service import hash_password
 
 pytestmark = pytest.mark.integration
 
-_CURRENTNESS_SIGNATURE = "public.auth_user_currentness_v1(bigint)"
+_CURRENTNESS_SIGNATURE = (
+    "public.institution_onboarding_reviewer_currentness_v1(bigint)"
+)
 _REVIEWER_ID = 9955101
 _REGION_ID = 9955102
 _REVIEWER_PHONE = "13655555555"
@@ -187,7 +195,8 @@ def test_CurrentReviewer闭合函数权限不可用时稳定503且零侧效(
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     before = _invitation_count(pg_database)
     pg_database.execute(
-        'REVOKE EXECUTE ON FUNCTION public.auth_user_currentness_v1(BIGINT) FROM "'
+        'REVOKE EXECUTE ON FUNCTION '
+        'public.institution_onboarding_reviewer_currentness_v1(BIGINT) FROM "'
         + application_role
         + '"'
     )
@@ -195,7 +204,8 @@ def test_CurrentReviewer闭合函数权限不可用时稳定503且零侧效(
         response = _post_invitation(real_db_client, authorization, "unavailable")
     finally:
         pg_database.execute(
-            'GRANT EXECUTE ON FUNCTION public.auth_user_currentness_v1(BIGINT) TO "'
+            'GRANT EXECUTE ON FUNCTION '
+            'public.institution_onboarding_reviewer_currentness_v1(BIGINT) TO "'
             + application_role
             + '"'
         )
@@ -206,8 +216,157 @@ def test_CurrentReviewer闭合函数权限不可用时稳定503且零侧效(
     for forbidden in (
         _REVIEWER_PHONE,
         reviewer_password,
-        "auth_user_currentness_v1",
+        "institution_onboarding_reviewer_currentness_v1",
         "SELECT",
         "postgresql",
     ):
         assert forbidden not in response.text
+
+
+@pytest.mark.parametrize(
+    ("mutation_sql", "restore_sql", "suffix"),
+    (
+        (
+            f'UPDATE public."user" SET status=\'disabled\' WHERE id={_REVIEWER_ID}',
+            f'UPDATE public."user" SET status=\'active\' WHERE id={_REVIEWER_ID}',
+            "status",
+        ),
+        (
+            f'UPDATE public."user" SET role=\'member\' WHERE id={_REVIEWER_ID}',
+            f'UPDATE public."user" SET role=\'super_admin\' WHERE id={_REVIEWER_ID}',
+            "role",
+        ),
+        (
+            f'UPDATE public."user" SET tenant_id={_TENANT_ID} WHERE id={_REVIEWER_ID}',
+            f'UPDATE public."user" SET tenant_id=NULL WHERE id={_REVIEWER_ID}',
+            "tenant",
+        ),
+    ),
+    ids=("status", "role", "tenant"),
+)
+def test_审核先取得CurrentReviewer锁则撤权等待邀请事务结束(
+    pg_database,
+    real_db_client,
+    reviewer_and_region,
+    monkeypatch,
+    mutation_sql: str,
+    restore_sql: str,
+    suffix: str,
+):
+    from app.modules.institution_onboarding import api as onboarding_api
+
+    reviewer_password, _ = reviewer_and_region
+    authorization = _login(real_db_client, _REVIEWER_PHONE, reviewer_password)
+    before = _invitation_count(pg_database)
+    currentness_passed = threading.Event()
+    allow_business_write = threading.Event()
+    mutation_finished = threading.Event()
+    original_create = onboarding_api.create_invitation
+
+    async def gated_create(*args, **kwargs):
+        currentness_passed.set()
+        if not await asyncio.to_thread(allow_business_write.wait, 10):
+            pytest.fail("CURRENT_REVIEWER_BUSINESS_GATE_TIMEOUT")
+        return await original_create(*args, **kwargs)
+
+    monkeypatch.setattr(onboarding_api, "create_invitation", gated_create)
+
+    def mutate_reviewer() -> None:
+        pg_database.execute(mutation_sql)
+        mutation_finished.set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            request_future = executor.submit(
+                _post_invitation,
+                real_db_client,
+                authorization,
+                f"locked-{suffix}",
+            )
+            assert currentness_passed.wait(10), "CURRENT_REVIEWER_GATE_NOT_REACHED"
+            mutation_future = executor.submit(mutate_reviewer)
+            try:
+                assert not mutation_finished.wait(1), "CURRENT_REVIEWER_LOCK_NOT_HELD"
+            finally:
+                allow_business_write.set()
+            response = request_future.result(timeout=20)
+            mutation_future.result(timeout=20)
+    finally:
+        allow_business_write.set()
+        pg_database.execute(restore_sql)
+
+    assert response.status_code == 200
+    assert _invitation_count(pg_database) == before + 1
+    assert mutation_finished.is_set()
+
+
+def test_0044仅Application角色可执行且没有User底表权限(pg_database):
+    application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
+    denied_roles = (
+        os.environ["KG_TEST_READONLY_ROLE"],
+        os.environ["KG_TEST_VERIFICATION_WRITER_ROLE"],
+        os.environ["KG_TEST_DELIVERY_WORKER_ROLE"],
+        os.environ["KG_TEST_MEMBER_ENROLLMENT_WRITER_ROLE"],
+        os.environ["KG_TEST_MEMBER_CASE_WRITER_ROLE"],
+        os.environ["KG_TEST_SLICE7_EXPORT_WORKER_ROLE"],
+    )
+    assert pg_database.fetch_value(
+        "SELECT has_function_privilege('"
+        + application_role
+        + "','"
+        + _CURRENTNESS_SIGNATURE
+        + "','EXECUTE')"
+    ) is True
+    for role in denied_roles:
+        assert pg_database.fetch_value(
+            "SELECT has_function_privilege('"
+            + role
+            + "','"
+            + _CURRENTNESS_SIGNATURE
+            + "','EXECUTE')"
+        ) is False
+    assert pg_database.fetch_value(
+        "SELECT has_table_privilege('"
+        + application_role
+        + "','public.user','SELECT,INSERT,UPDATE,DELETE')"
+    ) is False
+
+
+def test_0044输入拒绝稳定且不泄漏主体(pg_database, application_database):
+    for value in ("NULL", "0", "-1"):
+        with pytest.raises(asyncpg.DataError) as caught:
+            application_database.fetch_value(
+                "SELECT id FROM public.institution_onboarding_reviewer_currentness_v1("
+                + value
+                + ")"
+            )
+        rendered = str(caught.value)
+        assert "INSTITUTION_REVIEWER_CURRENTNESS_INPUT_INVALID" in rendered
+        assert _REVIEWER_PHONE not in rendered
+
+
+def test_0044到0043对称往返且仅删除本Revision函数(pg_database):
+    backend_root = Path(__file__).resolve().parents[2]
+    config = Config(str(backend_root / "alembic.ini"))
+    config.set_main_option(
+        "script_location",
+        str(backend_root / "app" / "migrations"),
+    )
+    config.set_main_option(
+        "sqlalchemy.url", os.environ["KG_TEST_MIGRATION_DATABASE_URL"]
+    )
+    before = _invitation_count(pg_database)
+
+    command.downgrade(config, "20260912_0043")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value(
+        "SELECT to_regprocedure('" + _CURRENTNESS_SIGNATURE + "') IS NULL"
+    ) is True
+    assert _invitation_count(pg_database) == before
+
+    command.upgrade(config, "20260913_0044")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    assert pg_database.fetch_value(
+        "SELECT to_regprocedure('" + _CURRENTNESS_SIGNATURE + "') IS NOT NULL"
+    ) is True
+    assert _invitation_count(pg_database) == before
