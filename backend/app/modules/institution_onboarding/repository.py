@@ -6,6 +6,7 @@ from sqlalchemy import and_, insert, or_, select, text, update
 from sqlalchemy.orm import load_only
 
 from app.modules.auth.models import User
+from app.modules.auth.repository import get_user_currentness
 from app.modules.institution_onboarding.models import (
     InstitutionApplicationModel,
     InstitutionApplicationRevisionModel,
@@ -13,8 +14,8 @@ from app.modules.institution_onboarding.models import (
     InstitutionLicenseModel,
     InstitutionOnboardingAccountModel,
     InstitutionOnboardingAuditModel,
-    InstitutionOnboardingIdempotencyModel,
     InstitutionOnboardingDeliveryModel,
+    InstitutionOnboardingIdempotencyModel,
     InstitutionOnboardingOutboxModel,
 )
 from app.modules.tenant.models import Tenant
@@ -235,12 +236,15 @@ class InstitutionOnboardingRepository:
         return tuple(result.all())
 
     async def reviewer_currentness(self, user_id: int):
-        result = await self.session.execute(
-            select(User.id, User.role, User.status, User.tenant_id, User.password_hash)
-            .where(User.id == user_id)
-            .with_for_update(read=True)
-        )
-        return result.mappings().one_or_none()
+        current = await get_user_currentness(self.session, user_id)
+        if current is None:
+            return None
+        return {
+            "id": current.id,
+            "role": current.role,
+            "status": current.status,
+            "tenant_id": current.tenant_id,
+        }
 
     async def add(self, value) -> None:
         self.session.add(value)
