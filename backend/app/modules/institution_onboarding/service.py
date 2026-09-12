@@ -897,6 +897,8 @@ async def review_decision(session, actor, application_id: str, payload: ReviewDe
             domain.approve(expected_version=expected, now=now)
     except (OnboardingConflict, OnboardingForbidden) as exc:
         raise _translate_domain_error(exc) from None
+    _sync_application(row, domain, now)
+    row.reviewed_at = now
     if payload.decision == "APPROVED":
         map_core_model_classes()
         secrets_box = OnboardingSecrets()
@@ -921,7 +923,12 @@ async def review_decision(session, actor, application_id: str, payload: ReviewDe
         await repo.add_approved_tenant(tenant); row.tenant_internal_id = tenant.id; row.tenant_public_id = str(Uuid7Generator().generate()); row.service_ready = False
         await repo.bind_user_tenant(user_id=row.applicant_user_id, tenant_id=tenant.id)
         await repo.add(InstitutionOnboardingOutboxModel(event_id=str(Uuid7Generator().generate()), event_type="INSTITUTION_APPROVED", aggregate_id=row.application_id, payload={"application_id": row.application_id, "tenant_id": row.tenant_public_id}, status="PENDING", attempts=0, created_at=now, processing_at=None))
-    _sync_application(row, domain, now); row.reviewed_at = now
+        await session.flush()
+        bound_tenant_public_id = await repo.bind_controlled_tenant_origin(
+            row.application_id
+        )
+        if bound_tenant_public_id != row.tenant_public_id:
+            raise RuntimeError("ONBOARDING_TENANT_ORIGIN_BIND_FAILED")
     await repo.add_audit(InstitutionOnboardingAuditModel(
         actor_user_id=actor.id, actor_role=actor.role,
         action=f"REVIEW_{payload.decision}", object_type="INSTITUTION_APPLICATION",

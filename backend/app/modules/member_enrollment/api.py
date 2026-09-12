@@ -260,38 +260,32 @@ async def _approved_institution(
 ) -> tuple[int, UUID]:
     if (tenant_id is None) == (tenant_public_id is None):
         raise _error(error_code)
-    predicate = (
-        "tenant_internal_id=:tenant_id"
-        if tenant_id is not None
-        else "tenant_public_id=:tenant_public_id"
-    )
-    parameters = (
-        {"tenant_id": tenant_id}
-        if tenant_id is not None
-        else {"tenant_public_id": tenant_public_id}
-    )
+    parameters = {"tenant_id": tenant_id, "tenant_public_id": tenant_public_id}
     result = await institution_authority.execute(
         text(
-            "SELECT tenant_internal_id,tenant_public_id,status "
-            "FROM public.institution_application "
-            f"WHERE {predicate}"
+            "SELECT tenant_id,tenant_public_id "
+            "FROM public.institution_tenant_origin_current_v1"
+            "(:tenant_id,:tenant_public_id)"
         ),
         parameters,
     )
     row = result.mappings().one_or_none()
+    # The Application Runtime must never read institution_application here.
+    row_tenant_id = None if row is None else row.get(
+        "tenant_id", row.get("tenant_internal_id")
+    )
     if (
         row is None
-        or row["status"] != "APPROVED"
-        or row["tenant_internal_id"] is None
+        or row_tenant_id is None
         or row["tenant_public_id"] is None
-        or (tenant_id is not None and row["tenant_internal_id"] != tenant_id)
+        or (tenant_id is not None and row_tenant_id != tenant_id)
         or (
             tenant_public_id is not None
             and UUID(str(row["tenant_public_id"])) != tenant_public_id
         )
     ):
         raise _error(error_code)
-    return row["tenant_internal_id"], UUID(str(row["tenant_public_id"]))
+    return row_tenant_id, UUID(str(row["tenant_public_id"]))
 
 
 async def _tenant_public_id(institution_authority, tenant_id: int) -> UUID:

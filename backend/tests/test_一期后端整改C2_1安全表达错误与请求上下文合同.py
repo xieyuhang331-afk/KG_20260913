@@ -15,6 +15,8 @@ _PUBLIC = {
     ("post", "/api/v1/auth/login"),
     ("post", "/api/v1/users/register"),
     ("post", "/api/v1/institution-onboarding/activate"),
+    ("post", "/api/v1/institution-onboarding/direct-activate"),
+    ("post", "/api/v1/institution-onboarding/admin-handoffs/activate"),
     ("post", "/api/v1/therapist-onboarding/activate"),
     ("get", "/health"),
     ("get", "/health/live"),
@@ -137,7 +139,7 @@ def test_C21_R02_全部操作显式分类且只七项公开(access_settings):
                 assert len(operation["security"]) == 1
                 assert operation["security"][0]["AccessBearer"] == []
     assert public == _PUBLIC
-    assert count == 255
+    assert count == 268
 
 
 @pytest.mark.parametrize(("method", "path", "extra"), [

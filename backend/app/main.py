@@ -16,6 +16,12 @@ from app.core.认证配置校验 import validated_auth_settings
 from app.core.认证限流 import AuthRateLimiter
 from app.modules.auth.api import auth_router
 from app.modules.auth.api import router as user_auth_router
+from app.modules.direct_institution_onboarding.api import (
+    routers as direct_onboarding_routers,
+)
+from app.modules.direct_institution_onboarding.api import (
+    strip_direct_onboarding_validation_responses,
+)
 from app.modules.health_analysis.api import (
     internal_router as health_analysis_internal_router,
 )
@@ -143,15 +149,19 @@ def create_app() -> FastAPI:
         app.include_router(slice6_router)
     for slice7_router in slice7_routers:
         app.include_router(slice7_router)
+    for direct_onboarding_router in direct_onboarding_routers:
+        app.include_router(direct_onboarding_router)
     default_openapi = app.openapi
 
     def therapist_aware_openapi():
-        schema = strip_slice7_validation_responses(
-            strip_slice6_validation_responses(
-                strip_slice5_validation_responses(
-                    strip_slice4_validation_responses(
-                        strip_member_enrollment_validation_responses(
-                            strip_therapist_validation_responses(default_openapi())
+        schema = strip_direct_onboarding_validation_responses(
+            strip_slice7_validation_responses(
+                strip_slice6_validation_responses(
+                    strip_slice5_validation_responses(
+                        strip_slice4_validation_responses(
+                            strip_member_enrollment_validation_responses(
+                                strip_therapist_validation_responses(default_openapi())
+                            )
                         )
                     )
                 )

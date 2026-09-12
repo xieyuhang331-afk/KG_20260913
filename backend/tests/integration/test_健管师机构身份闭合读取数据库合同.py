@@ -838,16 +838,16 @@ async def _verify_authority_locks(tenant_id, expected_public_id):
             "SELECT public.slice2_institution_identity_authority_v1($1)", tenant_id
         )
         require(str(value) == str(expected_public_id), "GATE_LOCK_IDENTITY_MISMATCH")
-        for table, predicate in (
-            ("public.institution_application", "tenant_internal_id=$1"),
-            ("public.tenant", "id=$1"),
+        for table, assignment, predicate in (
+            ("public.institution_tenant_origin", "version=version", "tenant_id=$1"),
+            ("public.tenant", "status=status", "id=$1"),
         ):
             await contender.execute("BEGIN")
             try:
                 await contender.execute("SET LOCAL lock_timeout='200ms'")
                 try:
                     await contender.execute(
-                        f"UPDATE {table} SET status=status WHERE {predicate}", tenant_id
+                        f"UPDATE {table} SET {assignment} WHERE {predicate}", tenant_id
                     )
                 except asyncpg.LockNotAvailableError:
                     pass
@@ -855,10 +855,25 @@ async def _verify_authority_locks(tenant_id, expected_public_id):
                     pytest.fail("GATE_AUTHORITY_LOCK_NOT_HELD", pytrace=False)
             finally:
                 await contender.execute("ROLLBACK")
+        await contender.execute("BEGIN")
+        try:
+            await contender.execute("SET LOCAL lock_timeout='200ms'")
+            await contender.execute(
+                "UPDATE public.institution_application SET status=status "
+                "WHERE tenant_internal_id=$1",
+                tenant_id,
+            )
+        finally:
+            await contender.execute("ROLLBACK")
         await application.execute("ROLLBACK")
         await contender.execute("BEGIN")
         try:
             await contender.execute("SET LOCAL lock_timeout='200ms'")
+            await contender.execute(
+                "UPDATE public.institution_tenant_origin SET version=version "
+                "WHERE tenant_id=$1",
+                tenant_id,
+            )
             await contender.execute("UPDATE public.tenant SET status=status WHERE id=$1", tenant_id)
             await contender.execute(
                 "UPDATE public.institution_application SET status=status WHERE tenant_internal_id=$1", tenant_id
@@ -1089,7 +1104,7 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         ) for signature in signatures)
 
     config = _build_alembic_config(_get_test_database_url())
-    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043",
+    require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044",
             "GATE_CURRENT_HEAD_INVALID")
     try:
         command.downgrade(config, "20260906_0039")
@@ -1137,5 +1152,5 @@ def test_G10_0039往返只改变闭合函数(pg_database):
         require(function_before == approved_functions(), "GATE_REUPGRADE_FUNCTION_CONTRACT_DRIFT")
     finally:
         command.upgrade(config, "head")
-        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043",
+        require(pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044",
                 "GATE_LATEST_HEAD_RESTORE_FAILED")

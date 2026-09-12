@@ -325,6 +325,14 @@ def test_Fresh原生ACL下登录当前身份与迁移生命周期闭环(monkeypa
                 tenant_id,
                 tenant_public_id,
             )
+            await admin.execute(
+                "INSERT INTO public.institution_tenant_origin("
+                "tenant_id,tenant_public_id,origin_type,controlled_application_id) "
+                "VALUES($1,$2,'CONTROLLED_APPLICATION',$3)",
+                tenant_id,
+                tenant_public_id,
+                application_id,
+            )
             therapist_phone_ciphertext = therapist.encrypt_pii(
                 therapist_phone,
                 field="invitation-phone",

@@ -184,14 +184,14 @@ def _seed_h0_h7(pg_database) -> None:
         INSERT INTO public."user"(
             id,phone,password_hash,real_name,id_card,role,tenant_id,verify_status,status
         ) VALUES
-            (8836001,'rp36h000001','synthetic',NULL,NULL,'member',NULL,'unverified','active'),
-            (8836002,'rp36h000002','synthetic','Synthetic','SYNTHETIC-CARD','member',NULL,'unverified','active'),
-            (8836003,'rp36h000003','synthetic',NULL,NULL,'member',NULL,NULL,'active'),
-            (8836004,'rp36h000004','synthetic','Synthetic','SYNTHETIC-CARD','member',NULL,'verified','active'),
-            (8836005,'rp36h000005','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
-            (8836006,'rp36h000006','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
-            (8836007,'rp36h000007','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
-            (8836008,'rp36h000008','synthetic','Synthetic',NULL,'org_admin',NULL,'unverified','active');
+            (8836001,'19588360001','synthetic',NULL,NULL,'member',NULL,'unverified','active'),
+            (8836002,'19588360002','synthetic','Synthetic','SYNTHETIC-CARD','member',NULL,'unverified','active'),
+            (8836003,'19588360003','synthetic',NULL,NULL,'member',NULL,NULL,'active'),
+            (8836004,'19588360004','synthetic','Synthetic','SYNTHETIC-CARD','member',NULL,'verified','active'),
+            (8836005,'19588360005','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
+            (8836006,'19588360006','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
+            (8836007,'19588360007','synthetic',NULL,NULL,'member',8836001,'unverified','active'),
+            (8836008,'19588360008','synthetic','Synthetic',NULL,'org_admin',NULL,'unverified','active');
         INSERT INTO public.identity_verification_decision(
             decision_ref,user_ref,facts_version,verification_epoch,outcome,
             evidence_digest,actor_type,actor_ref,decided_at
@@ -622,4 +622,4 @@ def test_Z_A2_2_RP_upgrade_downgrade_reupgrade只影响0036对象(pg_database) -
         )
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"

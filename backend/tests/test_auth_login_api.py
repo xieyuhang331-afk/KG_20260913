@@ -134,6 +134,10 @@ class AuthLoginApiTests(unittest.TestCase):
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=None),
             ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
+            ),
             patch("app.modules.auth.service.create_access_token", token_issuer),
         ):
             response = self._client().post(
@@ -156,6 +160,10 @@ class AuthLoginApiTests(unittest.TestCase):
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account(totp_enabled=False)),
             ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
+            ),
             patch("app.modules.auth.service.create_access_token", token_issuer),
         ):
             response = self._client().post(
@@ -177,6 +185,10 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account()),
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
             ),
             patch(
                 "app.modules.institution_onboarding.service.OnboardingSecrets",
@@ -203,6 +215,10 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account()),
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
             ),
             patch(
                 "app.modules.institution_onboarding.service.OnboardingSecrets",
@@ -250,6 +266,37 @@ class AuthLoginApiTests(unittest.TestCase):
         self.assertNotIn("synthetic dependency detail", response.text)
         token_issuer.assert_not_called()
 
+    def test_direct_org_admin_account_dependency_failure_is_redacted_and_fail_closed(self):
+        token_issuer = Mock(return_value="must-not-be-issued")
+        with (
+            patch(
+                "app.modules.auth.service.get_user_by_phone",
+                new=AsyncMock(return_value=self._user(role="org_admin")),
+            ),
+            patch(
+                "app.modules.auth.service.get_onboarding_account_for_login",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(
+                    side_effect=RuntimeError("synthetic direct dependency detail")
+                ),
+            ),
+            patch("app.modules.auth.service.create_access_token", token_issuer),
+        ):
+            response = self._client(raise_server_exceptions=False).post(
+                "/api/v1/auth/login",
+                json={"phone": "13800138001", "password": "Secret12345"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        assert_core_error_response(
+            response, 503, "AUTHENTICATION_UNAVAILABLE", retryable=True
+        )
+        self.assertNotIn("synthetic direct dependency detail", response.text)
+        token_issuer.assert_not_called()
+
     def test_org_admin_secret_failure_is_redacted_and_fail_closed(self):
         token_issuer = Mock(return_value="must-not-be-issued")
         with (
@@ -260,6 +307,10 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account()),
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
             ),
             patch(
                 "app.modules.institution_onboarding.service.OnboardingSecrets",
@@ -292,6 +343,10 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account()),
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
             ),
             patch(
                 "app.modules.institution_onboarding.service.OnboardingSecrets",
@@ -331,6 +386,11 @@ class AuthLoginApiTests(unittest.TestCase):
             patch(
                 "app.modules.auth.service.get_onboarding_account_for_login",
                 new=AsyncMock(return_value=self._org_admin_account()),
+                create=True,
+            ),
+            patch(
+                "app.modules.auth.service.get_direct_org_admin_login_account",
+                new=AsyncMock(return_value=None),
                 create=True,
             ),
             patch(

@@ -92,9 +92,12 @@ async def _seed_ready_institution(
         "INSERT INTO public.institution_application("
         "application_id,invitation_id,applicant_user_id,institution_type,status,draft_payload,correction_fields,"
         "current_revision_no,tenant_internal_id,tenant_public_id,service_ready,created_at,updated_at,submitted_at,reviewed_at,version) VALUES "
-        f"('{application_id}','{invitation_id}',{org_admin_id},'HEALTH_STORE','APPROVED',"
-        "'{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}'::jsonb,'[]'::jsonb,1,"
-            f"{tenant_id},'{tenant_public_id}',false,now(),now(),now(),now(),3)",
+            f"('{application_id}','{invitation_id}',{org_admin_id},'HEALTH_STORE','APPROVED',"
+            "'{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}'::jsonb,'[]'::jsonb,1,"
+            f"{tenant_id},'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+            "INSERT INTO public.institution_tenant_origin(tenant_id,tenant_public_id,origin_type,"
+            "controlled_application_id) VALUES ("
+            f"{tenant_id},'{tenant_public_id}','CONTROLLED_APPLICATION','{application_id}')",
         ),
         (
             "LICENSE_FILE",
@@ -371,6 +374,10 @@ async def _cleanup_slice2_seed(
     await pg_database._execute(
         "DELETE FROM public.private_file WHERE owner_user_id IN "
         f"(SELECT id FROM public.\"user\" WHERE tenant_id={tenant_id})"
+    )
+    await pg_database._execute(
+        "DELETE FROM public.institution_tenant_origin WHERE "
+        f"tenant_id={tenant_id} AND origin_type='CONTROLLED_APPLICATION'"
     )
     await pg_database._execute(
         f"DELETE FROM public.institution_application WHERE tenant_internal_id={tenant_id}"
@@ -800,30 +807,33 @@ def test_0020至0021升级降级再升级及权限残留零(pg_database):
     from conftest import _build_alembic_config, _get_test_database_url
 
     config = _build_alembic_config(_get_test_database_url())
-    command.downgrade(config, "20260816_0020")
-    assert pg_database.fetch_value(
-        "SELECT version_num='20260816_0020' FROM public.alembic_version"
-    )
-    assert pg_database.fetch_value(
-        "SELECT to_regclass('public.therapist_profile') IS NULL"
-    )
-    assert pg_database.fetch_value(
-        "SELECT to_regclass('public.institution_readiness_guard_v1') IS NULL"
-    )
-    assert pg_database.fetch_value(
-        "SELECT to_regprocedure('public.therapist_totp_for_login_v1(bigint)') IS NULL"
-    )
+    try:
+        command.downgrade(config, "20260816_0020")
+        assert pg_database.fetch_value(
+            "SELECT version_num='20260816_0020' FROM public.alembic_version"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regclass('public.therapist_profile') IS NULL"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regclass('public.institution_readiness_guard_v1') IS NULL"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regprocedure('public.therapist_totp_for_login_v1(bigint)') IS NULL"
+        )
 
-    command.upgrade(config, "20260818_0022")
-    assert pg_database.fetch_value(
-        "SELECT version_num='20260818_0022' FROM public.alembic_version"
-    )
-    assert pg_database.fetch_value(
-        "SELECT to_regclass('public.therapist_profile') IS NOT NULL"
-    )
-    assert pg_database.fetch_value(
-        "SELECT to_regclass('public.institution_readiness_guard_v1') IS NOT NULL"
-    )
+        command.upgrade(config, "20260818_0022")
+        assert pg_database.fetch_value(
+            "SELECT version_num='20260818_0022' FROM public.alembic_version"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regclass('public.therapist_profile') IS NOT NULL"
+        )
+        assert pg_database.fetch_value(
+            "SELECT to_regclass('public.institution_readiness_guard_v1') IS NOT NULL"
+        )
+    finally:
+        command.upgrade(config, "head")
 
 
 def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
@@ -889,8 +899,8 @@ def test_role_url_membership误配全部zero_DDL(pg_database, monkeypatch):
     finally:
         if pg_database.fetch_value(
             "SELECT version_num FROM public.alembic_version"
-        ) != "20260818_0022":
-            command.upgrade(config, "20260818_0022")
+        ) != "20260913_0044":
+            command.upgrade(config, "head")
         asyncio.run(admin_execute(f'DROP ROLE IF EXISTS "{external}"'))
 
 

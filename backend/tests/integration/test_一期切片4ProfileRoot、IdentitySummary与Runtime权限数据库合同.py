@@ -113,6 +113,9 @@ async def _seed_case(
         f"'{application_id}','{application_invitation_id}',{issuer_user_id},'HEALTH_STORE','APPROVED',"
         f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
         f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+        "INSERT INTO public.institution_tenant_origin(tenant_id,tenant_public_id,origin_type,"
+        "controlled_application_id) VALUES ("
+        f"{tenant_id},'{tenant_public_id}','CONTROLLED_APPLICATION','{application_id}');"
         "INSERT INTO public.member_service_invitation(invitation_id,tenant_id,mode,phone_ciphertext,"
         "phone_key_id,phone_digest,phone_digest_key_id,phone_masked,code_digest,code_key_id,status,"
         "failed_attempts,expires_at,issued_by,issued_at,accepted_at,revoked_at,version) VALUES ("
@@ -1349,7 +1352,7 @@ def test_PG29_PG31_六身份函数与基础表权限精确隔离(
     slice4_institution_reader_database,
     slice4_identity_authority_database,
 ) -> None:
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
     databases = (
         health_record_writer_database,
         assessment_readiness_writer_database,

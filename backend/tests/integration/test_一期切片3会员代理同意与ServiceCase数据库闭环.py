@@ -88,7 +88,7 @@ def test_0022对象与五身份最小权限(
     member_workflow_worker_database,
     member_enrollment_reader_database,
 ):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
     assert pg_database.fetch_value(
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name=ANY($$%s$$::text[])"
@@ -469,7 +469,7 @@ def test_R3纯P1派生Registry可安全降级并再次升级(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260912_0043"
+    ) == "20260913_0044"
 
 
 def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
@@ -501,7 +501,7 @@ def test_F1非空降级保留revision函数ACL与业务数据(pg_database):
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260912_0043"
+    ) == "20260913_0044"
 
 
 @pytest.mark.asyncio
@@ -780,6 +780,9 @@ async def test_SELF邀请接受使用真实Writer并可由Reader读取(
         f"'{institution_application_id}','{institution_invitation_id}',{user_id},'HEALTH_STORE','APPROVED',"
         f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
         f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+        "INSERT INTO public.institution_tenant_origin(tenant_id,tenant_public_id,origin_type,"
+        "controlled_application_id) VALUES ("
+        f"{tenant_id},'{tenant_public_id}','CONTROLLED_APPLICATION','{institution_application_id}');"
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,"
         "evidence_version,input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("
@@ -2153,6 +2156,9 @@ async def test_PROXY老人仅两个槽位且只创建受控Member(pg_database):
         f"'{institution_application_id}','{institution_invitation_id}',{user_id},'HEALTH_STORE','APPROVED',"
         f"'{{\"service_tags\":[\"GLUCOSE_METABOLISM\"]}}'::jsonb,'[]'::jsonb,1,{tenant_id},"
         f"'{tenant_public_id}',false,now(),now(),now(),now(),3);"
+        "INSERT INTO public.institution_tenant_origin(tenant_id,tenant_public_id,origin_type,"
+        "controlled_application_id) VALUES ("
+        f"{tenant_id},'{tenant_public_id}','CONTROLLED_APPLICATION','{institution_application_id}');"
         "INSERT INTO public.institution_service_readiness("
         "tenant_id,readiness_status,reason_codes,qualified_therapist_count,computed_at,"
         "evidence_version,input_digest,result_digest,source_versions,next_expiry_at,version) VALUES ("

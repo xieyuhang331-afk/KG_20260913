@@ -126,6 +126,19 @@ jobs:
               "KG_IDENTITY_PII_HMAC_KEY_B64": base64.b64encode(secrets.token_bytes(32)).decode(),
               "KG_IDENTITY_PII_KEY_ID": f"ci-{secrets.token_hex(8)}",
           }
+          for prefix, purpose in {
+              "KG_DIRECT_INSTITUTION_PII": "direct-pii",
+              "KG_DIRECT_INSTITUTION_CODE": "direct-code",
+              "KG_DIRECT_INSTITUTION_DIGEST": "direct-digest",
+              "KG_PLATFORM_ADMIN_TOTP": "platform-totp",
+              "KG_ACCOUNT_PHONE_CLAIM_DIGEST": "phone-claim",
+          }.items():
+              key_id = f"ci-{purpose}-{secrets.token_hex(6)}"
+              material = base64.b64encode(secrets.token_bytes(32)).decode()
+              values[f"{prefix}_CURRENT_KEY_ID"] = key_id
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: material}, separators=(",", ":"), sort_keys=True
+              )
           for value in values.values():
               print(f"::add-mask::{value}")
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env_file:
@@ -413,6 +426,21 @@ jobs:
               "KG_CELERY_TEST_RESULT_BACKEND": "rpc",
               **roles,
           }
+          direct_key_materials = {}
+          for prefix, purpose in {
+              "KG_DIRECT_INSTITUTION_PII": "direct-pii",
+              "KG_DIRECT_INSTITUTION_CODE": "direct-code",
+              "KG_DIRECT_INSTITUTION_DIGEST": "direct-digest",
+              "KG_PLATFORM_ADMIN_TOTP": "platform-totp",
+              "KG_ACCOUNT_PHONE_CLAIM_DIGEST": "phone-claim",
+          }.items():
+              key_id = f"ci-{purpose}-{secrets.token_hex(6)}"
+              material = base64.b64encode(secrets.token_bytes(32)).decode()
+              direct_key_materials[prefix] = material
+              values[f"{prefix}_CURRENT_KEY_ID"] = key_id
+              values[f"{prefix}_KEYRING_JSON"] = json.dumps(
+                  {key_id: material}, separators=(",", ":"), sort_keys=True
+              )
           health_fact_keys = {
               "ci-k1": base64.b64encode(secrets.token_bytes(32)).decode(),
               "ci-k2": base64.b64encode(secrets.token_bytes(32)).decode(),
@@ -593,6 +621,7 @@ jobs:
           values["KG_IDENTITY_APPLICATION_DATABASE_URL"] = values[
               "KG_TEST_DATABASE_URL"
           ]
+          values["KG_DATABASE_URL"] = values["KG_TEST_DATABASE_URL"]
           values["KG_VERIFICATION_WRITER_DATABASE_URL"] = values[
               "KG_TEST_VERIFICATION_WRITER_DATABASE_URL"
           ]
@@ -741,6 +770,7 @@ jobs:
               *member_enrollment_key_materials.values(),
               *slice4_key_materials.values(),
               *slice5_key_materials.values(),
+              *direct_key_materials.values(),
           ):
               print(f"::add-mask::{value}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:

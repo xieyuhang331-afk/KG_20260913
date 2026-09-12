@@ -50,7 +50,7 @@ def private_file_writer_database(pg_database):
 
 
 def test_A3_0037字段回填约束与引用authority真实PostgreSQL(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
     columns = set(pg_database.fetch_column(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema='public' AND table_name='private_file'"
@@ -167,7 +167,7 @@ def test_A3_I2_downgrade非静默期拒绝且任何DDL与授权均不变化(pg_d
             command.downgrade(config, "20260903_0036")
         assert pg_database.fetch_value(
             "SELECT version_num FROM alembic_version"
-        ) == "20260912_0043"
+        ) == "20260913_0044"
         assert tuple(pg_database.fetch_column(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema='public' AND table_name='private_file' "
@@ -281,7 +281,7 @@ def test_Z_A3_Migration升级降级重升级不访问文件或修改业务行(pg
             )
     finally:
         command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
     rows = pg_database.fetch_rows(
         "SELECT status,scan_attempt_count,scan_last_error_code,"
         "scan_next_retry_at IS NOT NULL AS retry_scheduled "
@@ -306,6 +306,10 @@ def test_Z_A3_Migration升级降级重升级不访问文件或修改业务行(pg
         "DELETE FROM public.private_file WHERE object_key LIKE 'slice1/a3-history/%'"
     )
     if owner_user_id is not None:
+        pg_database.execute(
+            "DELETE FROM public.identity_phone_claim "
+            f"WHERE user_id={owner_user_id}"
+        )
         pg_database.execute(f'DELETE FROM public."user" WHERE id={owner_user_id}')
     assert pg_database.fetch_value("SELECT count(*) FROM public.private_file") == before
     assert list(Path(tmp_path).iterdir()) == []
