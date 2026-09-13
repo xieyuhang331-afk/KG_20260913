@@ -1,6 +1,7 @@
 name: P2 Foundation CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
