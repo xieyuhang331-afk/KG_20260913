@@ -12,7 +12,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 TARGET = BACKEND_ROOT / "app" / "modules" / "member_enrollment" / "api.py"
 RUFF_TARGET_RULES = {"E701", "E702", "F401", "F841", "I001", "UP017"}
 EXPECTED_ROUTE_SIGNATURE_SHA256 = (
-    "4AB1D778D5C65FC482E9444B7C2A71D692B2659FE1C07C09B409C13B0999CEF2"
+    "B16093E743AA0A114493AB7F6C08CE318A9B24D290D6F3B2CBD41A9233F88377"
 )
 
 
@@ -45,9 +45,9 @@ def test_D2_1非B008静态债务必须归零且不得以抑制绕过() -> None:
     assert remaining == {}, f"D2_1_NON_B008_DEBT_REMAINS:{remaining}"
 
 
-def test_D2_2已改造身份同意审核依赖且保留剩余B008范围() -> None:
+def test_D2_3全部依赖完成等价迁移且B008归零() -> None:
     counts = Counter(str(item["code"]) for item in _ruff_diagnostics())
-    assert counts["B008"] == 50, "D2_2_B008_SCOPE_DRIFT"
+    assert counts["B008"] == 0, "D2_3_B008_REMAINS"
 
 
 def test_D2_1路由装饰器签名默认值与返回注解保持冻结() -> None:
