@@ -190,6 +190,90 @@ def test_0045在DDL前解析非空账号手机号并原子建立全局claim(pg_d
             asyncio.run(_cleanup(_get_test_database_url(), values))
 
 
+def test_0045平台管理员安全档案单独非空时降级在首个DDL前拒绝(pg_database) -> None:
+    config = _build_alembic_config(_get_test_database_url())
+    user_id = 9945010
+    phone = "13900005010"
+    blocked_business_data = """
+SELECT EXISTS(
+  SELECT 1 FROM public.direct_institution_onboarding
+  UNION ALL SELECT 1 FROM public.identity_phone_claim WHERE claim_kind<>'EXISTING_USER'
+  UNION ALL SELECT 1 FROM public.direct_institution_compliance_revision
+  UNION ALL SELECT 1 FROM public.institution_admin_handoff
+  UNION ALL SELECT 1 FROM public.institution_admin_handoff_credential
+  UNION ALL SELECT 1 FROM public.direct_onboarding_receipt
+  UNION ALL SELECT 1 FROM public.direct_onboarding_audit
+  UNION ALL SELECT 1 FROM public.direct_onboarding_outbox
+)
+"""
+    pg_database.execute(
+        'INSERT INTO public."user"(id,phone,password_hash,role,status,tenant_id) '
+        f"VALUES({user_id},'{phone}','synthetic','super_admin','active',NULL)"
+    )
+    pg_database.execute(
+        "INSERT INTO public.platform_admin_security_profile("
+        "user_id,secret_ciphertext,key_id,enabled,profile_version,failed_attempts,"
+        "locked_until,last_accepted_time_step) "
+        f"VALUES({user_id},decode(repeat('ab',32),'hex'),'synthetic-profile-key',"
+        "true,3,2,statement_timestamp()+interval '1 minute',123456)"
+    )
+    try:
+        assert pg_database.fetch_value(blocked_business_data) is False
+        assert pg_database.fetch_value(
+            "SELECT count(*) FROM public.platform_admin_security_profile "
+            f"WHERE user_id={user_id}"
+        ) == 1
+        profile_fingerprint = pg_database.fetch_value(
+            "SELECT md5(profile::text) FROM public.platform_admin_security_profile AS profile "
+            f"WHERE user_id={user_id}"
+        )
+        table_acl = pg_database.fetch_value(
+            "SELECT coalesce(relacl::text,'') FROM pg_class "
+            "WHERE oid='public.platform_admin_security_profile'::regclass"
+        )
+        function_acl = pg_database.fetch_value(
+            "SELECT md5(oid::regprocedure::text || coalesce(proacl::text,'')) "
+            "FROM pg_proc WHERE oid=to_regprocedure('public.direct_institution_create_v1(jsonb)')"
+        )
+
+        with pytest.raises(RuntimeError, match="DIRECT_ONBOARDING_DOWNGRADE_NONEMPTY"):
+            command.downgrade(config, "20260913_0044")
+
+        assert pg_database.fetch_value(
+            "SELECT version_num FROM alembic_version"
+        ) == "20260913_0045"
+        assert pg_database.fetch_value(
+            "SELECT md5(profile::text) FROM public.platform_admin_security_profile AS profile "
+            f"WHERE user_id={user_id}"
+        ) == profile_fingerprint
+        assert pg_database.fetch_value(
+            "SELECT coalesce(relacl::text,'') FROM pg_class "
+            "WHERE oid='public.platform_admin_security_profile'::regclass"
+        ) == table_acl
+        assert pg_database.fetch_value(
+            "SELECT md5(oid::regprocedure::text || coalesce(proacl::text,'')) "
+            "FROM pg_proc WHERE oid=to_regprocedure('public.direct_institution_create_v1(jsonb)')"
+        ) == function_acl
+    finally:
+        if pg_database.fetch_value("SELECT version_num FROM alembic_version") != "20260913_0045":
+            command.upgrade(config, "20260913_0045")
+        pg_database.execute(
+            "DELETE FROM public.platform_admin_security_profile "
+            f"WHERE user_id={user_id}"
+        )
+        pg_database.execute(
+            "DELETE FROM public.identity_phone_claim "
+            f"WHERE user_id={user_id} AND claim_kind='EXISTING_USER'"
+        )
+        pg_database.execute(f'DELETE FROM public."user" WHERE id={user_id}')
+
+    assert pg_database.fetch_value(blocked_business_data) is False
+    command.downgrade(config, "20260913_0044")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    command.upgrade(config, "20260913_0045")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
+
+
 def test_0045下游Runtime只能经既有外层受限入口使用机构来源权威(pg_database) -> None:
     runtime_roles = (
         os.environ["KG_HEALTH_RECORD_WRITER_ROLE"],

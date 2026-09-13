@@ -165,6 +165,15 @@ def test_0045降级先删除管理员账户再删除其凭证父表() -> None:
     )
 
 
+def test_0045降级非空门禁包含独立平台管理员安全档案() -> None:
+    source = _source()
+    downgrade = source.split("def downgrade() -> None:", 1)[1]
+    preflight = downgrade.split("if nonempty:", 1)[0]
+
+    assert "FROM public.platform_admin_security_profile" in preflight
+    assert "DIRECT_ONBOARDING_DOWNGRADE_NONEMPTY" in downgrade
+
+
 def test_0045当前机构管理员合规读取不接受客户端Tenant选址() -> None:
     source = _source()
     body = source.split("CREATE FUNCTION public.direct_compliance_current_v1(", 1)[1].split(

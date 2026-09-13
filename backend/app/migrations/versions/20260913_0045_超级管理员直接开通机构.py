@@ -6442,6 +6442,7 @@ def downgrade() -> None:
     nonempty = connection.execute(sa.text("""
 SELECT EXISTS(
   SELECT 1 FROM public.direct_institution_onboarding
+  UNION ALL SELECT 1 FROM public.platform_admin_security_profile
   UNION ALL SELECT 1 FROM public.identity_phone_claim WHERE claim_kind<>'EXISTING_USER'
   UNION ALL SELECT 1 FROM public.direct_institution_compliance_revision
   UNION ALL SELECT 1 FROM public.institution_admin_handoff
