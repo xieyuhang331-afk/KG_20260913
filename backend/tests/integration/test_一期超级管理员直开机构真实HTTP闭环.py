@@ -32,6 +32,7 @@ from app.modules.direct_institution_onboarding.service import (
     build_direct_create_mutation,
     credential_digest_candidates,
     direct_activation_request_digest_candidates,
+    encode_direct_onboarding_cursor,
     platform_admin_totp_aad,
     seal_totp_secret,
 )
@@ -91,6 +92,16 @@ async def _totp_mutation_state(connection) -> tuple[str, ...]:
             )
         )
     return tuple(state)
+
+
+async def _current_direct_mutation_state() -> tuple[str, ...]:
+    connection = await asyncpg.connect(
+        _to_asyncpg_dsn(os.environ["KG_TEST_ROLE_ADMIN_DATABASE_URL"])
+    )
+    try:
+        return await _totp_mutation_state(connection)
+    finally:
+        await connection.close()
 
 
 def _seed_super_admin_and_region(
@@ -480,6 +491,183 @@ def test_正式ReviewWriter创建直开机构并由新事务确认(pg_database) 
     ) == 1
 
 
+def test_N1_十一条受保护路由统一拒绝未认证与越权角色且业务状态不变(
+    real_db_client, pg_database
+) -> None:
+    super_admin_id = 9_944_400_801
+    member_id = 9_944_400_802
+    pg_database.execute(
+        'INSERT INTO public."user"(id,phone,password_hash,role,status,tenant_id) VALUES '
+        f"({super_admin_id},'13900004801','synthetic','super_admin','active',NULL),"
+        f"({member_id},'13900004802','synthetic','member','active',NULL);"
+    )
+    super_admin_token = create_access_token(
+        {"sub": str(super_admin_id), "role": "super_admin"}
+    )
+    member_token = create_access_token({"sub": str(member_id), "role": "member"})
+    onboarding_id = "01900000-0000-7000-8000-000000000801"
+    revision_id = "01900000-0000-7000-8000-000000000802"
+    handoff_id = "01900000-0000-7000-8000-000000000803"
+    common_headers = {"Idempotency-Key": "synthetic-n1-auth-boundary-0045"}
+    versioned = {
+        "expected_version": 1,
+        "totp_code": "000000",
+        "reason_code": "SYNTHETIC_AUTH_BOUNDARY",
+    }
+    compliance = {
+        "expected_version": 1,
+        "institution_name": "合成认证边界机构",
+        "institution_type": "HEALTH_STORE",
+        "administrative_region_id": 1,
+        "institution_code": "SYNTHETIC-N1",
+        "legal_representative_name": "合成代表人",
+        "unified_social_credit_code": "91330000SYNTHN1",
+        "contact_name": "合成联系人",
+        "contact_phone": "13900004803",
+        "address": "合成地址",
+        "service_tags": ["HYPERTENSION"],
+        "licenses": [
+            {
+                "license_id": "01900000-0000-7000-8000-000000000804",
+                "license_type": "BUSINESS_LICENSE",
+                "license_no": "SYNTHETIC-N1-LICENSE",
+                "private_file_id": "01900000-0000-7000-8000-000000000805",
+                "valid_from": "2026-01-01",
+                "valid_until": "2027-01-01",
+            }
+        ],
+    }
+    protected_routes = (
+        (
+            "post",
+            "/api/v1/platform/direct-institution-onboardings",
+            {
+                "institution_name": "合成认证边界机构",
+                "institution_type": "HEALTH_STORE",
+                "admin_phone": "13900004803",
+                "administrative_region_id": 1,
+                "duplicate_acknowledged": False,
+                "reason_code": "SYNTHETIC_AUTH_BOUNDARY",
+                "totp_code": "000000",
+            },
+            member_token,
+            True,
+        ),
+        ("get", "/api/v1/platform/direct-institution-onboardings", None, member_token, False),
+        (
+            "get",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}",
+            None,
+            member_token,
+            False,
+        ),
+        (
+            "post",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}"
+            "/activation-credential:regenerate",
+            versioned,
+            member_token,
+            True,
+        ),
+        (
+            "post",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}:revoke",
+            versioned,
+            member_token,
+            True,
+        ),
+        (
+            "get",
+            "/api/v1/institution-onboarding/direct-compliance",
+            None,
+            super_admin_token,
+            False,
+        ),
+        (
+            "put",
+            "/api/v1/institution-onboarding/direct-compliance",
+            compliance,
+            super_admin_token,
+            True,
+        ),
+        (
+            "post",
+            "/api/v1/institution-onboarding/direct-compliance:submit",
+            compliance,
+            super_admin_token,
+            True,
+        ),
+        (
+            "post",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}"
+            "/compliance-decision",
+            {
+                "expected_version": 1,
+                "revision_id": revision_id,
+                "decision": "APPROVE",
+                "reason_code": "SYNTHETIC_AUTH_BOUNDARY",
+                "correction_fields": [],
+                "totp_code": "000000",
+            },
+            member_token,
+            True,
+        ),
+        (
+            "post",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}"
+            "/admin-handoffs",
+            {
+                "new_phone": "13900004804",
+                **versioned,
+            },
+            member_token,
+            True,
+        ),
+        (
+            "post",
+            f"/api/v1/platform/direct-institution-onboardings/{onboarding_id}"
+            f"/admin-handoffs/{handoff_id}:regenerate",
+            versioned,
+            member_token,
+            True,
+        ),
+    )
+    before = asyncio.run(_current_direct_mutation_state())
+    for method, path, payload, forbidden_token, needs_idempotency in protected_routes:
+        request_headers = common_headers if needs_idempotency else {}
+        missing = real_db_client.request(
+            method, path, headers=request_headers, json=payload
+        )
+        malformed = real_db_client.request(
+            method,
+            path,
+            headers={**request_headers, "Authorization": "Bearer malformed"},
+            json=payload,
+        )
+        forbidden = real_db_client.request(
+            method,
+            path,
+            headers={
+                **request_headers,
+                "Authorization": f"Bearer {forbidden_token}",
+            },
+            json=payload,
+        )
+        assert (missing.status_code, missing.json()["code"]) == (
+            401,
+            "UNAUTHENTICATED",
+        )
+        assert (malformed.status_code, malformed.json()["code"]) == (
+            401,
+            "UNAUTHENTICATED",
+        )
+        assert (forbidden.status_code, forbidden.json()["code"]) == (
+            403,
+            "ROLE_FORBIDDEN",
+        )
+    assert asyncio.run(_current_direct_mutation_state()) == before
+
+
 def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重复副作用(
     real_db_client, pg_database, monkeypatch
 ) -> None:
@@ -591,6 +779,43 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
     assert listed["next_cursor"] is None
     assert detail_response.status_code == 200
     assert detail_response.json() == expected_public
+    actor_bound_cursor = encode_direct_onboarding_cursor(
+        UUID(created["onboarding_id"]),
+        ceiling_id=UUID(created["onboarding_id"]),
+        actor_user_id=actor_user_id,
+        status=None,
+    )
+    valid_cursor_response = real_db_client.get(
+        "/api/v1/platform/direct-institution-onboardings",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"cursor": actor_bound_cursor, "limit": 1},
+    )
+    foreign_actor_cursor = encode_direct_onboarding_cursor(
+        UUID(created["onboarding_id"]),
+        ceiling_id=UUID(created["onboarding_id"]),
+        actor_user_id=actor_user_id + 1,
+        status=None,
+    )
+    rejected_foreign_cursor = real_db_client.get(
+        "/api/v1/platform/direct-institution-onboardings",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"cursor": foreign_actor_cursor, "limit": 1},
+    )
+    rejected_tampered_cursor = real_db_client.get(
+        "/api/v1/platform/direct-institution-onboardings",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"cursor": actor_bound_cursor[:-1] + "A", "limit": 1},
+    )
+    assert valid_cursor_response.status_code == 200
+    assert valid_cursor_response.json() == {"items": [], "next_cursor": None}
+    assert (
+        rejected_foreign_cursor.status_code,
+        rejected_foreign_cursor.json()["code"],
+    ) == (422, "INVALID_REQUEST")
+    assert (
+        rejected_tampered_cursor.status_code,
+        rejected_tampered_cursor.json()["code"],
+    ) == (422, "INVALID_REQUEST")
     assert replay.status_code == 409
     assert replay.json()["code"] == "ONE_TIME_CREDENTIAL_ALREADY_ISSUED"
     assert conflicting_replay.status_code == 409
@@ -631,6 +856,34 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
         ),
         "reason_code": "SYNTHETIC_REGENERATE",
     }
+    before_regenerate_rejections = asyncio.run(_current_direct_mutation_state())
+    missing_regenerate = real_db_client.post(
+        "/api/v1/platform/direct-institution-onboardings/"
+        "01900000-0000-7000-8000-000000000899/activation-credential:regenerate",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Idempotency-Key": "synthetic-direct-regenerate-missing-0045",
+        },
+        json=regenerate_payload,
+    )
+    stale_regenerate = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        "/activation-credential:regenerate",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Idempotency-Key": "synthetic-direct-regenerate-stale-0045",
+        },
+        json={**regenerate_payload, "expected_version": 99},
+    )
+    assert (
+        missing_regenerate.status_code,
+        missing_regenerate.json()["code"],
+    ) == (404, "DIRECT_ONBOARDING_NOT_FOUND")
+    assert (
+        stale_regenerate.status_code,
+        stale_regenerate.json()["code"],
+    ) == (409, "STALE_VERSION")
+    assert asyncio.run(_current_direct_mutation_state()) == before_regenerate_rejections
     regenerated = real_db_client.post(
         f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
         "/activation-credential:regenerate",
@@ -797,6 +1050,37 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
         "correction_fields": [],
         "totp_code": generate_totp(reviewer_totp_secret, at=datetime.now(UTC)),
     }
+    before_decision_rejections = asyncio.run(_current_direct_mutation_state())
+    wrong_revision_decision = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        "/compliance-decision",
+        headers={
+            "Authorization": f"Bearer {reviewer_token}",
+            "Idempotency-Key": "synthetic-direct-decision-revision-0045",
+        },
+        json={
+            **decision_payload,
+            "revision_id": "01900000-0000-7000-8000-000000000898",
+        },
+    )
+    stale_decision = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        "/compliance-decision",
+        headers={
+            "Authorization": f"Bearer {reviewer_token}",
+            "Idempotency-Key": "synthetic-direct-decision-stale-0045",
+        },
+        json={**decision_payload, "expected_version": 99},
+    )
+    assert (
+        wrong_revision_decision.status_code,
+        wrong_revision_decision.json()["code"],
+    ) == (409, "DIRECT_ONBOARDING_STATE_CONFLICT")
+    assert (stale_decision.status_code, stale_decision.json()["code"]) == (
+        409,
+        "STALE_VERSION",
+    )
+    assert asyncio.run(_current_direct_mutation_state()) == before_decision_rejections
     decision = real_db_client.post(
         f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
         "/compliance-decision",
@@ -836,27 +1120,64 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
         "WHERE event_type='DIRECT_COMPLIANCE_DECIDED'"
     ) == 1
 
+    handoff_create_headers = {
+        "Authorization": f"Bearer {reviewer_token}",
+        "Idempotency-Key": "synthetic-admin-handoff-create-0044",
+    }
+    handoff_create_payload = {
+        "new_phone": "13900004414",
+        "expected_version": 6,
+        "reason_code": "SYNTHETIC_ADMIN_HANDOFF",
+        "totp_code": generate_totp(
+            reviewer_totp_secret, at=datetime.now(UTC) + timedelta(seconds=30)
+        ),
+    }
     handoff_response = real_db_client.post(
         f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
         "/admin-handoffs",
-        headers={
-            "Authorization": f"Bearer {reviewer_token}",
-            "Idempotency-Key": "synthetic-admin-handoff-create-0044",
-        },
-        json={
-            "new_phone": "13900004414",
-            "expected_version": 6,
-            "reason_code": "SYNTHETIC_ADMIN_HANDOFF",
-            "totp_code": generate_totp(
-                reviewer_totp_secret, at=datetime.now(UTC) + timedelta(seconds=30)
-            ),
-        },
+        headers=handoff_create_headers,
+        json=handoff_create_payload,
     )
     assert handoff_response.status_code == 201
     assert handoff_response.headers["cache-control"] == "no-store"
     handoff = handoff_response.json()
     assert handoff["status"] == "ISSUED"
     assert handoff["version"] == 1
+    handoff_create_replay = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        "/admin-handoffs",
+        headers=handoff_create_headers,
+        json=handoff_create_payload,
+    )
+    assert (
+        handoff_create_replay.status_code,
+        handoff_create_replay.json()["code"],
+    ) == (409, "ONE_TIME_CREDENTIAL_ALREADY_ISSUED")
+
+    handoff_activation_payload = {
+        "onboarding_id": created["onboarding_id"],
+        "handoff_id": handoff["handoff_id"],
+        "credential_id": handoff["credential_id"],
+        "activation_code": handoff["activation_code"],
+        "phone": "13900004414",
+        "password": "Synthetic-handoff-password-0044!",
+        "totp_secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        "totp_code": generate_totp(
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", at=datetime.now(UTC)
+        ),
+        "expected_version": 1,
+    }
+    before_tampered_handoff = asyncio.run(_current_direct_mutation_state())
+    tampered_handoff = real_db_client.post(
+        "/api/v1/institution-onboarding/admin-handoffs/activate",
+        headers={"Idempotency-Key": "synthetic-admin-handoff-tampered-0045"},
+        json={**handoff_activation_payload, "activation_code": "x" * 32},
+    )
+    assert (
+        tampered_handoff.status_code,
+        tampered_handoff.json()["code"],
+    ) == (409, "DIRECT_ONBOARDING_STATE_CONFLICT")
+    assert asyncio.run(_current_direct_mutation_state()) == before_tampered_handoff
 
     regenerate_reviewer_id = 9_944_401_003
     regenerate_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -874,18 +1195,44 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
     regenerate_token = create_access_token(
         {"sub": str(regenerate_reviewer_id), "role": "super_admin"}
     )
+    current_root_version = real_db_client.get(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}",
+        headers={"Authorization": f"Bearer {regenerate_token}"},
+    ).json()["version"]
+    before_conflicting_handoff = asyncio.run(_current_direct_mutation_state())
+    conflicting_handoff = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        "/admin-handoffs",
+        headers={
+            "Authorization": f"Bearer {regenerate_token}",
+            "Idempotency-Key": "synthetic-admin-handoff-conflict-0045",
+        },
+        json={
+            "new_phone": "13900004806",
+            "expected_version": current_root_version,
+            "reason_code": "SYNTHETIC_STATE_BOUNDARY",
+            "totp_code": generate_totp(regenerate_secret, at=datetime.now(UTC)),
+        },
+    )
+    assert (
+        conflicting_handoff.status_code,
+        conflicting_handoff.json()["code"],
+    ) == (409, "DIRECT_ONBOARDING_STATE_CONFLICT")
+    assert asyncio.run(_current_direct_mutation_state()) == before_conflicting_handoff
+    handoff_regenerate_headers = {
+        "Authorization": f"Bearer {regenerate_token}",
+        "Idempotency-Key": "synthetic-admin-handoff-regenerate-0044",
+    }
+    handoff_regenerate_payload = {
+        "expected_version": 1,
+        "reason_code": "SYNTHETIC_ADMIN_HANDOFF_REGENERATE",
+        "totp_code": generate_totp(regenerate_secret, at=datetime.now(UTC)),
+    }
     regenerate_response = real_db_client.post(
         f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
         f"/admin-handoffs/{handoff['handoff_id']}:regenerate",
-        headers={
-            "Authorization": f"Bearer {regenerate_token}",
-            "Idempotency-Key": "synthetic-admin-handoff-regenerate-0044",
-        },
-        json={
-            "expected_version": 1,
-            "reason_code": "SYNTHETIC_ADMIN_HANDOFF_REGENERATE",
-            "totp_code": generate_totp(regenerate_secret, at=datetime.now(UTC)),
-        },
+        headers=handoff_regenerate_headers,
+        json=handoff_regenerate_payload,
     )
     assert regenerate_response.status_code == 201
     assert regenerate_response.headers["cache-control"] == "no-store"
@@ -893,6 +1240,57 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
     assert regenerated["handoff_id"] == handoff["handoff_id"]
     assert regenerated["credential_id"] != handoff["credential_id"]
     assert regenerated["version"] == 2
+    handoff_regenerate_replay = real_db_client.post(
+        f"/api/v1/platform/direct-institution-onboardings/{created['onboarding_id']}"
+        f"/admin-handoffs/{handoff['handoff_id']}:regenerate",
+        headers=handoff_regenerate_headers,
+        json=handoff_regenerate_payload,
+    )
+    assert (
+        handoff_regenerate_replay.status_code,
+        handoff_regenerate_replay.json()["code"],
+    ) == (409, "ONE_TIME_CREDENTIAL_ALREADY_ISSUED")
+
+    before_invalidated_handoff = asyncio.run(_current_direct_mutation_state())
+    invalidated_handoff = real_db_client.post(
+        "/api/v1/institution-onboarding/admin-handoffs/activate",
+        headers={"Idempotency-Key": "synthetic-admin-handoff-invalidated-0045"},
+        json=handoff_activation_payload,
+    )
+    assert (
+        invalidated_handoff.status_code,
+        invalidated_handoff.json()["code"],
+    ) == (409, "DIRECT_ONBOARDING_STATE_CONFLICT")
+    assert asyncio.run(_current_direct_mutation_state()) == before_invalidated_handoff
+
+    pg_database.execute(
+        "UPDATE public.institution_admin_handoff_credential "
+        "SET issued_at=now()-interval '2 seconds',"
+        "expires_at=now()-interval '1 second' "
+        f"WHERE credential_id='{regenerated['credential_id']}';"
+    )
+    expired_handoff_payload = {
+        **handoff_activation_payload,
+        "credential_id": regenerated["credential_id"],
+        "activation_code": regenerated["activation_code"],
+        "expected_version": 2,
+    }
+    before_expired_handoff = asyncio.run(_current_direct_mutation_state())
+    expired_handoff = real_db_client.post(
+        "/api/v1/institution-onboarding/admin-handoffs/activate",
+        headers={"Idempotency-Key": "synthetic-admin-handoff-expired-0045"},
+        json=expired_handoff_payload,
+    )
+    assert (expired_handoff.status_code, expired_handoff.json()["code"]) == (
+        409,
+        "DIRECT_ONBOARDING_STATE_CONFLICT",
+    )
+    assert asyncio.run(_current_direct_mutation_state()) == before_expired_handoff
+    pg_database.execute(
+        "UPDATE public.institution_admin_handoff_credential "
+        "SET issued_at=now(),expires_at=now()+interval '1 day' "
+        f"WHERE credential_id='{regenerated['credential_id']}';"
+    )
 
     revoke_reviewer_id = 9_944_401_004
     revoke_key_id, revoke_ciphertext = seal_totp_secret(
@@ -1004,20 +1402,14 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
     )
 
     handoff_totp_secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    successful_handoff_payload = {
+        **expired_handoff_payload,
+        "totp_code": generate_totp(handoff_totp_secret, at=datetime.now(UTC)),
+    }
     handoff_activation = real_db_client.post(
         "/api/v1/institution-onboarding/admin-handoffs/activate",
         headers={"Idempotency-Key": "synthetic-admin-handoff-activate-0044"},
-        json={
-            "onboarding_id": created["onboarding_id"],
-            "handoff_id": regenerated["handoff_id"],
-            "credential_id": regenerated["credential_id"],
-            "activation_code": regenerated["activation_code"],
-            "phone": "13900004414",
-            "password": "Synthetic-handoff-password-0044!",
-            "totp_secret": handoff_totp_secret,
-            "totp_code": generate_totp(handoff_totp_secret, at=datetime.now(UTC)),
-            "expected_version": 2,
-        },
+        json=successful_handoff_payload,
     )
     assert handoff_activation.status_code == 200
     assert handoff_activation.json()["status"] == "ACTIVATED"
@@ -1031,20 +1423,17 @@ def test_真实ASGI超级管理员创建201且一次性凭据重放拒绝无重�
     handoff_replay = real_db_client.post(
         "/api/v1/institution-onboarding/admin-handoffs/activate",
         headers={"Idempotency-Key": "synthetic-admin-handoff-activate-0044"},
-        json={
-            "onboarding_id": created["onboarding_id"],
-            "handoff_id": regenerated["handoff_id"],
-            "credential_id": regenerated["credential_id"],
-            "activation_code": regenerated["activation_code"],
-            "phone": "13900004414",
-            "password": "Synthetic-handoff-password-0044!",
-            "totp_secret": handoff_totp_secret,
-            "totp_code": generate_totp(handoff_totp_secret, at=datetime.now(UTC)),
-            "expected_version": 2,
-        },
+        json=successful_handoff_payload,
     )
     assert handoff_replay.status_code == 200
     assert handoff_replay.json() == handoff_activation.json()
+    stale_org_admin = real_db_client.get(
+        "/api/v1/institution-onboarding/direct-compliance", headers=org_headers
+    )
+    assert (stale_org_admin.status_code, stale_org_admin.json()["code"]) == (
+        401,
+        "UNAUTHENTICATED",
+    )
     assert pg_database.fetch_value(
         "SELECT count(*) FROM public.direct_onboarding_audit "
         "WHERE action IN ('ADMIN_HANDOFF_CREATE','ADMIN_HANDOFF_REGENERATE','ADMIN_HANDOFF_ACTIVATE')"
