@@ -580,6 +580,7 @@ def test_C2_3_R10_依赖合并后CI只保留正式Base触发() -> None:
     )
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
-    assert set(workflow["on"]) == {"push", "pull_request"}
+    assert set(workflow["on"]) == {"push", "pull_request", "workflow_dispatch"}
     assert workflow["on"]["push"]["branches"] == ["main", "develop"]
     assert workflow["on"]["pull_request"]["branches"] == ["main", "develop"]
+    assert workflow["on"]["workflow_dispatch"] == ""
