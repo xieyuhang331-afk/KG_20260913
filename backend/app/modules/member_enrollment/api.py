@@ -1141,7 +1141,7 @@ async def family_enrollment(enrollment_id:UuidV7,actor:CurrentUser=Depends(get_c
 
 
 @family_router.put("/member-enrollments/{enrollment_id}/identity-submission", response_model=IdentityStatusDTO)
-async def identity_submission(enrollment_id:UuidV7,payload:IdentitySubmissionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def identity_submission(enrollment_id:UuidV7,payload:IdentitySubmissionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     repo=MemberEnrollmentRepository(session)
     enrollment=await repo.enrollment_for_update(enrollment_id)
     if enrollment is None:
@@ -1162,7 +1162,7 @@ async def identity_submission(enrollment_id:UuidV7,payload:IdentitySubmissionReq
 
 
 @family_router.post("/member-enrollments/{enrollment_id}/identity-resubmit", response_model=IdentityStatusDTO)
-async def identity_resubmit(enrollment_id:UuidV7,payload:IdentityResubmitRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def identity_resubmit(enrollment_id:UuidV7,payload:IdentityResubmitRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     repo=MemberEnrollmentRepository(session)
     enrollment=await repo.enrollment_for_update(enrollment_id)
     if enrollment is None:
@@ -1183,7 +1183,7 @@ async def identity_resubmit(enrollment_id:UuidV7,payload:IdentityResubmitRequest
 
 
 @family_router.get("/member-enrollments/{enrollment_id}/consent-presentations", response_model=ConsentPresentationListDTO)
-async def consent_presentations(enrollment_id:UuidV7,locale:str,document_types:list[str]=Query(),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def consent_presentations(enrollment_id:UuidV7,locale:str,document_types:Annotated[list[str],Query()],actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     member_id=await _member_for_actor(authority,actor)
     repo=MemberEnrollmentRepository(session)
     enrollment=await repo.enrollment_for_update(enrollment_id)
@@ -1196,7 +1196,7 @@ async def consent_presentations(enrollment_id:UuidV7,locale:str,document_types:l
 
 
 @family_router.post("/member-enrollments/{enrollment_id}/consent-records", response_model=ConsentRecordDTO,status_code=201)
-async def consent_record(enrollment_id:UuidV7,payload:RecordConsentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def consent_record(enrollment_id:UuidV7,payload:RecordConsentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     member_id=await _member_for_actor(authority,actor)
     repo=MemberEnrollmentRepository(session)
     enrollment=await repo.enrollment_for_update(enrollment_id)
@@ -1220,7 +1220,7 @@ async def consent_record(enrollment_id:UuidV7,payload:RecordConsentRequest,reque
 
 
 @family_router.post("/consent-records/{consent_record_id}/withdraw", response_model=ConsentRecordDTO)
-async def withdraw_consent(consent_record_id:UuidV7,payload:ConsentWithdrawRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def withdraw_consent(consent_record_id:UuidV7,payload:ConsentWithdrawRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     repo=MemberEnrollmentRepository(session)
     row=await repo.consent_for_update(consent_record_id)
     if row is None:
@@ -1240,7 +1240,7 @@ async def withdraw_consent(consent_record_id:UuidV7,payload:ConsentWithdrawReque
 
 
 @family_router.post("/proxy-grants/{grant_id}/revoke", response_model=ProxyGrantDTO)
-async def revoke_proxy(grant_id:UuidV7,payload:ProxyRevokeRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def revoke_proxy(grant_id:UuidV7,payload:ProxyRevokeRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     repo=MemberEnrollmentRepository(session)
     row=await repo.proxy_grant_for_update(grant_id)
     if row is None:
@@ -1261,7 +1261,7 @@ async def revoke_proxy(grant_id:UuidV7,payload:ProxyRevokeRequest,request:Reques
 
 
 @platform_router.get("/member-identity-reviews", response_model=IdentityReviewPageDTO)
-async def identity_reviews(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),authority=Depends(get_db_session)):
+async def identity_reviews(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],authority:Annotated[object,Depends(get_db_session)],status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
     await _current_reviewer(authority,actor)
     async with (await get_slice3_session_factory("identity_review_writer"))() as session:
         predicates={}
@@ -1272,7 +1272,7 @@ async def identity_reviews(status:str|None=None,cursor:str|None=None,limit:int=Q
 
 
 @platform_router.get("/member-identity-reviews/{review_id}", response_model=IdentityReviewDetailDTO)
-async def identity_review(review_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
+async def identity_review(review_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     await _current_reviewer(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
@@ -1281,7 +1281,7 @@ async def identity_review(review_id:UuidV7,actor:CurrentUser=Depends(get_current
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/claim", response_model=IdentityReviewDetailDTO)
-async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     await _current_reviewer(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
@@ -1299,7 +1299,7 @@ async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,k
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/pii-access", response_model=IdentityPiiDTO)
-async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,response:Response,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,response:Response,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     reviewer=await _current_reviewer(authority,actor)
     repo=MemberEnrollmentRepository(session)
     rows=await _safe(repo.safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
@@ -1334,7 +1334,7 @@ async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,r
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/decision", response_model=IdentityStatusDTO)
-async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     reviewer=await _current_reviewer(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
@@ -1356,7 +1356,7 @@ async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionReq
 
 
 @platform_router.post("/consent-documents", response_model=ConsentDocumentDTO,status_code=201)
-async def create_document(payload:CreateConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
+async def create_document(payload:CreateConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     await _current_reviewer(authority,actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload)
@@ -1371,7 +1371,7 @@ async def create_document(payload:CreateConsentDocumentRequest,request:Request,k
 
 
 @platform_router.post("/consent-documents/{document_version_id}/publish", response_model=ConsentDocumentDTO)
-async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
+async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     await _current_reviewer(authority,actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload,document_version_id)
@@ -1386,7 +1386,7 @@ async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocu
 
 
 @platform_router.post("/consent-documents/{document_version_id}/retire", response_model=ConsentDocumentDTO)
-async def retire_document(document_version_id:UuidV7,payload:ConsentRetireRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
+async def retire_document(document_version_id:UuidV7,payload:ConsentRetireRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     await _current_reviewer(authority,actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload,document_version_id)
