@@ -2,11 +2,26 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.core.sqlalchemy_mapping import build_sqlalchemy_table
+from app.modules.system.models import PLATFORM_ORG_TABLE
+
+build_sqlalchemy_table(PLATFORM_ORG_TABLE)
 
 
 class InstitutionInvitationModel(Base):
