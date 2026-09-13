@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -25,46 +25,40 @@ from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
 from app.core.接口合同 import error_response
 from app.modules.auth.service import verify_password
-from app.modules.member_enrollment.domain import (
-    InvitationAttemptRejected,
-    MemberEnrollmentConflict,
-)
+from app.modules.member_enrollment.domain import InvitationAttemptRejected
 from app.modules.member_enrollment.identity_authority import (
     verified_adult_eligibility_for_update,
 )
 from app.modules.member_enrollment.repository import MemberEnrollmentRepository
 from app.modules.member_enrollment.schemas import (
     AcceptEnrollmentRequest,
-    AssignmentDTO,
     AssignmentCancelRequest,
     AssignmentDeclineRequest,
     AssignmentDetailDTO,
+    AssignmentDTO,
     AssignmentPageDTO,
     ConsentDocumentDTO,
-    ConsentRetireRequest,
     ConsentPresentationListDTO,
-    ConsentPresentationQuery,
     ConsentRecordDTO,
+    ConsentRetireRequest,
     ConsentWithdrawRequest,
     CreateAssignmentRequest,
     CreateConsentDocumentRequest,
     CreateMemberInvitationRequest,
-    EnrollmentDTO,
     EnrollmentDetailDTO,
+    EnrollmentDTO,
     EnrollmentPageDTO,
     EnrollmentSummaryPageDTO,
-    FamilyEnrollmentListQuery,
     IdentityPiiDTO,
     IdentityResubmitRequest,
     IdentityReviewDetailDTO,
     IdentityReviewPageDTO,
     IdentityStatusDTO,
-    InstitutionEnrollmentListQuery,
+    IdentitySubmissionRequest,
     InstitutionIdentityCheckRequest,
     InvitationDTO,
-    InvitationRevokeRequest,
-    InvitationListQuery,
     InvitationPageDTO,
+    InvitationRevokeRequest,
     InvitationSecretDTO,
     PiiAccessRequest,
     PlatformIdentityDecisionRequest,
@@ -72,12 +66,9 @@ from app.modules.member_enrollment.schemas import (
     ProxyGrantDTO,
     ProxyRevokeRequest,
     PublishConsentDocumentRequest,
-    ReasonedVersionRequest,
     RecordConsentRequest,
-    TherapistAssignmentListQuery,
     UuidV7,
     VersionRequest,
-    IdentitySubmissionRequest,
 )
 from app.modules.member_enrollment.service import (
     CommitOutcome,
@@ -88,7 +79,6 @@ from app.modules.member_enrollment.service import (
     reviewer_credential_proof,
     safe_error_code,
 )
-
 
 _STATUS = {
     "INVALID_REQUEST":400,"INVALID_CURSOR":400,"CONSENT_LOCALE_UNAVAILABLE":400,
@@ -105,7 +95,8 @@ _STATUS = {
 def _route_errors(*codes: str, mutation: bool = False):
     values=("AUTHENTICATION_REQUIRED","ACCESS_TOKEN_STALE",*codes,"DEPENDENCY_UNAVAILABLE") + (("COMMIT_OUTCOME_UNKNOWN",) if mutation else ())
     grouped={}
-    for code in values: grouped.setdefault(_STATUS.get(code,401 if code in ("AUTHENTICATION_REQUIRED","ACCESS_TOKEN_STALE") else 409),[]).append(code)
+    for code in values:
+        grouped.setdefault(_STATUS.get(code,401 if code in ("AUTHENTICATION_REQUIRED","ACCESS_TOKEN_STALE") else 409),[]).append(code)
     return {status:tuple(items) for status,items in grouped.items()}
 
 
@@ -149,10 +140,15 @@ class MemberEnrollmentRoute(APIRoute):
     def get_route_handler(self):
         original=super().get_route_handler()
         async def handler(request:Request):
-            try: return await original(request)
-            except RequestValidationError: return error_response(request,400,"INVALID_REQUEST")
+            try:
+                return await original(request)
+            except RequestValidationError:
+                return error_response(request,400,"INVALID_REQUEST")
             except HTTPException as exc:
-                key=(next(iter(self.methods)),self.path); allowed=SLICE3_ROUTE_ERROR_CODES[key]; detail=exc.detail; code=detail.get("code") if isinstance(detail,dict) else detail if isinstance(detail,str) else None
+                key=(next(iter(self.methods)),self.path)
+                allowed=SLICE3_ROUTE_ERROR_CODES[key]
+                detail=exc.detail
+                code=detail.get("code") if isinstance(detail,dict) else detail if isinstance(detail,str) else None
                 status=400 if exc.status_code==422 else exc.status_code
                 if status == 401:
                     code = "ACCESS_TOKEN_STALE" if code == "ACCESS_TOKEN_STALE" else "AUTHENTICATION_REQUIRED"
@@ -160,7 +156,8 @@ class MemberEnrollmentRoute(APIRoute):
                     status,code=(400,"INVALID_REQUEST") if "INVALID_REQUEST" in allowed.get(400,()) else (503,"DEPENDENCY_UNAVAILABLE")
                 headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
                 return error_response(request,status,code,retryable=status == 503 and code != "COMMIT_OUTCOME_UNKNOWN",headers=headers)
-            except Exception: return error_response(request,500,"INTERNAL_ERROR")
+            except Exception:
+                return error_response(request,500,"INTERNAL_ERROR")
         return handler
 
 
@@ -173,10 +170,12 @@ routers = (institution_router, family_router, platform_router, therapist_router)
 
 def strip_member_enrollment_validation_responses(schema: dict[str,object]):
     paths=schema.get("paths",{})
-    if not isinstance(paths,dict): return schema
+    if not isinstance(paths,dict):
+        return schema
     for (method,path),errors in SLICE3_ROUTE_ERROR_CODES.items():
         operation=paths.get(path,{}).get(method.lower())
-        if not isinstance(operation,dict): continue
+        if not isinstance(operation,dict):
+            continue
         responses=operation.get("responses",{})
         if isinstance(responses,dict):
             responses.pop("422",None)
@@ -686,7 +685,7 @@ async def _finish_mutation(
         result, actor_scope=context.actor_scope, operation=operation,
         target_id=target_id, key=context.idempotency_key,
     )
-    receipt_created_at = datetime.now(timezone.utc)
+    receipt_created_at = datetime.now(UTC)
     expected_envelope["receipt"].update(
         {
             "actor_scope": context.actor_scope,
@@ -954,9 +953,12 @@ def _therapist_precommit(session, actor: CurrentUser, therapist_id: UUID, tenant
 
 @institution_router.post("/member-invitations", response_model=InvitationSecretDTO, status_code=201)
 async def create_invitation(payload: CreateMemberInvitationRequest, request: Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_writer_session), authority=Depends(get_db_session)):
-    tenant_id, public_id = await _current_institution(authority, actor); context = _context(request, actor, tenant_id, public_id, key)
-    request_value = _request_value(payload); target, secrets, replay = await _begin_mutation(session, context, "INVITATION_CREATE", request_value)
-    if replay is not None: return replay
+    tenant_id, public_id = await _current_institution(authority, actor)
+    context = _context(request, actor, tenant_id, public_id, key)
+    request_value = _request_value(payload)
+    target, secrets, replay = await _begin_mutation(session, context, "INVITATION_CREATE", request_value)
+    if replay is not None:
+        return replay
     invitation_id, short_code = await _safe(_service(session).create_invitation(context, payload))
     row = await MemberEnrollmentRepository(session).invitation_for_update(invitation_id)
     result = _invitation(row, public_id, short_code=short_code)
@@ -967,90 +969,132 @@ async def create_invitation(payload: CreateMemberInvitationRequest, request: Req
 async def list_invitations(status: str|None=None, cursor: str|None=None, limit: int=Query(50,ge=1,le=100), actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_reader_session), authority=Depends(get_db_session)):
     tenant_id, public_id = await _current_institution(authority, actor)
     predicates = {"tenant_public_id": public_id}
-    if status is not None: predicates["status"] = status
+    if status is not None:
+        predicates["status"] = status
     return await _safe(_view_page(session, "slice3_institution_enrollment_read_v1", predicates, "invitation_id", limit, cursor=cursor))
 
 
 @institution_router.post("/member-invitations/{invitation_id}/resend", response_model=InvitationSecretDTO)
 async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, request:Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
+    tenant_id,public_id=await _current_institution(authority,actor)
+    context=_context(request,actor,tenant_id,public_id,key)
+    request_value=_request_value(payload,invitation_id)
     target,secrets,replay=await _begin_mutation(session,context,"INVITATION_RESEND",request_value,target_id=invitation_id)
-    if replay is not None: return replay
+    if replay is not None:
+        return replay
     _,code=await _safe(_service(session).resend_invitation(context,invitation_id,expected_version=payload.expected_version))
-    row=await MemberEnrollmentRepository(session).invitation_for_update(invitation_id); result=_invitation(row,public_id,short_code=code)
+    row=await MemberEnrollmentRepository(session).invitation_for_update(invitation_id)
+    result=_invitation(row,public_id,short_code=code)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="INVITATION_RESEND",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @institution_router.post("/member-invitations/{invitation_id}/revoke", response_model=InvitationDTO)
 async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequest, request:Request,key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,invitation_id)
+    tenant_id,public_id=await _current_institution(authority,actor)
+    context=_context(request,actor,tenant_id,public_id,key)
+    request_value=_request_value(payload,invitation_id)
     target,secrets,replay=await _begin_mutation(session,context,"INVITATION_REVOKE",request_value,target_id=invitation_id)
-    if replay is not None: return replay
-    await _safe(_service(session).revoke_invitation(context,invitation_id,payload)); row=await MemberEnrollmentRepository(session).invitation_for_update(invitation_id); result=_invitation(row,public_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).revoke_invitation(context,invitation_id,payload))
+    row=await MemberEnrollmentRepository(session).invitation_for_update(invitation_id)
+    result=_invitation(row,public_id)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="INVITATION_REVOKE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @institution_router.get("/member-enrollments", response_model=EnrollmentSummaryPageDTO)
 async def institution_enrollments(status: str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); predicates={"tenant_public_id":public_id}
-    if status is not None: predicates["status"]=status
+    tenant_id,public_id=await _current_institution(authority,actor)
+    predicates={"tenant_public_id":public_id}
+    if status is not None:
+        predicates["status"]=status
     page=await _safe(_view_page(session,"slice3_family_enrollment_read_v1",predicates,"enrollment_id",limit,cursor=cursor))
-    page["items"]=tuple({k:v for k,v in item.items() if k in {"enrollment_id","mode","status","accepted_at","identity_verified_at","case_created_at","version"}} for item in page["items"]); return page
+    page["items"]=tuple({k:v for k,v in item.items() if k in {"enrollment_id","mode","status","accepted_at","identity_verified_at","case_created_at","version"}} for item in page["items"])
+    return page
 
 
 @institution_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
 async def institution_enrollment(enrollment_id: UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_family_enrollment_read_v1",predicates={"tenant_public_id":public_id,"enrollment_id":enrollment_id},order="enrollment_id",limit=2))
-    if len(rows)!=1: raise _error("ENROLLMENT_NOT_FOUND")
+    tenant_id,public_id=await _current_institution(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_family_enrollment_read_v1",predicates={"tenant_public_id":public_id,"enrollment_id":enrollment_id},order="enrollment_id",limit=2))
+    if len(rows)!=1:
+        raise _error("ENROLLMENT_NOT_FOUND")
     return _enrollment_detail(rows[0])
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/identity-check", response_model=IdentityStatusDTO)
 async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionIdentityCheckRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
-    if enrollment is None or enrollment["tenant_id"]!=tenant_id: raise _error("ENROLLMENT_NOT_FOUND")
+    tenant_id,public_id=await _current_institution(authority,actor)
+    context=_context(request,actor,tenant_id,public_id,key)
+    repo=MemberEnrollmentRepository(session)
+    enrollment=await repo.enrollment_for_update(enrollment_id)
+    if enrollment is None or enrollment["tenant_id"]!=tenant_id:
+        raise _error("ENROLLMENT_NOT_FOUND")
     verification=await repo.verification_by_enrollment_for_update(enrollment_id)
-    if verification is None: raise _error("IDENTITY_REVIEW_NOT_FOUND")
-    target_id=verification["verification_id"]; request_value=_request_value(payload,target_id)
+    if verification is None:
+        raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    target_id=verification["verification_id"]
+    request_value=_request_value(payload,target_id)
     target,secrets,replay=await _begin_mutation(session,context,"INSTITUTION_IDENTITY_CHECK",request_value,target_id=target_id)
-    if replay is not None: return replay
-    await _safe(_service(session).institution_identity_check(context,target_id,payload)); row=await repo.verification_for_update(target_id); revision=await repo.current_identity_revision(row["verification_id"],row["current_revision_id"]); result=_identity(row,revision)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).institution_identity_check(context,target_id,payload))
+    row=await repo.verification_for_update(target_id)
+    revision=await repo.current_identity_revision(row["verification_id"],row["current_revision_id"])
+    result=_identity(row,revision)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="INSTITUTION_IDENTITY_CHECK",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/primary-assignments", response_model=AssignmentDTO,status_code=201)
 async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,enrollment_id)
+    tenant_id,public_id=await _current_institution(authority,actor)
+    context=_context(request,actor,tenant_id,public_id,key)
+    request_value=_request_value(payload,enrollment_id)
     target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_CREATE",request_value,target_id=enrollment_id)
-    if replay is not None: return replay
-    assignment_id=await _safe(_service(session).create_assignment(context,enrollment_id,payload)); row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id); result=_assignment(row,public_id)
+    if replay is not None:
+        return replay
+    assignment_id=await _safe(_service(session).create_assignment(context,enrollment_id,payload))
+    row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id)
+    result=_assignment(row,public_id)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="ASSIGNMENT_CREATE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @institution_router.post("/primary-assignments/{assignment_id}/cancel", response_model=AssignmentDTO)
 async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); context=_context(request,actor,tenant_id,public_id,key); request_value=_request_value(payload,assignment_id)
+    tenant_id,public_id=await _current_institution(authority,actor)
+    context=_context(request,actor,tenant_id,public_id,key)
+    request_value=_request_value(payload,assignment_id)
     target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_CANCEL",request_value,target_id=assignment_id)
-    if replay is not None: return replay
-    await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="CANCELLED")); row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id); result=_assignment(row,public_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="CANCELLED"))
+    row=await MemberEnrollmentRepository(session).assignment_for_update(assignment_id)
+    result=_assignment(row,public_id)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="ASSIGNMENT_CANCEL",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @institution_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
 async def institution_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    tenant_id,public_id=await _current_institution(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"tenant_public_id":public_id,"case_id":case_id},order="case_id",limit=2))
-    if len(rows)!=1: raise _error("CASE_NOT_FOUND")
+    tenant_id,public_id=await _current_institution(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"tenant_public_id":public_id,"case_id":case_id},order="case_id",limit=2))
+    if len(rows)!=1:
+        raise _error("CASE_NOT_FOUND")
     return _public_row(rows[0])
 
 
 @family_router.post("/member-enrollments/accept", response_model=EnrollmentDTO,status_code=201)
 async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
     member_id=await _member_for_actor(authority,actor,expected_phone=payload.phone)
-    repo=MemberEnrollmentRepository(session); invitation=await repo.invitation_for_update(payload.invitation_id)
-    if invitation is None: raise _error("INVITATION_NOT_FOUND")
-    public_id=await _tenant_public_id(institution_authority,invitation["tenant_id"]); context=_context(request,actor,invitation["tenant_id"],public_id,key); request_value=_request_value(payload,payload.invitation_id)
+    repo=MemberEnrollmentRepository(session)
+    invitation=await repo.invitation_for_update(payload.invitation_id)
+    if invitation is None:
+        raise _error("INVITATION_NOT_FOUND")
+    public_id=await _tenant_public_id(institution_authority,invitation["tenant_id"])
+    context=_context(request,actor,invitation["tenant_id"],public_id,key)
+    request_value=_request_value(payload,payload.invitation_id)
     target,secrets,replay=await _begin_mutation(session,context,"ENROLLMENT_ACCEPT",request_value,target_id=payload.invitation_id)
-    if replay is not None: return replay
+    if replay is not None:
+        return replay
     adult=None
     if invitation["mode"]=="PROXY_ELDER":
         try:
@@ -1075,90 +1119,144 @@ async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:
         raise _error(code) from None
     except Exception as error:
         raise _error(safe_error_code(error)) from None
-    row=await repo.enrollment_for_update(enrollment_id); result=_enrollment(row,public_id)
+    row=await repo.enrollment_for_update(enrollment_id)
+    result=_enrollment(row,public_id)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="ENROLLMENT_ACCEPT",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @family_router.get("/member-enrollments", response_model=EnrollmentPageDTO)
 async def family_enrollments(cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    member_id=await _member_for_actor(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).family_enrollment_rows(member_id,cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_enrollment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["enrollment_id"]) if len(rows)>limit else None}
+    member_id=await _member_for_actor(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).family_enrollment_rows(member_id,cursor_id=_cursor_id(cursor),limit=limit+1))
+    return {"items":tuple(_enrollment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["enrollment_id"]) if len(rows)>limit else None}
 
 
 @family_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
 async def family_enrollment(enrollment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
-    member_id=await _member_for_actor(authority,actor); row=await _safe(MemberEnrollmentRepository(session).family_enrollment_detail(member_id,enrollment_id,limit=2))
-    if row is None: raise _error("ENROLLMENT_NOT_FOUND")
+    member_id=await _member_for_actor(authority,actor)
+    row=await _safe(MemberEnrollmentRepository(session).family_enrollment_detail(member_id,enrollment_id,limit=2))
+    if row is None:
+        raise _error("ENROLLMENT_NOT_FOUND")
     return _enrollment_detail(row)
 
 
 @family_router.put("/member-enrollments/{enrollment_id}/identity-submission", response_model=IdentityStatusDTO)
 async def identity_submission(enrollment_id:UuidV7,payload:IdentitySubmissionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
-    if enrollment is None: raise _error("ENROLLMENT_NOT_FOUND")
+    repo=MemberEnrollmentRepository(session)
+    enrollment=await repo.enrollment_for_update(enrollment_id)
+    if enrollment is None:
+        raise _error("ENROLLMENT_NOT_FOUND")
     member_id=await _member_for_actor(authority,actor)
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"IDENTITY_SUBMIT"))
-    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"]); context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,enrollment_id); target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_SUBMIT",request_value,target_id=enrollment_id)
-    if replay is not None: return replay
-    verification_id,revision_id=await _safe(_service(session).submit_identity(context,enrollment_id,payload,submitted_by_member_id=member_id)); row=await repo.verification_for_update(verification_id); revision=await repo.current_identity_revision(verification_id,revision_id); result=_identity(row,revision)
+    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
+    context=_context(request,actor,enrollment["tenant_id"],public_id,key)
+    request_value=_request_value(payload,enrollment_id)
+    target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_SUBMIT",request_value,target_id=enrollment_id)
+    if replay is not None:
+        return replay
+    verification_id,revision_id=await _safe(_service(session).submit_identity(context,enrollment_id,payload,submitted_by_member_id=member_id))
+    row=await repo.verification_for_update(verification_id)
+    revision=await repo.current_identity_revision(verification_id,revision_id)
+    result=_identity(row,revision)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="IDENTITY_SUBMIT",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @family_router.post("/member-enrollments/{enrollment_id}/identity-resubmit", response_model=IdentityStatusDTO)
 async def identity_resubmit(enrollment_id:UuidV7,payload:IdentityResubmitRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
-    if enrollment is None: raise _error("ENROLLMENT_NOT_FOUND")
+    repo=MemberEnrollmentRepository(session)
+    enrollment=await repo.enrollment_for_update(enrollment_id)
+    if enrollment is None:
+        raise _error("ENROLLMENT_NOT_FOUND")
     member_id=await _member_for_actor(authority,actor)
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"IDENTITY_SUBMIT"))
-    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"]); context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,enrollment_id); target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_RESUBMIT",request_value,target_id=enrollment_id)
-    if replay is not None: return replay
-    verification_id,revision_id=await _safe(_service(session).resubmit_identity(context,enrollment_id,payload,submitted_by_member_id=member_id)); row=await repo.verification_for_update(verification_id); revision=await repo.current_identity_revision(verification_id,revision_id); result=_identity(row,revision)
+    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
+    context=_context(request,actor,enrollment["tenant_id"],public_id,key)
+    request_value=_request_value(payload,enrollment_id)
+    target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_RESUBMIT",request_value,target_id=enrollment_id)
+    if replay is not None:
+        return replay
+    verification_id,revision_id=await _safe(_service(session).resubmit_identity(context,enrollment_id,payload,submitted_by_member_id=member_id))
+    row=await repo.verification_for_update(verification_id)
+    revision=await repo.current_identity_revision(verification_id,revision_id)
+    result=_identity(row,revision)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="IDENTITY_RESUBMIT",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @family_router.get("/member-enrollments/{enrollment_id}/consent-presentations", response_model=ConsentPresentationListDTO)
 async def consent_presentations(enrollment_id:UuidV7,locale:str,document_types:list[str]=Query(),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
-    member_id=await _member_for_actor(authority,actor); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
-    if enrollment is None: raise _error("ENROLLMENT_NOT_FOUND")
+    member_id=await _member_for_actor(authority,actor)
+    repo=MemberEnrollmentRepository(session)
+    enrollment=await repo.enrollment_for_update(enrollment_id)
+    if enrollment is None:
+        raise _error("ENROLLMENT_NOT_FOUND")
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"CONSENT_ACCEPT"))
-    rows=await _safe(repo.current_consent_documents(tuple(document_types),locale)); items=tuple({**dict(row),"purpose_codes":_purposes(row["document_type"])} for row in rows); return {"items":items}
+    rows=await _safe(repo.current_consent_documents(tuple(document_types),locale))
+    items=tuple({**dict(row),"purpose_codes":_purposes(row["document_type"])} for row in rows)
+    return {"items":items}
 
 
 @family_router.post("/member-enrollments/{enrollment_id}/consent-records", response_model=ConsentRecordDTO,status_code=201)
 async def consent_record(enrollment_id:UuidV7,payload:RecordConsentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    member_id=await _member_for_actor(authority,actor); repo=MemberEnrollmentRepository(session); enrollment=await repo.enrollment_for_update(enrollment_id)
-    if enrollment is None: raise _error("ENROLLMENT_NOT_FOUND")
+    member_id=await _member_for_actor(authority,actor)
+    repo=MemberEnrollmentRepository(session)
+    enrollment=await repo.enrollment_for_update(enrollment_id)
+    if enrollment is None:
+        raise _error("ENROLLMENT_NOT_FOUND")
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"CONSENT_ACCEPT"))
     public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
     docs=await repo.current_consent_documents(("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK","PROXY_AUTHORIZATION"),"zh-CN")
     match=next((d for d in docs if d["document_version_id"]==payload.document_version_id),None)
-    if match is None or tuple(payload.purpose_codes)!=_purposes(match["document_type"]): raise _error("CONSENT_VERSION_STALE")
-    context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,enrollment_id); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_RECORD",request_value,target_id=enrollment_id)
-    if replay is not None: return replay
-    record_id=await _safe(_service(session).record_consent(context,enrollment_id,payload,subject_member_id=enrollment["subject_member_id"],proxy_member_id=enrollment["proxy_member_id"],document_type=match["document_type"],locale="zh-CN")); row=await repo.consent_with_locale(record_id); result=dict(row)
+    if match is None or tuple(payload.purpose_codes)!=_purposes(match["document_type"]):
+        raise _error("CONSENT_VERSION_STALE")
+    context=_context(request,actor,enrollment["tenant_id"],public_id,key)
+    request_value=_request_value(payload,enrollment_id)
+    target,secrets,replay=await _begin_mutation(session,context,"CONSENT_RECORD",request_value,target_id=enrollment_id)
+    if replay is not None:
+        return replay
+    record_id=await _safe(_service(session).record_consent(context,enrollment_id,payload,subject_member_id=enrollment["subject_member_id"],proxy_member_id=enrollment["proxy_member_id"],document_type=match["document_type"],locale="zh-CN"))
+    row=await repo.consent_with_locale(record_id)
+    result=dict(row)
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="CONSENT_RECORD",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @family_router.post("/consent-records/{consent_record_id}/withdraw", response_model=ConsentRecordDTO)
 async def withdraw_consent(consent_record_id:UuidV7,payload:ConsentWithdrawRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    repo=MemberEnrollmentRepository(session); row=await repo.consent_for_update(consent_record_id)
-    if row is None: raise _error("CONSENT_RECORD_NOT_FOUND")
-    enrollment=await repo.enrollment_for_update(row["enrollment_id"]); member_id=await _member_for_actor(authority,actor)
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.consent_for_update(consent_record_id)
+    if row is None:
+        raise _error("CONSENT_RECORD_NOT_FOUND")
+    enrollment=await repo.enrollment_for_update(row["enrollment_id"])
+    member_id=await _member_for_actor(authority,actor)
     await _safe(_service(session).require_proxy_permission(enrollment,member_id,"CONSENT_ACCEPT"))
-    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"]); context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,consent_record_id); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_WITHDRAW",request_value,target_id=consent_record_id)
-    if replay is not None: return replay
-    await _safe(_service(session).withdraw_consent(context,consent_record_id,payload)); result=dict(await repo.consent_with_locale(consent_record_id))
+    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
+    context=_context(request,actor,enrollment["tenant_id"],public_id,key)
+    request_value=_request_value(payload,consent_record_id)
+    target,secrets,replay=await _begin_mutation(session,context,"CONSENT_WITHDRAW",request_value,target_id=consent_record_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).withdraw_consent(context,consent_record_id,payload))
+    result=dict(await repo.consent_with_locale(consent_record_id))
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="CONSENT_WITHDRAW",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @family_router.post("/proxy-grants/{grant_id}/revoke", response_model=ProxyGrantDTO)
 async def revoke_proxy(grant_id:UuidV7,payload:ProxyRevokeRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    repo=MemberEnrollmentRepository(session); row=await repo.proxy_grant_for_update(grant_id)
-    if row is None: raise _error("PROXY_GRANT_NOT_FOUND")
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.proxy_grant_for_update(grant_id)
+    if row is None:
+        raise _error("PROXY_GRANT_NOT_FOUND")
     member_id=await _member_for_actor(authority,actor)
-    if member_id not in {row["principal_member_id"],row["proxy_member_id"]}: raise _error("PROXY_PERMISSION_FORBIDDEN")
-    enrollment=await repo.enrollment_for_update(row["enrollment_id"]); public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"]); context=_context(request,actor,enrollment["tenant_id"],public_id,key); request_value=_request_value(payload,grant_id); target,secrets,replay=await _begin_mutation(session,context,"PROXY_REVOKE",request_value,target_id=grant_id)
-    if replay is not None: return replay
-    await _safe(_service(session).revoke_proxy(context,grant_id,payload)); result=_proxy(await repo.proxy_grant_for_update(grant_id))
+    if member_id not in {row["principal_member_id"],row["proxy_member_id"]}:
+        raise _error("PROXY_PERMISSION_FORBIDDEN")
+    enrollment=await repo.enrollment_for_update(row["enrollment_id"])
+    public_id=await _tenant_public_id(institution_authority,enrollment["tenant_id"])
+    context=_context(request,actor,enrollment["tenant_id"],public_id,key)
+    request_value=_request_value(payload,grant_id)
+    target,secrets,replay=await _begin_mutation(session,context,"PROXY_REVOKE",request_value,target_id=grant_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).revoke_proxy(context,grant_id,payload))
+    result=_proxy(await repo.proxy_grant_for_update(grant_id))
     return await _finish_mutation(session,kind="enrollment_writer",context=context,operation="PROXY_REVOKE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
@@ -1167,24 +1265,36 @@ async def identity_reviews(status:str|None=None,cursor:str|None=None,limit:int=Q
     await _current_reviewer(authority,actor)
     async with (await get_slice3_session_factory("identity_review_writer"))() as session:
         predicates={}
-        if status is not None: predicates["status"]=status
-        rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates=predicates,order="verification_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_review(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["verification_id"]) if len(rows)>limit else None}
+        if status is not None:
+            predicates["status"]=status
+        rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates=predicates,order="verification_id",cursor_id=_cursor_id(cursor),limit=limit+1))
+        return {"items":tuple(_review(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["verification_id"]) if len(rows)>limit else None}
 
 
 @platform_router.get("/member-identity-reviews/{review_id}", response_model=IdentityReviewDetailDTO)
 async def identity_review(review_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
-    await _current_reviewer(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
-    if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    await _current_reviewer(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
+    if len(rows)!=1:
+        raise _error("IDENTITY_REVIEW_NOT_FOUND")
     return _review_detail(rows[0])
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/claim", response_model=IdentityReviewDetailDTO)
 async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    reviewer=await _current_reviewer(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
-    if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
-    tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"]); context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True); request_value=_request_value(payload,review_id); target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_CLAIM",request_value,target_id=review_id)
-    if replay is not None: return replay
-    await _safe(_service(session).claim_identity_review(context,review_id,expected_version=payload.expected_version)); updated=await MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2); result=_review_detail(updated[0])
+    await _current_reviewer(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
+    if len(rows)!=1:
+        raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"])
+    context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True)
+    request_value=_request_value(payload,review_id)
+    target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_CLAIM",request_value,target_id=review_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).claim_identity_review(context,review_id,expected_version=payload.expected_version))
+    updated=await MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2)
+    result=_review_detail(updated[0])
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="IDENTITY_REVIEW_CLAIM",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
@@ -1193,103 +1303,170 @@ async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,r
     reviewer=await _current_reviewer(authority,actor)
     repo=MemberEnrollmentRepository(session)
     rows=await _safe(repo.safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
-    if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    if len(rows)!=1:
+        raise _error("IDENTITY_REVIEW_NOT_FOUND")
     if not await _safe(repo.reviewer_claim_is_current(review_id,actor.id)):
         raise _error("STEP_UP_FORBIDDEN")
     tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"])
     await session.rollback()
-    context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True); request_value=_request_value({"reason_code":payload.reason_code},review_id)
-    proof_secrets=MemberEnrollmentSecrets(); request_digest=proof_secrets.request_digest(request_value)
+    context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True)
+    request_value=_request_value({"reason_code":payload.reason_code},review_id)
+    proof_secrets=MemberEnrollmentSecrets()
+    request_digest=proof_secrets.request_digest(request_value)
     currentness=proof_secrets.audit_digest(_reviewer_currentness_payload(reviewer))
     access_token_digest=proof_secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
     password_valid=verify_password(payload.current_password,reviewer["password_hash"])
-    proof_issued_at=datetime.now(timezone.utc); proof_expires_at=proof_issued_at+timedelta(seconds=15)
+    proof_issued_at=datetime.now(UTC)
+    proof_expires_at=proof_issued_at+timedelta(seconds=15)
     proof_values={"proof_version":1,"reviewer_user_id":actor.id,"user_version":reviewer["version"],"user_updated_at":reviewer["updated_at"],"verification_id":review_id,"current_revision_id":rows[0]["current_revision_id"],"actor_scope":context.actor_scope,"idempotency_key":context.idempotency_key,"request_id":context.request_id,"request_digest":request_digest,"access_token_digest":access_token_digest,"currentness_digest":currentness,"reason_code":payload.reason_code,"password_valid":password_valid,"proof_issued_at":proof_issued_at,"proof_expires_at":proof_expires_at}
     credential_proof_digest=reviewer_credential_proof(reviewer["password_hash"],proof_values)
     await authority.rollback()
     target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_PII_ACCESS",request_value,target_id=review_id)
-    if replay is not None: response.headers["Cache-Control"]="no-store"; return replay
+    if replay is not None:
+        response.headers["Cache-Control"]="no-store"
+        return replay
     result=await _safe(_service(session).access_identity_pii(context,review_id,payload,currentness_digest=currentness,access_token_digest=access_token_digest,password_valid=password_valid,request_digest=request_digest,proof_values=proof_values,credential_proof_digest=credential_proof_digest))
     result=await _finish_mutation(session,kind="identity_review_writer",context=context,operation="IDENTITY_PII_ACCESS",target_id=target,request_value=request_value,result=result,secrets=secrets)
-    if type(result) is dict and type(result.get("error_code")) is str: raise _error(result["error_code"])
-    response.headers["Cache-Control"]="no-store"; return result
+    if type(result) is dict and type(result.get("error_code")) is str:
+        raise _error(result["error_code"])
+    response.headers["Cache-Control"]="no-store"
+    return result
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/decision", response_model=IdentityStatusDTO)
 async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session),member_reader=Depends(get_member_enrollment_reader_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
-    reviewer=await _current_reviewer(authority,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
-    if len(rows)!=1: raise _error("IDENTITY_REVIEW_NOT_FOUND")
-    tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"]); context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True); request_value=_request_value(payload,review_id); target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_DECIDE",request_value,target_id=review_id)
-    if replay is not None: return replay
-    currentness=secrets.audit_digest(_reviewer_currentness_payload(reviewer)); access_token_digest=secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
-    await _safe(_service(session).platform_identity_decide(context,review_id,payload,source_member_id=rows[0]["member_id"],enrollment_mode=rows[0]["mode"],access_token_digest=access_token_digest,currentness_digest=currentness)); repo=MemberEnrollmentRepository(session); row=await repo.verification_for_update(review_id); revision=await repo.current_identity_revision(review_id,row["current_revision_id"]); result=_identity(row,revision)
+    reviewer=await _current_reviewer(authority,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
+    if len(rows)!=1:
+        raise _error("IDENTITY_REVIEW_NOT_FOUND")
+    tenant_id,tenant_public_id=await _platform_tenant(member_reader,institution_authority,rows[0]["enrollment_id"])
+    context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True)
+    request_value=_request_value(payload,review_id)
+    target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_DECIDE",request_value,target_id=review_id)
+    if replay is not None:
+        return replay
+    currentness=secrets.audit_digest(_reviewer_currentness_payload(reviewer))
+    access_token_digest=secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
+    await _safe(_service(session).platform_identity_decide(context,review_id,payload,source_member_id=rows[0]["member_id"],enrollment_mode=rows[0]["mode"],access_token_digest=access_token_digest,currentness_digest=currentness))
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.verification_for_update(review_id)
+    revision=await repo.current_identity_revision(review_id,row["current_revision_id"])
+    result=_identity(row,revision)
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="IDENTITY_REVIEW_DECIDE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @platform_router.post("/consent-documents", response_model=ConsentDocumentDTO,status_code=201)
 async def create_document(payload:CreateConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
-    await _current_reviewer(authority,actor); context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True); request_value=_request_value(payload); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_CREATE",request_value)
-    if replay is not None: return replay
-    document_id=await _safe(_service(session).create_consent_document(context,payload)); repo=MemberEnrollmentRepository(session); row=await repo.document_for_update(document_id); result=_document(row,await repo.document_renditions(document_id))
+    await _current_reviewer(authority,actor)
+    context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
+    request_value=_request_value(payload)
+    target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_CREATE",request_value)
+    if replay is not None:
+        return replay
+    document_id=await _safe(_service(session).create_consent_document(context,payload))
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.document_for_update(document_id)
+    result=_document(row,await repo.document_renditions(document_id))
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="CONSENT_DOCUMENT_CREATE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @platform_router.post("/consent-documents/{document_version_id}/publish", response_model=ConsentDocumentDTO)
 async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
-    await _current_reviewer(authority,actor); context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True); request_value=_request_value(payload,document_version_id); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_PUBLISH",request_value,target_id=document_version_id)
-    if replay is not None: return replay
-    await _safe(_service(session).publish_consent_document(context,document_version_id,payload)); repo=MemberEnrollmentRepository(session); row=await repo.document_for_update(document_version_id); result=_document(row,await repo.document_renditions(document_version_id))
+    await _current_reviewer(authority,actor)
+    context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
+    request_value=_request_value(payload,document_version_id)
+    target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_PUBLISH",request_value,target_id=document_version_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).publish_consent_document(context,document_version_id,payload))
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.document_for_update(document_version_id)
+    result=_document(row,await repo.document_renditions(document_version_id))
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="CONSENT_DOCUMENT_PUBLISH",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @platform_router.post("/consent-documents/{document_version_id}/retire", response_model=ConsentDocumentDTO)
 async def retire_document(document_version_id:UuidV7,payload:ConsentRetireRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_identity_review_writer_session),authority=Depends(get_db_session)):
-    await _current_reviewer(authority,actor); context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True); request_value=_request_value(payload,document_version_id); target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_RETIRE",request_value,target_id=document_version_id)
-    if replay is not None: return replay
-    await _safe(_service(session).retire_consent_document(context,document_version_id,payload)); repo=MemberEnrollmentRepository(session); row=await repo.document_for_update(document_version_id); result=_document(row,await repo.document_renditions(document_version_id))
+    await _current_reviewer(authority,actor)
+    context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
+    request_value=_request_value(payload,document_version_id)
+    target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_RETIRE",request_value,target_id=document_version_id)
+    if replay is not None:
+        return replay
+    await _safe(_service(session).retire_consent_document(context,document_version_id,payload))
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.document_for_update(document_version_id)
+    result=_document(row,await repo.document_renditions(document_version_id))
     return await _finish_mutation(session,kind="identity_review_writer",context=context,operation="CONSENT_DOCUMENT_RETIRE",target_id=target,request_value=request_value,result=result,secrets=secrets)
 
 
 @therapist_router.get("/primary-assignments", response_model=AssignmentPageDTO)
 async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
-    therapist=await _therapist_current(session,actor); predicates={"therapist_id":therapist["therapist_id"]}
-    if status is not None: predicates["status"]=status
-    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1)); return {"items":tuple(_assignment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
+    therapist=await _therapist_current(session,actor)
+    predicates={"therapist_id":therapist["therapist_id"]}
+    if status is not None:
+        predicates["status"]=status
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates=predicates,order="assignment_id",cursor_id=_cursor_id(cursor),limit=limit+1))
+    return {"items":tuple(_assignment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["assignment_id"]) if len(rows)>limit else None}
 
 
 @therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO, summary="Therapist Assignment")
 async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
-    therapist=await _therapist_current(session,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
-    if len(rows)!=1: raise _error("ASSIGNMENT_NOT_FOUND")
+    therapist=await _therapist_current(session,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
+    if len(rows)!=1:
+        raise _error("ASSIGNMENT_NOT_FOUND")
     return _public_row(rows[0])
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/accept", response_model=PreparingCaseDTO,status_code=201)
 async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
-    therapist=await _therapist_current(session,actor); public_id=UUID(str(therapist["tenant_public_id"])); context=_context(request,actor,actor.tenant_id,public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
-    if replay is not None: return replay
-    repo=MemberEnrollmentRepository(session); assignment=await repo.assignment_for_update(assignment_id)
-    if assignment is None: raise _error("ASSIGNMENT_NOT_FOUND")
-    if str(assignment["therapist_id"])!=str(therapist["therapist_id"]) or assignment["tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_SCOPE_FORBIDDEN")
+    therapist=await _therapist_current(session,actor)
+    public_id=UUID(str(therapist["tenant_public_id"]))
+    context=_context(request,actor,actor.tenant_id,public_id,key)
+    request_value=_request_value(payload,assignment_id)
+    target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_ACCEPT",request_value,target_id=assignment_id)
+    if replay is not None:
+        return replay
+    repo=MemberEnrollmentRepository(session)
+    assignment=await repo.assignment_for_update(assignment_id)
+    if assignment is None:
+        raise _error("ASSIGNMENT_NOT_FOUND")
+    if str(assignment["therapist_id"])!=str(therapist["therapist_id"]) or assignment["tenant_id"]!=actor.tenant_id:
+        raise _error("THERAPIST_SCOPE_FORBIDDEN")
     enrollment=await repo.case_enrollment_for_update(assignment["enrollment_id"])
     required=("USER_AGREEMENT","PRIVACY_POLICY","HEALTH_DATA_PROCESSING","INSTITUTION_SERVICE","NON_MEDICAL_RISK") + (("PROXY_AUTHORIZATION",) if enrollment["mode"]=="PROXY_ELDER" else ())
-    case_id=await _safe(_service(session).accept_assignment(context,assignment_id,expected_version=payload.expected_version,required_document_types=required)); row=await repo.service_case_after_create(case_id); result=_case(row,public_id)
+    case_id=await _safe(_service(session).accept_assignment(context,assignment_id,expected_version=payload.expected_version,required_document_types=required))
+    row=await repo.service_case_after_create(case_id)
+    result=_case(row,public_id)
     return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_ACCEPT",target_id=target,request_value=request_value,result=result,secrets=secrets,precommit_check=_therapist_precommit(session,actor,UUID(str(therapist["therapist_id"])),public_id))
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/decline", response_model=AssignmentDTO)
 async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
-    therapist=await _therapist_current(session,actor); public_id=UUID(str(therapist["tenant_public_id"])); context=_context(request,actor,actor.tenant_id,public_id,key); request_value=_request_value(payload,assignment_id); target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_DECLINE",request_value,target_id=assignment_id)
-    if replay is not None: return replay
-    repo=MemberEnrollmentRepository(session); row=await repo.assignment_for_update(assignment_id)
-    if row is None: raise _error("ASSIGNMENT_NOT_FOUND")
-    if row["therapist_id"]!=therapist["therapist_id"] or row["tenant_id"]!=actor.tenant_id: raise _error("THERAPIST_SCOPE_FORBIDDEN")
-    await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="DECLINED")); updated=await repo.assignment_for_update(assignment_id); result=_assignment(updated,public_id)
+    therapist=await _therapist_current(session,actor)
+    public_id=UUID(str(therapist["tenant_public_id"]))
+    context=_context(request,actor,actor.tenant_id,public_id,key)
+    request_value=_request_value(payload,assignment_id)
+    target,secrets,replay=await _begin_mutation(session,context,"ASSIGNMENT_DECLINE",request_value,target_id=assignment_id)
+    if replay is not None:
+        return replay
+    repo=MemberEnrollmentRepository(session)
+    row=await repo.assignment_for_update(assignment_id)
+    if row is None:
+        raise _error("ASSIGNMENT_NOT_FOUND")
+    if row["therapist_id"]!=therapist["therapist_id"] or row["tenant_id"]!=actor.tenant_id:
+        raise _error("THERAPIST_SCOPE_FORBIDDEN")
+    await _safe(_service(session).decide_assignment(context,assignment_id,payload,target="DECLINED"))
+    updated=await repo.assignment_for_update(assignment_id)
+    result=_assignment(updated,public_id)
     return await _finish_mutation(session,kind="case_writer",context=context,operation="ASSIGNMENT_DECLINE",target_id=target,request_value=request_value,result=result,secrets=secrets,precommit_check=_therapist_precommit(session,actor,UUID(str(therapist["therapist_id"])),public_id))
 
 
 @therapist_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
 async def therapist_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
-    therapist=await _therapist_current(session,actor); rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"primary_therapist_id":therapist["therapist_id"],"case_id":case_id},order="case_id",limit=2))
-    if len(rows)!=1: raise _error("CASE_NOT_FOUND")
+    therapist=await _therapist_current(session,actor)
+    rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"primary_therapist_id":therapist["therapist_id"],"case_id":case_id},order="case_id",limit=2))
+    if len(rows)!=1:
+        raise _error("CASE_NOT_FOUND")
     return _public_row(rows[0])
