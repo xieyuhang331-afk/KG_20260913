@@ -27,6 +27,8 @@ _WORKER_KINDS = (
     "slice7",
 )
 _CLI_PROBE_TIMEOUT_SECONDS = 1.8
+_PROCESS_CLEANUP_GRACE_SECONDS = 0.15
+_PROCESS_TERMINATE_GRACE_SECONDS = 0.1
 
 
 class _ArgumentInvalid(Exception):
@@ -141,10 +143,12 @@ def _run_bounded_probe(
         daemon=True,
     )
     deadline = monotonic() + timeout_seconds
+    cleanup_deadline = deadline + _PROCESS_CLEANUP_GRACE_SECONDS
     payload: object = None
     started = False
     alive = False
     exitcode: int | None = None
+    control_error: BaseException | None = None
     try:
         process.start()
         started = True
@@ -154,27 +158,42 @@ def _run_bounded_probe(
             payload = receiver.recv()
         remaining = max(0.0, deadline - monotonic())
         process.join(remaining)
-    except BaseException:
+    except BaseException as error:
         payload = None
+        if not isinstance(error, Exception):
+            control_error = error
     finally:
-        sender.close()
-        receiver.close()
+        with suppress(Exception):
+            sender.close()
+        with suppress(Exception):
+            receiver.close()
         if started and process.is_alive():
             process.terminate()
-            process.join(0.1)
+            process.join(
+                min(
+                    _PROCESS_TERMINATE_GRACE_SECONDS,
+                    max(0.0, cleanup_deadline - monotonic()),
+                )
+            )
         if started and process.is_alive():
             process.kill()
-            process.join(0.05)
+            while process.is_alive():
+                remaining = max(0.0, cleanup_deadline - monotonic())
+                if remaining <= 0:
+                    break
+                process.join(remaining)
         alive = started and process.is_alive()
         if started and not alive:
             exitcode = process.exitcode
             process.close()
+    if control_error is not None:
+        raise control_error
     if (
         not started
         or alive
         or exitcode != 0
         or payload != {"status": "READY", "worker_kind": worker_kind}
-        or monotonic() > deadline + 0.15
+        or monotonic() > cleanup_deadline
     ):
         raise RuntimeError("WORKER_NOT_READY")
     return payload

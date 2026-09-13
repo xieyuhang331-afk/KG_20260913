@@ -39,6 +39,125 @@ def _noisy_failing_probe(**_: object) -> dict[str, str]:
     raise RuntimeError(secret)
 
 
+class _ProbePipeEnd:
+    def __init__(self, clock: list[float], *, cancel_on_poll: bool = False) -> None:
+        self._clock = clock
+        self._cancel_on_poll = cancel_on_poll
+        self.closed = False
+
+    def poll(self, timeout: float) -> bool:
+        if self._cancel_on_poll:
+            raise asyncio.CancelledError
+        self._clock[0] += timeout
+        return False
+
+    def recv(self) -> None:
+        raise AssertionError("C23_FAKE_PIPE_RECV_UNEXPECTED")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _DelayedReapProcess:
+    def __init__(
+        self,
+        clock: list[float],
+        *,
+        terminate_reaps: bool = False,
+        never_reaps: bool = False,
+    ) -> None:
+        self._clock = clock
+        self._terminate_reaps = terminate_reaps
+        self._never_reaps = never_reaps
+        self._alive = False
+        self._killed = False
+        self._post_kill_joins = 0
+        self.name = "c23-worker-readiness-probe"
+        self.daemon = True
+        self.exitcode: int | None = None
+        self.calls: list[str] = []
+
+    def start(self) -> None:
+        self.calls.append("start")
+        self._alive = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self.calls.append("join")
+        assert timeout is not None
+        if self._killed:
+            self._post_kill_joins += 1
+            elapsed = min(timeout, 0.01 if self._post_kill_joins == 1 else timeout)
+            self._clock[0] += elapsed
+            if not self._never_reaps and self._post_kill_joins >= 2:
+                self._alive = False
+                self.exitcode = -9
+            return
+        self._clock[0] += timeout
+        if self._terminate_reaps and "terminate" in self.calls:
+            self._alive = False
+            self.exitcode = -15
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+        self._killed = True
+
+    def close(self) -> None:
+        assert not self._alive, "C23_PROCESS_CLOSED_BEFORE_REAP"
+        self.calls.append("close")
+
+
+class _ProbeContext:
+    def __init__(
+        self,
+        process: _DelayedReapProcess,
+        receiver: _ProbePipeEnd,
+        sender: _ProbePipeEnd,
+    ) -> None:
+        self.process = process
+        self.receiver = receiver
+        self.sender = sender
+
+    def Pipe(self, *, duplex: bool):
+        assert duplex is False
+        return self.receiver, self.sender
+
+    def Process(self, **kwargs):
+        assert kwargs["name"] == self.process.name
+        assert kwargs["daemon"] is True
+        return self.process
+
+
+def _install_probe_context(
+    monkeypatch,
+    *,
+    terminate_reaps: bool = False,
+    never_reaps: bool = False,
+    cancel_on_poll: bool = False,
+) -> _DelayedReapProcess:
+    clock = [100.0]
+    process = _DelayedReapProcess(
+        clock,
+        terminate_reaps=terminate_reaps,
+        never_reaps=never_reaps,
+    )
+    receiver = _ProbePipeEnd(clock, cancel_on_poll=cancel_on_poll)
+    sender = _ProbePipeEnd(clock)
+    context = _ProbeContext(process, receiver, sender)
+    monkeypatch.setattr(check_worker_readiness, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        check_worker_readiness.multiprocessing,
+        "get_context",
+        lambda method: context if method == "spawn" else None,
+    )
+    return process
+
+
 def test_C2_3_R06_Worker规格闭合且绑定真实队列与必需任务() -> None:
     assert set(WORKER_SPECS) == {
         "registration",
@@ -498,6 +617,101 @@ def test_C2_3_R08_CLI隔离阻塞Broker阶段并在墙钟预算内清理(probe) 
         child.name.startswith("c23-worker-readiness")
         for child in multiprocessing.active_children()
     )
+
+
+def test_C2_3_R08_真实阻塞探针记录本次进程归属并完成回收(monkeypatch) -> None:
+    real_context = multiprocessing.get_context("spawn")
+    closed_facts: dict[str, object] = {}
+    process_type = type(real_context.Process())
+    real_close = process_type.close
+
+    def recording_close(process) -> None:
+        if process.name == "c23-worker-readiness-probe":
+            closed_facts.update(
+                pid=process.pid,
+                name=process.name,
+                exitcode=process.exitcode,
+                alive=process.is_alive(),
+            )
+        real_close(process)
+
+    before_pids = {child.pid for child in multiprocessing.active_children()}
+    monkeypatch.setattr(process_type, "close", recording_close)
+
+    with pytest.raises(RuntimeError, match="WORKER_NOT_READY"):
+        check_worker_readiness._run_bounded_probe(
+            worker_kind="slice7",
+            hostname="slice7@worker",
+            probe=_blocking_publish_probe,
+            timeout_seconds=0.3,
+        )
+
+    assert closed_facts["name"] == "c23-worker-readiness-probe"
+    assert closed_facts["pid"] not in before_pids
+    assert closed_facts["alive"] is False
+    assert closed_facts["exitcode"] is not None
+
+
+def test_C2_3_R08_kill后短join提前返回仍在硬截止内继续回收(monkeypatch) -> None:
+    process = _install_probe_context(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="WORKER_NOT_READY"):
+        check_worker_readiness._run_bounded_probe(
+            worker_kind="slice7",
+            hostname="slice7@worker",
+            timeout_seconds=0.3,
+        )
+
+    assert process.name == "c23-worker-readiness-probe"
+    assert process.calls[:4] == ["start", "join", "terminate", "join"]
+    assert process.calls.count("kill") == 1
+    assert process.calls.count("join") >= 4
+    assert process.calls[-1] == "close"
+    assert process.is_alive() is False
+
+
+def test_C2_3_R08_terminate可回收时不升级kill(monkeypatch) -> None:
+    process = _install_probe_context(monkeypatch, terminate_reaps=True)
+
+    with pytest.raises(RuntimeError, match="WORKER_NOT_READY"):
+        check_worker_readiness._run_bounded_probe(
+            worker_kind="slice7",
+            hostname="slice7@worker",
+            timeout_seconds=0.3,
+        )
+
+    assert "terminate" in process.calls
+    assert "kill" not in process.calls
+    assert process.calls[-1] == "close"
+
+
+def test_C2_3_R08_取消在本次子进程完成回收后保持优先(monkeypatch) -> None:
+    process = _install_probe_context(monkeypatch, cancel_on_poll=True)
+
+    with pytest.raises(asyncio.CancelledError):
+        check_worker_readiness._run_bounded_probe(
+            worker_kind="slice7",
+            hostname="slice7@worker",
+            timeout_seconds=0.3,
+        )
+
+    assert process.is_alive() is False
+    assert process.calls[-1] == "close"
+
+
+def test_C2_3_R08_硬截止仍存活时失败且不伪称已回收(monkeypatch) -> None:
+    process = _install_probe_context(monkeypatch, never_reaps=True)
+
+    with pytest.raises(RuntimeError, match="WORKER_NOT_READY"):
+        check_worker_readiness._run_bounded_probe(
+            worker_kind="slice7",
+            hostname="slice7@worker",
+            timeout_seconds=0.3,
+        )
+
+    assert process.is_alive() is True
+    assert "kill" in process.calls
+    assert "close" not in process.calls
 
 
 def test_C2_3_R08_CLI子进程输出被丢弃且进程资源已关闭(capfd) -> None:
