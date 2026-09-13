@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import secrets
+import subprocess
+import sys
 import time
 import traceback
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +17,87 @@ from app.modules.auth.service import hash_password
 from app.modules.institution_onboarding.domain import generate_totp
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def _isolated_runtime_boundary(real_db_client):
+    from app.core.config import get_settings
+    from app.core.database import dispose_database_runtimes
+
+    portal = real_db_client.portal
+    try:
+        portal.call(dispose_database_runtimes)
+    finally:
+        get_settings.cache_clear()
+    print("DEPENDENCY=DATABASE_RUNTIMES;RESULT=ISOLATED")
+    try:
+        yield
+    finally:
+        try:
+            portal.call(dispose_database_runtimes)
+        finally:
+            get_settings.cache_clear()
+        print("DEPENDENCY=DATABASE_RUNTIMES;RESULT=RELEASED")
+
+
+@pytest.fixture
+def _owned_private_file_worker(request, _isolated_runtime_boundary):
+    from app.tasks.celery_app import celery_app
+
+    hostname = f"same-subject-{secrets.token_hex(6)}@localhost"
+    worker_env = os.environ.copy()
+    worker_env["KG_PRIVATE_FILE_SCANNER_FACTORY"] = (
+        "tests.test_一期切片1私有文件Celery合同:create_ci_scanner"
+    )
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "celery",
+            "-A",
+            "app.tasks.celery_app:celery_app",
+            "worker",
+            "-Q",
+            "private-file",
+            f"--hostname={hostname}",
+            "--pool=solo",
+            "--concurrency=1",
+            "--loglevel=WARNING",
+            "--without-gossip",
+            "--without-mingle",
+            "--without-heartbeat",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=worker_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    def stop_worker():
+        if worker.poll() is None:
+            worker.terminate()
+            try:
+                worker.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait(timeout=10)
+        print("DEPENDENCY=TASK_SPECIFIC_PRIVATE_FILE_WORKER;RESULT=STOPPED")
+
+    request.addfinalizer(stop_worker)
+    for _ in range(30):
+        if worker.poll() is not None:
+            pytest.fail(
+                "PRIVATE_FILE_WORKER_START_FAILURE;TYPE=WorkerExited",
+                pytrace=False,
+            )
+        replies = celery_app.control.ping(destination=[hostname], timeout=1)
+        if any(
+            hostname in reply and reply[hostname].get("ok") == "pong"
+            for reply in replies
+        ):
+            print("DEPENDENCY=TASK_SPECIFIC_PRIVATE_FILE_WORKER;RESULT=READY")
+            return hostname
+    pytest.fail("PRIVATE_FILE_WORKER_START_FAILURE;TYPE=WorkerTimeout", pytrace=False)
 
 
 def _http(client, stage, method, path, **kwargs):
@@ -24,7 +109,11 @@ def _http(client, stage, method, path, **kwargs):
     return response.json()["data"]
 
 
-def test_同一机构从邀请到补正批准后重新登录(real_db_client, pg_database):
+def test_同一机构从邀请到补正批准后重新登录(
+    real_db_client,
+    pg_database,
+    _owned_private_file_worker,
+):
     client = real_db_client
     password = secrets.token_urlsafe(24)
     phone = "136" + "8" * 8
