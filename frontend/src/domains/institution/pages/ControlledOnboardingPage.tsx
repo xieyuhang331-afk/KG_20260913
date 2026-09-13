@@ -209,9 +209,14 @@ export function ControlledOnboardingPage() {
             valid_until: medicalValidUntil,
           });
         }
+        const correctionPayload = Object.fromEntries(
+          currentApplication.correction_fields
+            .filter((field) => Object.keys(payload).includes(field))
+            .map((field) => [field, payload[field as keyof typeof payload]]),
+        );
         setApplication(
           await resubmitOnboardingApplication(
-            { ...payload, expected_version: expectedVersion, licenses },
+            { ...correctionPayload, expected_version: expectedVersion, licenses },
             crypto.randomUUID(),
           ),
         );

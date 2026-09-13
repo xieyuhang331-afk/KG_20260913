@@ -62,7 +62,8 @@ export interface OnboardingSubmitPayload {
   licenses: LicenseBindingPayload[];
 }
 
-export interface OnboardingResubmitPayload extends OnboardingDraftPayload {
+export interface OnboardingResubmitPayload extends Partial<Omit<OnboardingDraftPayload, "expected_version">> {
+  expected_version: number;
   licenses: LicenseBindingPayload[];
 }
 

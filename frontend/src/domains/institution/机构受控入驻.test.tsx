@@ -408,24 +408,29 @@ describe("一期切片1机构受控入驻", () => {
     expect(institutionApi.initiatePrivateFileUpload).not.toHaveBeenCalled();
   });
 
-  it("机构端按补正字段保留既有材料并调用真实重提API", async () => {
+  it("机构端只提交平台点名的补正字段且不重建未回显敏感值", async () => {
     const correction: OnboardingApplication = {
       ...draft,
       status: "NEEDS_CORRECTION",
       version: 5,
-      correction_fields: ["registered_address"],
+      correction_fields: ["service_address", "constructor", "toString", "__proto__"],
       correction_reason_code: "ADDRESS_REQUIRES_CORRECTION",
       draft: {
-        credit_code: "TEST-CREDIT-CODE",
         legal_representative_name: "负责人",
         registered_address: "待补正地址",
         service_address: "服务地址",
         contact_name: "联系人",
-        contact_phone: "test-contact",
         contact_email: "slice1@example.invalid",
         service_tags: ["HYPERTENSION"],
       },
-      licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1", valid_from: "2026-01-01", valid_until: "2027-01-01" }],
+      licenses: [
+        {
+          license_type: "BUSINESS_LICENSE",
+          private_file_id: "file-1",
+          valid_from: "2026-01-01",
+          valid_until: "2027-01-01",
+        },
+      ],
     };
     vi.mocked(institutionApi.getOnboardingApplication).mockResolvedValue(correction);
     vi.mocked(institutionApi.resubmitOnboardingApplication).mockResolvedValue({
@@ -435,8 +440,8 @@ describe("一期切片1机构受控入驻", () => {
     });
     render(<ControlledOnboardingPage />);
     expect((await screen.findAllByText("待补正")).length).toBeGreaterThan(0);
-    fireEvent.change(screen.getByLabelText("注册地址"), {
-      target: { value: "已补正地址" },
+    fireEvent.change(screen.getByLabelText("服务地址"), {
+      target: { value: "已补正服务地址" },
     });
     const form = screen.getByRole("button", { name: "补正并重新提交" }).closest("form");
     expect(form).not.toBeNull();
@@ -445,22 +450,91 @@ describe("一期切片1机构受控入驻", () => {
     await userEvent.click(screen.getByRole("button", { name: "确认重新提交" }));
     await waitFor(() => expect(institutionApi.resubmitOnboardingApplication).toHaveBeenCalledOnce());
     expect(institutionApi.resubmitOnboardingApplication).toHaveBeenCalledWith(
-      expect.objectContaining({
-        credit_code: "TEST-CREDIT-CODE",
-        legal_representative_name: "负责人",
+      {
         expected_version: 5,
-        registered_address: "已补正地址",
-        service_address: "服务地址",
-        contact_name: "联系人",
-        contact_phone: "test-contact",
-        contact_email: "slice1@example.invalid",
-        service_tags: ["HYPERTENSION"],
-        licenses: [{ license_type: "BUSINESS_LICENSE", private_file_id: "file-1", valid_from: "2026-01-01", valid_until: "2027-01-01" }],
-      }),
+        service_address: "已补正服务地址",
+        licenses: [
+          {
+            license_type: "BUSINESS_LICENSE",
+            private_file_id: "file-1",
+            valid_from: "2026-01-01",
+            valid_until: "2027-01-01",
+          },
+        ],
+      },
       expect.any(String),
     );
     expect(institutionApi.initiatePrivateFileUpload).not.toHaveBeenCalled();
     expect(await screen.findByText("补正已重新提交，等待平台复核。")).toBeInTheDocument();
+  });
+
+  it("敏感字段被点名时只提交用户新输入的值", async () => {
+    const correction: OnboardingApplication = {
+      ...draft,
+      status: "NEEDS_CORRECTION",
+      version: 5,
+      correction_fields: ["contact_phone"],
+      correction_reason_code: "CONTACT_REQUIRES_CORRECTION",
+      draft: {
+        legal_representative_name: "负责人",
+        registered_address: "注册地址",
+        service_address: "服务地址",
+        contact_name: "联系人",
+        contact_email: "slice1@example.invalid",
+        service_tags: ["HYPERTENSION"],
+      },
+      licenses: [
+        {
+          license_type: "BUSINESS_LICENSE",
+          private_file_id: "file-1",
+          valid_from: "2026-01-01",
+          valid_until: "2027-01-01",
+        },
+      ],
+    };
+    vi.mocked(institutionApi.getOnboardingApplication).mockResolvedValue(correction);
+    vi.mocked(institutionApi.resubmitOnboardingApplication).mockResolvedValue({
+      ...correction,
+      status: "SUBMITTED",
+      version: 7,
+    });
+    render(<ControlledOnboardingPage />);
+    const correctedPhone = ["139", "0000", "0000"].join("");
+    fireEvent.change(await screen.findByLabelText("联系电话"), { target: { value: correctedPhone } });
+    await userEvent.click(screen.getByRole("button", { name: "补正并重新提交" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认重新提交" }));
+    await waitFor(() => expect(institutionApi.resubmitOnboardingApplication).toHaveBeenCalledOnce());
+    expect(institutionApi.resubmitOnboardingApplication).toHaveBeenCalledWith(
+      {
+        contact_phone: correctedPhone,
+        expected_version: 5,
+        licenses: correction.licenses,
+      },
+      expect.any(String),
+    );
+  });
+
+  it("点名的敏感必填字段为空时不打开确认框也不发送请求", async () => {
+    vi.mocked(institutionApi.getOnboardingApplication).mockResolvedValue({
+      ...draft,
+      status: "NEEDS_CORRECTION",
+      version: 5,
+      correction_fields: ["contact_phone"],
+      correction_reason_code: "CONTACT_REQUIRES_CORRECTION",
+      licenses: [
+        {
+          license_type: "BUSINESS_LICENSE",
+          private_file_id: "file-1",
+          valid_from: "2026-01-01",
+          valid_until: "2027-01-01",
+        },
+      ],
+    });
+    render(<ControlledOnboardingPage />);
+    await screen.findByLabelText("联系电话");
+    await userEvent.click(screen.getByRole("button", { name: "补正并重新提交" }));
+    expect(screen.queryByRole("dialog", { name: "确认提交补正？" })).not.toBeInTheDocument();
+    expect(institutionApi.resubmitOnboardingApplication).not.toHaveBeenCalled();
   });
 
   it("机构端按材料补正指令原子替换旧证照引用", async () => {
@@ -519,7 +593,8 @@ describe("一期切片1机构受控入驻", () => {
     await waitFor(
       () =>
         expect(institutionApi.resubmitOnboardingApplication).toHaveBeenCalledWith(
-          expect.objectContaining({
+          {
+            expected_version: 5,
             licenses: [
               {
                 license_type: "BUSINESS_LICENSE",
@@ -528,7 +603,7 @@ describe("一期切片1机构受控入驻", () => {
                 valid_until: "2027-01-01",
               },
             ],
-          }),
+          },
           expect.any(String),
         ),
       { timeout: 5000 },
