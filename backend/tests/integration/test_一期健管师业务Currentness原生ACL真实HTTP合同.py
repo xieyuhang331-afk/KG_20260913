@@ -378,19 +378,30 @@ def test_0042到0043对称往返且无对象残留(pg_database) -> None:
             for kind in ("r", "v", "S")
         )
 
+    command.downgrade(config, "20260912_0043")
     before = object_counts()
-    command.downgrade(config, "20260911_0042")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"
-    for signature in _SIGNATURES:
+    try:
+        command.downgrade(config, "20260911_0042")
         assert pg_database.fetch_value(
-            "SELECT to_regprocedure('" + signature + "') IS NULL"
-        )
-    assert object_counts() == before
+            "SELECT version_num FROM alembic_version"
+        ) == "20260911_0042"
+        for signature in _SIGNATURES:
+            assert pg_database.fetch_value(
+                "SELECT to_regprocedure('" + signature + "') IS NULL"
+            )
+        assert object_counts() == before
 
-    command.upgrade(config, "20260912_0043")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
-    for signature in _SIGNATURES:
+        command.upgrade(config, "20260912_0043")
         assert pg_database.fetch_value(
-            "SELECT to_regprocedure('" + signature + "') IS NOT NULL"
-        )
-    assert object_counts() == before
+            "SELECT version_num FROM alembic_version"
+        ) == "20260912_0043"
+        for signature in _SIGNATURES:
+            assert pg_database.fetch_value(
+                "SELECT to_regprocedure('" + signature + "') IS NOT NULL"
+            )
+        assert object_counts() == before
+    finally:
+        command.upgrade(config, "head")
+    assert pg_database.fetch_value(
+        "SELECT version_num FROM alembic_version"
+    ) == "20260913_0045"

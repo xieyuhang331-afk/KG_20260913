@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import BigInteger, and_, bindparam, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import load_only
 
@@ -315,6 +317,18 @@ class InstitutionOnboardingRepository:
             .returning(Tenant.id)
         )
         value.id = result.scalar_one()
+
+    async def bind_controlled_tenant_origin(self, application_id: str) -> str | None:
+        statement = text(
+            "SELECT public.institution_controlled_origin_bind_v1(:application_id)"
+        ).bindparams(
+            bindparam("application_id", type_=PostgreSQLUUID(as_uuid=True))
+        )
+        result = await self.session.execute(
+            statement, {"application_id": UUID(application_id)}
+        )
+        tenant_public_id = result.scalar_one_or_none()
+        return str(tenant_public_id) if tenant_public_id is not None else None
 
     async def bind_user_tenant(self, *, user_id: int, tenant_id: int) -> None:
         result = await self.session.execute(

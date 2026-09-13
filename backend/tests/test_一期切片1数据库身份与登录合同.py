@@ -89,6 +89,10 @@ async def test_controlled_institution_admin_login_requires_totp():
             new=AsyncMock(return_value=account),
         ),
         patch(
+            "app.modules.auth.service.get_direct_org_admin_login_account",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
             "app.modules.institution_onboarding.service.OnboardingSecrets",
             return_value=cipher,
         ),

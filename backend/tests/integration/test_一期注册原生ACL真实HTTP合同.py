@@ -137,8 +137,12 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
                 "SELECT has_sequence_privilege($1,'public.user_id_seq','USAGE')",
                 application_role,
             )
-            signature = (
+            legacy_signature = (
                 "public.auth_register_member_v1(character varying,character varying)"
+            )
+            signature = (
+                "public.auth_register_member_v2(uuid,character varying,"
+                "character varying,character,character varying,jsonb)"
             )
             assert await admin.fetchval(
                 "SELECT has_function_privilege($1,to_regprocedure($2),'EXECUTE')",
@@ -146,8 +150,17 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
                 signature,
             )
             assert not await admin.fetchval(
+                "SELECT has_function_privilege($1,to_regprocedure($2),'EXECUTE')",
+                application_role,
+                legacy_signature,
+            )
+            assert not await admin.fetchval(
                 "SELECT has_function_privilege('public',to_regprocedure($1),'EXECUTE')",
                 signature,
+            )
+            assert not await admin.fetchval(
+                "SELECT has_function_privilege('public',to_regprocedure($1),'EXECUTE')",
+                legacy_signature,
             )
             unrelated_roles = {
                 value
@@ -162,6 +175,11 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
                     "SELECT has_function_privilege($1,to_regprocedure($2),'EXECUTE')",
                     role,
                     signature,
+                )
+                assert not await admin.fetchval(
+                    "SELECT has_function_privilege($1,to_regprocedure($2),'EXECUTE')",
+                    role,
+                    legacy_signature,
                 )
             assert await admin.fetchval(
                 "SELECT conname FROM pg_constraint "
@@ -190,13 +208,13 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
                     "active",
                 )
             assert insert_denied.value.sqlstate == "42501"
-            with pytest.raises(asyncpg.InvalidParameterValueError) as invalid:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError) as legacy_denied:
                 await application.fetchrow(
                     "SELECT * FROM public.auth_register_member_v1($1,$2)",
                     "1" + "9" * 10,
                     "invalid-digest",
                 )
-            assert invalid.value.sqlstate == "22023"
+            assert legacy_denied.value.sqlstate == "42501"
         finally:
             await application.close()
             await admin.close()
@@ -222,6 +240,18 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
         admin = await asyncpg.connect(_to_asyncpg_dsn(task_admin_url))
         try:
             return int(await admin.fetchval('SELECT count(*) FROM public."user"'))
+        finally:
+            await admin.close()
+
+    async def phone_claim_count() -> int:
+        task_admin_url = _database_url_for_name(
+            os.environ["KG_TEST_ROLE_ADMIN_DATABASE_URL"], task_database
+        )
+        admin = await asyncpg.connect(_to_asyncpg_dsn(task_admin_url))
+        try:
+            return int(
+                await admin.fetchval("SELECT count(*) FROM public.identity_phone_claim")
+            )
         finally:
             await admin.close()
 
@@ -428,12 +458,17 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
         assert await registered_row(absent_phone) is None
         await engine.dispose()
 
-    async def assert_migration_state(*, registration_exists: bool) -> None:
+    async def assert_migration_state(
+        *, registration_exists: bool, revision: str
+    ) -> None:
         task_admin_url = _database_url_for_name(
             os.environ["KG_TEST_ROLE_ADMIN_DATABASE_URL"], task_database
         )
         admin = await asyncpg.connect(_to_asyncpg_dsn(task_admin_url))
         try:
+            assert await admin.fetchval(
+                "SELECT version_num FROM alembic_version"
+            ) == revision
             assert bool(
                 await admin.fetchval(
                     "SELECT to_regprocedure("
@@ -455,16 +490,36 @@ def test_Fresh原生ACL下真实注册成功且不扩大User基础权限(
     primary: BaseException | None = None
     try:
         _run(prepare())
-        command.upgrade(_build_alembic_config(migration_url), "head")
+        config = _build_alembic_config(migration_url)
+        command.upgrade(config, "head")
+        command.downgrade(config, "20260909_0040")
+        _run(
+            assert_migration_state(
+                registration_exists=False, revision="20260909_0040"
+            )
+        )
+        command.upgrade(config, "head")
+        _run(
+            assert_migration_state(
+                registration_exists=True, revision="20260913_0045"
+            )
+        )
         _run(assert_native_acl())
         _run(assert_legacy_direct_read_remains_denied())
         _run(exercise_real_http())
         _run(exercise_concurrent_registration())
         _run(exercise_commit_outcomes())
-        command.downgrade(_build_alembic_config(migration_url), "20260909_0040")
-        _run(assert_migration_state(registration_exists=False))
-        command.upgrade(_build_alembic_config(migration_url), "head")
-        _run(assert_migration_state(registration_exists=True))
+        users_before_rejected_downgrade = _run(user_count())
+        claims_before_rejected_downgrade = _run(phone_claim_count())
+        with pytest.raises(RuntimeError, match="DIRECT_ONBOARDING_DOWNGRADE_NONEMPTY"):
+            command.downgrade(config, "20260909_0040")
+        _run(
+            assert_migration_state(
+                registration_exists=True, revision="20260913_0045"
+            )
+        )
+        assert _run(user_count()) == users_before_rejected_downgrade
+        assert _run(phone_claim_count()) == claims_before_rejected_downgrade
     except BaseException as error:
         primary = error
         raise

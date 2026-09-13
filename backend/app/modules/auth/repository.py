@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import BigInteger, String, bindparam, select, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
+from app.core.uuid_generator import Uuid7Generator
 from app.modules.auth.models import User
+from app.modules.direct_institution_onboarding.service import (
+    account_phone_claim_digest,
+    account_phone_claim_digest_candidates,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +52,21 @@ class RegisteredMember:
     created_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class DirectOrgAdminLoginAccount:
+    source_kind: str
+    tenant_public_id: UUID
+    onboarding_id: UUID
+    credential_id: UUID
+    totp_secret_ciphertext: bytes = field(repr=False)
+    totp_key_id: str
+    totp_enabled: bool
+    account_version: int
+    user_status: str
+    tenant_status: str
+    root_status: str
+
+
 def _ensure_mapped() -> None:
     map_core_model_classes()
 
@@ -55,15 +78,34 @@ async def user_exists_by_phone(session, phone: str) -> bool:
 
 
 async def create_registered_member(
-    session, *, phone: str, password_hash: str
+    session,
+    *,
+    phone: str,
+    password_hash: str,
 ) -> RegisteredMember:
+    # auth_register_member_v1 remains immutable migration history; runtime uses v2.
+    phone_digest_key_id, phone_digest = account_phone_claim_digest(phone)
+    phone_digest_candidates = account_phone_claim_digest_candidates(phone)
     statement = text(
         "SELECT id,phone,role,status,verify_status,tenant_id,created_at "
-        "FROM public.auth_register_member_v1(:phone,:password_hash)"
+        "FROM public.auth_register_member_v2("
+        ":claim_id,:phone,:password_hash,:phone_digest,:phone_digest_key_id,"
+        ":phone_digest_candidates)"
     ).bindparams(
+        bindparam("claim_id", type_=PostgreSQLUUID(as_uuid=True)),
         bindparam("phone", type_=String(11)),
         bindparam("password_hash", type_=String(255)),
-    ).params(phone=phone, password_hash=password_hash)
+        bindparam("phone_digest", type_=String(64)),
+        bindparam("phone_digest_key_id", type_=String(64)),
+        bindparam("phone_digest_candidates", type_=JSONB),
+    ).params(
+        claim_id=Uuid7Generator().generate(),
+        phone=phone,
+        password_hash=password_hash,
+        phone_digest=phone_digest,
+        phone_digest_key_id=phone_digest_key_id,
+        phone_digest_candidates=phone_digest_candidates,
+    )
     result = await session.execute(statement)
     row = result.mappings().one()
     return RegisteredMember(**row)
@@ -95,6 +137,18 @@ async def get_user_currentness(session, user_id: int):
     result = await session.execute(statement)
     row = result.mappings().one_or_none()
     return UserCurrentness(**row) if row is not None else None
+
+
+async def get_direct_org_admin_login_account(session, user_id: int):
+    statement = text(
+        "SELECT source_kind,tenant_public_id,onboarding_id,credential_id,"
+        "totp_secret_ciphertext,totp_key_id,totp_enabled,account_version,"
+        "user_status,tenant_status,root_status "
+        "FROM public.direct_org_admin_login_v1(:user_id)"
+    ).bindparams(bindparam("user_id", type_=BigInteger())).params(user_id=user_id)
+    result = await session.execute(statement)
+    row = result.mappings().one_or_none()
+    return DirectOrgAdminLoginAccount(**row) if row is not None else None
 
 
 async def get_user_for_tenant_binding_update(session, user_id: int):

@@ -15,10 +15,9 @@ from tests.integration.database_safety import (
     validate_test_database_target,
 )
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
-REQUIRED_HEAD_REVISION = "20260913_0044"
+REQUIRED_HEAD_REVISION = "20260913_0045"
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: tests requiring external PostgreSQL")
@@ -812,6 +811,24 @@ def _grant_test_role_permissions(database: PgDatabase) -> None:
             'REVOKE ALL ON SEQUENCE public.organization_projection_generation_id_seq, '
             f'public.health_projection_generation_id_seq FROM "{role}"'
         )
+    direct_onboarding_tables = (
+        "public.direct_institution_onboarding, public.identity_phone_claim, "
+        "public.institution_tenant_origin, public.direct_institution_activation_credential, "
+        "public.platform_admin_security_profile, public.direct_institution_admin_account, "
+        "public.direct_institution_compliance_revision, public.direct_institution_license, "
+        "public.institution_admin_handoff, public.institution_admin_handoff_credential, "
+        "public.direct_onboarding_receipt, public.direct_onboarding_audit, "
+        "public.direct_onboarding_outbox"
+    )
+    database.execute(
+        # Explicit named role mapping is required by the security source-shape contract.
+        "REVOKE ALL PRIVILEGES ON TABLE {direct_onboarding_tables} "  # noqa: UP032
+        'FROM "{application_role}", "{readonly_role}"'.format(
+            direct_onboarding_tables=direct_onboarding_tables,
+            application_role=application_role,
+            readonly_role=readonly_role,
+        )
+    )
 
 
 @pytest.fixture(scope="module")
@@ -1329,8 +1346,8 @@ def real_db_client(pg_database):
     database_url = _get_application_database_url()
 
     from fastapi.testclient import TestClient
-    from sqlalchemy.pool import NullPool
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
 
     from app.core.database import get_db_session
     from app.main import create_app

@@ -189,6 +189,10 @@ def test_C1A_R12_正式HTTP注册登录与429闭环(pg_database, real_db_client,
             pytest.fail("C1A_FRESH_LIMIT_RESPONSE_UNSAFE", pytrace=False)
     finally:
         if subject is not None:
+            pg_database.execute(
+                "DELETE FROM public.identity_phone_claim "
+                f"WHERE user_id={int(subject)}"
+            )
             pg_database.execute(f'DELETE FROM public."user" WHERE id={int(subject)}')
         else:
             pg_database.execute(f"DELETE FROM public.\"user\" WHERE phone='{phone}'")

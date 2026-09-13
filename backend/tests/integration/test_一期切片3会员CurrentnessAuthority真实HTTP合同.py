@@ -167,7 +167,10 @@ def _activate_org_admin_for_test(
         f"status='APPROVED',draft_payload='{draft_payload}'::jsonb,current_revision_no=1,"
         f"tenant_internal_id={tenant_id},tenant_public_id='{tenant_public_id}',"
         "updated_at=now(),submitted_at=now(),reviewed_at=now(),version=3 "
-        f"WHERE application_id='{activation['application_id']}'"
+        f"WHERE application_id='{activation['application_id']}';"
+        "INSERT INTO public.institution_tenant_origin(tenant_id,tenant_public_id,origin_type,"
+        "controlled_application_id) VALUES ("
+        f"{tenant_id},'{tenant_public_id}','CONTROLLED_APPLICATION','{activation['application_id']}')"
     )
     return {
         "user_id": int(activation["user_id"]),
@@ -1096,7 +1099,7 @@ def test_0023到0025生命周期只改受限Authority与精确ACL(pg_database) -
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260913_0044"
+    ) == "20260913_0045"
     assert pg_database.fetch_value(
         f"SELECT has_function_privilege('{application_role}',"
         f"'{FUNCTION_SIGNATURE}','EXECUTE')"
@@ -1119,7 +1122,7 @@ def test_0023到0025生命周期只改受限Authority与精确ACL(pg_database) -
     command.upgrade(config, "head")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260913_0044"
+    ) == "20260913_0045"
     assert pg_database.fetch_value(
         "SELECT to_regprocedure("
         "'public.slice3_member_currentness_authority_v1(bigint,character varying)') IS NOT NULL"
@@ -1140,7 +1143,7 @@ def test_0024到0025往返仅增加Revision受限读与两列补正权限(
     def assert_0025_present() -> None:
         assert pg_database.fetch_value(
             "SELECT version_num FROM alembic_version"
-        ) == "20260913_0044"
+        ) == "20260913_0045"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure($$"
             + IDENTITY_SUMMARY_SIGNATURE

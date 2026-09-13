@@ -78,6 +78,14 @@ async def _seed_current_therapist(database_url: str) -> dict[str, object]:
                 tenant_public_id,
             )
             await connection.execute(
+                "INSERT INTO public.institution_tenant_origin("
+                "tenant_id,tenant_public_id,origin_type,controlled_application_id) "
+                "VALUES($1,$2,'CONTROLLED_APPLICATION',$3)",
+                tenant_id,
+                tenant_public_id,
+                application_id,
+            )
+            await connection.execute(
                 "INSERT INTO public.therapist_invitation("
                 "invitation_id,tenant_id,phone_ciphertext,phone_encryption_key_id,phone_digest,"
                 "phone_digest_key_id,phone_masked,code_digest,code_digest_key_id,expires_at,"
@@ -121,6 +129,10 @@ async def _delete_seed(database_url: str, values: dict[str, object]) -> None:
             await connection.execute(
                 "DELETE FROM public.therapist_profile WHERE therapist_id=$1",
                 values["therapist_id"],
+            )
+            await connection.execute(
+                "DELETE FROM public.institution_tenant_origin WHERE tenant_id=$1",
+                values["tenant_id"],
             )
             await connection.execute(
                 "DELETE FROM public.institution_application WHERE tenant_internal_id=$1",

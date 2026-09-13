@@ -192,6 +192,8 @@ _PUBLIC_OPERATIONS = frozenset({
     ("POST", "/api/v1/auth/login"),
     ("POST", "/api/v1/users/register"),
     ("POST", "/api/v1/institution-onboarding/activate"),
+    ("POST", "/api/v1/institution-onboarding/direct-activate"),
+    ("POST", "/api/v1/institution-onboarding/admin-handoffs/activate"),
     ("POST", "/api/v1/therapist-onboarding/activate"),
     ("GET", "/health"),
     ("GET", "/health/live"),

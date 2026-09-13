@@ -10,11 +10,11 @@ import pytest
 from tests.integration import conftest as integration_conftest
 
 
-EXPECTED_HEAD = "20260913_0044"
+EXPECTED_HEAD = "20260913_0045"
 STALE_HEAD = "20260816_0020"
 REVISION_FAILURE = (
     "integration revision contract must track Alembic head "
-    "20260913_0044; found stale revision 20260816_0020"
+    "20260913_0045; found stale revision 20260816_0020"
 )
 SCHEMA_FAILURE = (
     "pg_database must drop disposable identity schema before public reset "
@@ -1060,6 +1060,41 @@ def test_backend_integration_runtime_secrets_and_database_targets_are_masked():
     assert violations == []
 
 
+def test_0044通用ApplicationURL精确继承正式Runtime且不指向Migration身份():
+    backend_integration_job = _workflow_job_block("backend-integration")
+    expected = 'values["KG_DATABASE_URL"] = values["KG_TEST_DATABASE_URL"]'
+
+    assert backend_integration_job.count(expected) == 1
+    assert 'values["KG_DATABASE_URL"] = values["KG_TEST_MIGRATION_DATABASE_URL"]' not in backend_integration_job
+    assert 'values["KG_DATABASE_URL"] = values["KG_TEST_ROLE_ADMIN_DATABASE_URL"]' not in backend_integration_job
+
+
+def test_0044新增敏感表在IntegrationHarness中撤销通用Application与Readonly直表权限():
+    source = (INTEGRATION_ROOT / "conftest.py").read_text(encoding="utf-8")
+    required_tables = (
+        "public.direct_institution_onboarding",
+        "public.identity_phone_claim",
+        "public.institution_tenant_origin",
+        "public.direct_institution_activation_credential",
+        "public.platform_admin_security_profile",
+        "public.direct_institution_admin_account",
+        "public.direct_institution_compliance_revision",
+        "public.direct_institution_license",
+        "public.institution_admin_handoff",
+        "public.institution_admin_handoff_credential",
+        "public.direct_onboarding_receipt",
+        "public.direct_onboarding_audit",
+        "public.direct_onboarding_outbox",
+    )
+
+    assert "direct_onboarding_tables = (" in source
+    for table in required_tables:
+        assert source.count(table) >= 1
+    assert "REVOKE ALL PRIVILEGES ON TABLE {direct_onboarding_tables}" in source
+    assert 'application_role=application_role' in source
+    assert 'readonly_role=readonly_role' in source
+
+
 def test_StepUp独立Secret仅在DisposableIntegration生成并先脱敏():
     backend_unit_job = _workflow_job_block("backend-unit")
     backend_integration_job = _workflow_job_block("backend-integration")
@@ -1287,8 +1322,8 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
     assert 'values["KG_IDENTITY_PII_HMAC_KEY_B64"]' in backend_integration_job
     assert "Member enrollment key material is not isolated" in backend_integration_job
     assert "*member_enrollment_key_materials.values()," in backend_integration_job
-    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 4
-    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 4
+    assert backend_integration_job.count('values[f"{prefix}_CURRENT_KEY_ID"]') == 5
+    assert backend_integration_job.count('values[f"{prefix}_KEYRING_JSON"]') == 5
     assert backend_integration_job.count(
         'key_id = f"ci-member-{purpose}-{secrets.token_hex(6)}"'
     ) == 1
@@ -1297,6 +1332,25 @@ def test_slice3_digest_keyrings_are_independent_random_masked_and_exported():
         declaration = f'"{prefix}": "{purpose}"'
         assert backend_integration_job.count(declaration) == 1
         assert backend_integration_job.index(declaration) < mask_position < export_position
+
+
+def test_direct_onboarding_keyrings_are_random_masked_and_exported():
+    for job_name in ("backend-unit", "backend-integration"):
+        job = _workflow_job_block(job_name)
+        assert job.index("import json") < job.index("json.dumps(")
+        mask_position = job.index('print(f"::add-mask::{value}")')
+        export_position = job.index("with open(os.environ", mask_position)
+        for prefix, purpose in {
+            "KG_DIRECT_INSTITUTION_PII": "direct-pii",
+            "KG_DIRECT_INSTITUTION_CODE": "direct-code",
+            "KG_DIRECT_INSTITUTION_DIGEST": "direct-digest",
+            "KG_PLATFORM_ADMIN_TOTP": "platform-totp",
+            "KG_ACCOUNT_PHONE_CLAIM_DIGEST": "phone-claim",
+        }.items():
+            declaration = f'"{prefix}": "{purpose}"'
+            assert declaration in job
+            assert job.index(declaration) < mask_position < export_position
+        assert "secrets.token_bytes(32)" in job
 
 
 def test_slice4_runtime_roles_urls_and_keyrings_are_created_masked_and_propagated():

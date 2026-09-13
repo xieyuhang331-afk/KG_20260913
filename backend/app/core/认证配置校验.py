@@ -83,6 +83,21 @@ def validated_auth_settings(*, worker: bool = False, broker_url: str | None = No
             for domain in ("pii", "digest", "totp", "code", "replay", "readiness", "delivery"):
                 # Key rotation may reuse material within one domain, but not across purposes.
                 materials.extend(set(getattr(keys, f"{domain}_keys").values()))
+        direct_prefixes = (
+            "KG_DIRECT_INSTITUTION_PII_",
+            "KG_DIRECT_INSTITUTION_CODE_",
+            "KG_DIRECT_INSTITUTION_DIGEST_",
+            "KG_PLATFORM_ADMIN_TOTP_",
+            "KG_ACCOUNT_PHONE_CLAIM_DIGEST_",
+        )
+        if any(name.startswith(direct_prefixes) for name in os.environ):
+            from app.modules.direct_institution_onboarding.service import (
+                DirectOnboardingSecrets,
+            )
+
+            direct = DirectOnboardingSecrets()
+            for _, keyring in direct.keyrings:
+                materials.extend(set(keyring.values()))
         if len(set(materials)) != len(materials):
             raise ValueError("Key purposes overlap")
         return settings

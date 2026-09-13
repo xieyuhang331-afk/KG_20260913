@@ -21,6 +21,7 @@ from app.core.security import CurrentUser, create_access_token
 from app.modules.auth.repository import (
     RegisteredMember,
     create_registered_member,
+    get_direct_org_admin_login_account,
     get_user_by_phone,
 )
 from app.modules.auth.schemas import (
@@ -31,6 +32,10 @@ from app.modules.auth.schemas import (
     UserIdentityRequest,
     UserRegisterRequest,
     UserRegisterResponse,
+)
+from app.modules.direct_institution_onboarding.service import (
+    direct_org_admin_totp_aad,
+    open_totp_secret,
 )
 
 
@@ -49,7 +54,10 @@ def hash_password(password: str) -> str:
 # Not an account credential: keeps unknown subjects on the same PBKDF2 path.
 _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 _CANCELLATIONS = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
-_PHONE_UNIQUE_CONSTRAINT = "uq_user_phone"
+_PHONE_UNIQUE_CONSTRAINTS = {
+    "uq_user_phone",
+    "uq_identity_phone_claim_active_digest",
+}
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -106,12 +114,21 @@ def _phone_unique_conflict(error: BaseException) -> bool:
     }
     return (
         sqlstates == {"23505"}
-        and constraints == {_PHONE_UNIQUE_CONSTRAINT}
-        and ("23505", _PHONE_UNIQUE_CONSTRAINT) in identities
+        and len(constraints) == 1
+        and constraints <= _PHONE_UNIQUE_CONSTRAINTS
+        and any(
+            ("23505", constraint) in identities
+            for constraint in _PHONE_UNIQUE_CONSTRAINTS
+        )
     )
 
 
 def _registered_dependency_failure(error: BaseException) -> bool:
+    if (
+        isinstance(error, RuntimeError)
+        and str(error) == "DIRECT_ONBOARDING_DEPENDENCY_UNAVAILABLE"
+    ):
+        return True
     if isinstance(
         error,
         (
@@ -296,16 +313,24 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
         raise HTTPException(status_code=403, detail="User is not active")
 
     account = None
+    direct_account = None
     org_admin_totp_verified = False
     if user.role == "org_admin":
         try:
             account = await get_onboarding_account_for_login(user.id)
+            direct_account = await get_direct_org_admin_login_account(session, user.id)
         except Exception:
             raise HTTPException(
                 status_code=503,
                 detail="Authentication service unavailable",
             ) from None
-        if account is None or not account.totp_enabled:
+        if (account is None) == (direct_account is None):
+            raise HTTPException(
+                status_code=403,
+                detail="Login context is not configured",
+            )
+        selected_account = account if account is not None else direct_account
+        if not selected_account.totp_enabled:
             raise HTTPException(
                 status_code=403,
                 detail="Login context is not configured",
@@ -317,8 +342,23 @@ async def login_user(session, payload: AuthLoginRequest) -> AuthLoginResponse:
         from app.modules.institution_onboarding.service import OnboardingSecrets, utcnow
 
         try:
+            if direct_account is None:
+                totp_secret = OnboardingSecrets().decrypt(
+                    account.totp_secret_ciphertext
+                )
+            else:
+                totp_secret = open_totp_secret(
+                    direct_account.totp_secret_ciphertext,
+                    key_id=direct_account.totp_key_id,
+                    aad=direct_org_admin_totp_aad(
+                        direct_account.tenant_public_id,
+                        direct_account.onboarding_id,
+                        direct_account.source_kind,
+                        direct_account.credential_id,
+                    ),
+                )
             org_admin_totp_verified = verify_totp(
-                OnboardingSecrets().decrypt(account.totp_secret_ciphertext),
+                totp_secret,
                 payload.totp_code,
                 at=utcnow(),
             )
@@ -384,7 +424,9 @@ async def register_user(session, payload: UserRegisterRequest) -> UserRegisterRe
     password_hash = hash_password(payload.password)
     try:
         user = await create_registered_member(
-            session, phone=payload.phone, password_hash=password_hash
+            session,
+            phone=payload.phone,
+            password_hash=password_hash,
         )
     except _CANCELLATIONS:
         raise

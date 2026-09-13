@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import text
 
 
 pytestmark = pytest.mark.integration
@@ -73,7 +74,7 @@ async def _seed_closure_sources(application_database) -> None:
 
 
 def test_0020对象与四身份最小权限(pg_database, application_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
     assert pg_database.fetch_value("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('institution_invitation','institution_onboarding_account','institution_application','institution_application_revision','institution_license','private_file','institution_onboarding_idempotency','institution_onboarding_audit','institution_onboarding_outbox','institution_onboarding_delivery')") == 10
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
@@ -564,6 +565,32 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
     approved, review_replay = await asyncio.gather(approve_once(), approve_once())
     assert approved == review_replay
     assert approved["tenant_active"] is True and approved["service_ready"] is False
+    origin_rows = await pg_database._fetch_rows(
+        "SELECT tenant_id,tenant_public_id,origin_type,controlled_application_id,"
+        "direct_onboarding_id FROM public.institution_tenant_origin"
+    )
+    assert len(origin_rows) == 1
+    origin = origin_rows[0]
+    assert origin["origin_type"] == "CONTROLLED_APPLICATION"
+    assert str(origin["controlled_application_id"]) == activated["application_id"]
+    assert origin["direct_onboarding_id"] is None
+    async with reader() as session:
+        current = (
+            await session.execute(
+                text(
+                    "SELECT tenant_id,tenant_public_id,origin_type FROM "
+                    "public.institution_tenant_origin_current_v1("
+                    "CAST(:tenant_id AS BIGINT),CAST(:tenant_public_id AS UUID))"
+                ),
+                {
+                    "tenant_id": origin["tenant_id"],
+                    "tenant_public_id": origin["tenant_public_id"],
+                },
+            )
+        ).mappings().one()
+    assert current["origin_type"] == "CONTROLLED_APPLICATION"
+    assert current["tenant_id"] == origin["tenant_id"]
+    assert current["tenant_public_id"] == origin["tenant_public_id"]
     _mark_stage("READER")
     async with reader() as session:
         final = await get_application(session, user_id)

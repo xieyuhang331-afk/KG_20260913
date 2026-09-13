@@ -77,6 +77,16 @@ class Settings(BaseModel):
     private_file_writer_role: str | None = None
     private_file_access_writer_role: str | None = None
     institution_onboarding_reader_role: str | None = None
+    direct_institution_pii_current_key_id: str | None = None
+    direct_institution_pii_keyring_json: str | None = None
+    direct_institution_code_current_key_id: str | None = None
+    direct_institution_code_keyring_json: str | None = None
+    direct_institution_digest_current_key_id: str | None = None
+    direct_institution_digest_keyring_json: str | None = None
+    platform_admin_totp_current_key_id: str | None = None
+    platform_admin_totp_keyring_json: str | None = None
+    account_phone_claim_digest_current_key_id: str | None = None
+    account_phone_claim_digest_keyring_json: str | None = None
     therapist_onboarding_writer_database_url: str | None = None
     therapist_review_writer_database_url: str | None = None
     therapist_readiness_worker_database_url: str | None = None
@@ -244,6 +254,16 @@ def get_settings() -> Settings:
             "KG_PRIVATE_FILE_ACCESS_WRITER_ROLE"
         ),
         institution_onboarding_reader_role=os.getenv("KG_INSTITUTION_ONBOARDING_READER_ROLE"),
+        direct_institution_pii_current_key_id=os.getenv("KG_DIRECT_INSTITUTION_PII_CURRENT_KEY_ID"),
+        direct_institution_pii_keyring_json=os.getenv("KG_DIRECT_INSTITUTION_PII_KEYRING_JSON"),
+        direct_institution_code_current_key_id=os.getenv("KG_DIRECT_INSTITUTION_CODE_CURRENT_KEY_ID"),
+        direct_institution_code_keyring_json=os.getenv("KG_DIRECT_INSTITUTION_CODE_KEYRING_JSON"),
+        direct_institution_digest_current_key_id=os.getenv("KG_DIRECT_INSTITUTION_DIGEST_CURRENT_KEY_ID"),
+        direct_institution_digest_keyring_json=os.getenv("KG_DIRECT_INSTITUTION_DIGEST_KEYRING_JSON"),
+        platform_admin_totp_current_key_id=os.getenv("KG_PLATFORM_ADMIN_TOTP_CURRENT_KEY_ID"),
+        platform_admin_totp_keyring_json=os.getenv("KG_PLATFORM_ADMIN_TOTP_KEYRING_JSON"),
+        account_phone_claim_digest_current_key_id=os.getenv("KG_ACCOUNT_PHONE_CLAIM_DIGEST_CURRENT_KEY_ID"),
+        account_phone_claim_digest_keyring_json=os.getenv("KG_ACCOUNT_PHONE_CLAIM_DIGEST_KEYRING_JSON"),
         therapist_onboarding_writer_database_url=os.getenv("KG_THERAPIST_ONBOARDING_WRITER_DATABASE_URL"),
         therapist_review_writer_database_url=os.getenv("KG_THERAPIST_REVIEW_WRITER_DATABASE_URL"),
         therapist_readiness_worker_database_url=os.getenv("KG_THERAPIST_READINESS_WORKER_DATABASE_URL"),

@@ -211,7 +211,7 @@ def _task_action_payload(index: int, *, task_id: str, actor: int, version: int, 
 
 
 def test_PG01_PG11_0030单一Head六身份函数与基础表ACL精确闭合(pg_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
     runtime_roles = {name: os.environ[name] for name in FUNCTION_GRANTS}
     assert len(set(runtime_roles.values())) == 6
 
@@ -381,7 +381,7 @@ def test_PG12_0028_0029_0030线性生命周期保持单一Head和权限对称(pg
         "'public.slice5_family_subject_authority_v1(bigint,uuid)','EXECUTE')"
     )
     command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
 
 
 def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
@@ -399,7 +399,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
         config = _build_alembic_config(_get_test_database_url())
         with pytest.raises(RuntimeError, match="Slice 5 downgrade requires empty module tables"):
             command.downgrade(config, "20260824_0029")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
         assert pg_database.fetch_value("SELECT to_regclass('public.health_assessment')") == "health_assessment"
         assert pg_database.fetch_value(
             "SELECT to_regprocedure("
@@ -411,7 +411,7 @@ def test_PG13_0030非空降级在任何DDL前失败并保留Head(pg_database):
             'DELETE FROM public."user" WHERE id=91999'
         )
         command.upgrade(config, "head")
-        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0045"
 
 
 def test_D11_D12_规则治理作者审核人分离且mutation伴随事实完整(
@@ -1640,6 +1640,8 @@ def test_D10_D17_D19_D24_数据库计算最高风险并原子创建唯一任务(
             f"DELETE FROM public.private_file WHERE file_id='{qualification_file_id}';"
             f"DELETE FROM public.therapist_profile WHERE therapist_id='{therapist_id}';"
             f"DELETE FROM public.therapist_invitation WHERE invitation_id='{therapist_invitation_id}';"
+            f"DELETE FROM public.institution_tenant_origin WHERE controlled_application_id='{application_id}' "
+            f"AND tenant_id={tenant_id} AND origin_type='CONTROLLED_APPLICATION';"
             f"DELETE FROM public.institution_application WHERE application_id='{application_id}';"
             f"DELETE FROM public.institution_invitation WHERE invitation_id='{institution_invitation_id}';"
             f"DELETE FROM identity.user_member_self_link WHERE user_ref=98551;"
