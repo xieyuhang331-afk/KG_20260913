@@ -64,7 +64,8 @@ def test_I1_补正重提是单事务且幂等摘要覆盖原请求():
     source = _source(ONBOARDING_SERVICE)
     body = source.split("async def resubmit_application", 1)[1]
     assert "await save_draft(" not in body
-    assert "_canonical_payload(payload)" in body
+    assert 'payload.model_dump(mode="json", exclude_unset=True)' in body
+    assert "_canonical_payload(request_payload)" in body
     assert body.count("await session.commit()") == 0
     assert "_commit_operation(" in body
 

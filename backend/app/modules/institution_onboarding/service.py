@@ -713,27 +713,40 @@ async def resubmit_application(session, user_id: int, payload: ApplicationResubm
     row = await repo.get_application_for_user(user_id, for_update=True)
     if row is None:
         raise HTTPException(404, "ONBOARDING_APPLICATION_NOT_FOUND")
-    canonical_digest, _ = _canonical_payload(payload)
+    request_payload = payload.model_dump(mode="json", exclude_unset=True)
+    canonical_digest, _ = _canonical_payload(request_payload)
     request_digest, replay = await _replay(
-        repo, str(user_id), "APPLICATION_RESUBMIT", idempotency_key, payload
+        repo, str(user_id), "APPLICATION_RESUBMIT", idempotency_key, request_payload
     )
     if not hmac.compare_digest(canonical_digest, request_digest):
         raise HTTPException(409, "ONBOARDING_IDEMPOTENCY_CONFLICT")
     if replay is not None:
         return replay
     domain = _domain_application(row)
-    raw_values = payload.model_dump(exclude={"expected_version", "licenses"})
+    submitted_fields = payload.model_fields_set - {"expected_version", "licenses"}
+    required_fields = set(domain.correction_fields) - set(
+        LICENSE_TYPE_TO_CORRECTION_FIELD.values()
+    )
+    if submitted_fields != required_fields or any(
+        getattr(payload, field) is None for field in submitted_fields
+    ):
+        raise HTTPException(403, "ONBOARDING_CORRECTION_FIELD_FORBIDDEN")
+    raw_values = payload.model_dump(
+        exclude={"expected_version", "licenses"}, exclude_unset=True
+    )
     secrets_box = OnboardingSecrets()
-    credit_code = raw_values.pop("credit_code")
-    contact_phone = raw_values.pop("contact_phone")
-    raw_values["credit_code_digest"] = secrets_box.digest(credit_code)
-    raw_values["credit_code_ciphertext"] = base64.b64encode(
-        secrets_box.encrypt(credit_code)
-    ).decode("ascii")
-    raw_values["contact_phone_digest"] = secrets_box.digest(contact_phone)
-    raw_values["contact_phone_ciphertext"] = base64.b64encode(
-        secrets_box.encrypt(contact_phone)
-    ).decode("ascii")
+    if "credit_code" in raw_values:
+        credit_code = raw_values.pop("credit_code")
+        raw_values["credit_code_digest"] = secrets_box.digest(credit_code)
+        raw_values["credit_code_ciphertext"] = base64.b64encode(
+            secrets_box.encrypt(credit_code)
+        ).decode("ascii")
+    if "contact_phone" in raw_values:
+        contact_phone = raw_values.pop("contact_phone")
+        raw_values["contact_phone_digest"] = secrets_box.digest(contact_phone)
+        raw_values["contact_phone_ciphertext"] = base64.b64encode(
+            secrets_box.encrypt(contact_phone)
+        ).decode("ascii")
     correction_values = {
         CORRECTION_FIELD_TO_DRAFT[field]: raw_values[
             CORRECTION_FIELD_TO_DRAFT[field]

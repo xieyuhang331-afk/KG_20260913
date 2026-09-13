@@ -202,7 +202,17 @@ class ApplicationSubmitRequest(BaseModel):
     licenses: tuple[LicenseBinding, ...] = Field(min_length=1, max_length=2)
 
 
-class ApplicationResubmitRequest(ApplicationDraftRequest):
+class ApplicationResubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credit_code: str | None = Field(default=None, min_length=8, max_length=32)
+    legal_representative_name: str | None = Field(default=None, min_length=2, max_length=50)
+    registered_address: str | None = Field(default=None, min_length=4, max_length=255)
+    service_address: str | None = Field(default=None, min_length=4, max_length=255)
+    contact_name: str | None = Field(default=None, min_length=2, max_length=50)
+    contact_phone: str | None = Field(default=None, pattern=r"^1[3-9][0-9]{9}$")
+    contact_email: str | None = Field(default=None, min_length=3, max_length=254)
+    service_tags: tuple[str, ...] | None = Field(default=None, min_length=1, max_length=20)
+    expected_version: int = Field(gt=0)
     licenses: tuple[LicenseBinding, ...] = Field(min_length=1, max_length=2)
 
 
