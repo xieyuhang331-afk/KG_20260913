@@ -952,7 +952,7 @@ def _therapist_precommit(session, actor: CurrentUser, therapist_id: UUID, tenant
 
 
 @institution_router.post("/member-invitations", response_model=InvitationSecretDTO, status_code=201)
-async def create_invitation(payload: CreateMemberInvitationRequest, request: Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_writer_session), authority=Depends(get_db_session)):
+async def create_invitation(payload: CreateMemberInvitationRequest, request: Request, key: IdempotencyKey, actor: Annotated[CurrentUser, Depends(get_current_user_from_jwt)], session: Annotated[object, Depends(get_member_enrollment_writer_session)], authority: Annotated[object, Depends(get_db_session)]):
     tenant_id, public_id = await _current_institution(authority, actor)
     context = _context(request, actor, tenant_id, public_id, key)
     request_value = _request_value(payload)
@@ -966,7 +966,7 @@ async def create_invitation(payload: CreateMemberInvitationRequest, request: Req
 
 
 @institution_router.get("/member-invitations", response_model=InvitationPageDTO)
-async def list_invitations(status: str|None=None, cursor: str|None=None, limit: int=Query(50,ge=1,le=100), actor: CurrentUser=Depends(get_current_user_from_jwt), session=Depends(get_member_enrollment_reader_session), authority=Depends(get_db_session)):
+async def list_invitations(actor: Annotated[CurrentUser, Depends(get_current_user_from_jwt)], session: Annotated[object, Depends(get_member_enrollment_reader_session)], authority: Annotated[object, Depends(get_db_session)], status: str|None=None, cursor: str|None=None, limit: int=Query(50,ge=1,le=100)):
     tenant_id, public_id = await _current_institution(authority, actor)
     predicates = {"tenant_public_id": public_id}
     if status is not None:
@@ -975,7 +975,7 @@ async def list_invitations(status: str|None=None, cursor: str|None=None, limit: 
 
 
 @institution_router.post("/member-invitations/{invitation_id}/resend", response_model=InvitationSecretDTO)
-async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, request:Request, key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, request:Request, key: IdempotencyKey, actor: Annotated[CurrentUser, Depends(get_current_user_from_jwt)],session:Annotated[object, Depends(get_member_enrollment_writer_session)],authority:Annotated[object, Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     context=_context(request,actor,tenant_id,public_id,key)
     request_value=_request_value(payload,invitation_id)
@@ -989,7 +989,7 @@ async def resend_invitation(invitation_id: UuidV7, payload: VersionRequest, requ
 
 
 @institution_router.post("/member-invitations/{invitation_id}/revoke", response_model=InvitationDTO)
-async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequest, request:Request,key: IdempotencyKey, actor: CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequest, request:Request,key: IdempotencyKey, actor: Annotated[CurrentUser, Depends(get_current_user_from_jwt)],session:Annotated[object, Depends(get_member_enrollment_writer_session)],authority:Annotated[object, Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     context=_context(request,actor,tenant_id,public_id,key)
     request_value=_request_value(payload,invitation_id)
@@ -1003,7 +1003,7 @@ async def revoke_invitation(invitation_id: UuidV7, payload: InvitationRevokeRequ
 
 
 @institution_router.get("/member-enrollments", response_model=EnrollmentSummaryPageDTO)
-async def institution_enrollments(status: str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+async def institution_enrollments(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],authority:Annotated[object,Depends(get_db_session)],status: str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
     tenant_id,public_id=await _current_institution(authority,actor)
     predicates={"tenant_public_id":public_id}
     if status is not None:
@@ -1014,7 +1014,7 @@ async def institution_enrollments(status: str|None=None,cursor:str|None=None,lim
 
 
 @institution_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
-async def institution_enrollment(enrollment_id: UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+async def institution_enrollment(enrollment_id: UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],authority:Annotated[object,Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_family_enrollment_read_v1",predicates={"tenant_public_id":public_id,"enrollment_id":enrollment_id},order="enrollment_id",limit=2))
     if len(rows)!=1:
@@ -1023,7 +1023,7 @@ async def institution_enrollment(enrollment_id: UuidV7,actor:CurrentUser=Depends
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/identity-check", response_model=IdentityStatusDTO)
-async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionIdentityCheckRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionIdentityCheckRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     context=_context(request,actor,tenant_id,public_id,key)
     repo=MemberEnrollmentRepository(session)
@@ -1046,7 +1046,7 @@ async def institution_identity_check(enrollment_id: UuidV7,payload:InstitutionId
 
 
 @institution_router.post("/member-enrollments/{enrollment_id}/primary-assignments", response_model=AssignmentDTO,status_code=201)
-async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     context=_context(request,actor,tenant_id,public_id,key)
     request_value=_request_value(payload,enrollment_id)
@@ -1060,7 +1060,7 @@ async def create_assignment(enrollment_id:UuidV7,payload:CreateAssignmentRequest
 
 
 @institution_router.post("/primary-assignments/{assignment_id}/cancel", response_model=AssignmentDTO)
-async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session)):
+async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     context=_context(request,actor,tenant_id,public_id,key)
     request_value=_request_value(payload,assignment_id)
@@ -1074,7 +1074,7 @@ async def cancel_assignment(assignment_id:UuidV7,payload:AssignmentCancelRequest
 
 
 @institution_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
-async def institution_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+async def institution_case(case_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],authority:Annotated[object,Depends(get_db_session)]):
     tenant_id,public_id=await _current_institution(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"tenant_public_id":public_id,"case_id":case_id},order="case_id",limit=2))
     if len(rows)!=1:
@@ -1083,7 +1083,7 @@ async def institution_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_
 
 
 @family_router.post("/member-enrollments/accept", response_model=EnrollmentDTO,status_code=201)
-async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_writer_session),authority=Depends(get_db_session),institution_authority=Depends(get_institution_onboarding_reader_session)):
+async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_writer_session)],authority:Annotated[object,Depends(get_db_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
     member_id=await _member_for_actor(authority,actor,expected_phone=payload.phone)
     repo=MemberEnrollmentRepository(session)
     invitation=await repo.invitation_for_update(payload.invitation_id)
@@ -1125,14 +1125,14 @@ async def accept_enrollment(payload:AcceptEnrollmentRequest,request:Request,key:
 
 
 @family_router.get("/member-enrollments", response_model=EnrollmentPageDTO)
-async def family_enrollments(cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+async def family_enrollments(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],authority:Annotated[object,Depends(get_db_session)],cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
     member_id=await _member_for_actor(authority,actor)
     rows=await _safe(MemberEnrollmentRepository(session).family_enrollment_rows(member_id,cursor_id=_cursor_id(cursor),limit=limit+1))
     return {"items":tuple(_enrollment_list_row(row) for row in rows[:limit]),"next_cursor":str(rows[limit]["enrollment_id"]) if len(rows)>limit else None}
 
 
 @family_router.get("/member-enrollments/{enrollment_id}", response_model=EnrollmentDetailDTO)
-async def family_enrollment(enrollment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session),authority=Depends(get_db_session)):
+async def family_enrollment(enrollment_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],authority:Annotated[object,Depends(get_db_session)]):
     member_id=await _member_for_actor(authority,actor)
     row=await _safe(MemberEnrollmentRepository(session).family_enrollment_detail(member_id,enrollment_id,limit=2))
     if row is None:
@@ -1401,7 +1401,7 @@ async def retire_document(document_version_id:UuidV7,payload:ConsentRetireReques
 
 
 @therapist_router.get("/primary-assignments", response_model=AssignmentPageDTO)
-async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+async def therapist_assignments(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)],status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
     therapist=await _therapist_current(session,actor)
     predicates={"therapist_id":therapist["therapist_id"]}
     if status is not None:
@@ -1411,7 +1411,7 @@ async def therapist_assignments(status:str|None=None,cursor:str|None=None,limit:
 
 
 @therapist_router.get("/primary-assignments/{assignment_id}", response_model=AssignmentDetailDTO, summary="Therapist Assignment")
-async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)]):
     therapist=await _therapist_current(session,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_therapist_assignment_read_v1",predicates={"therapist_id":therapist["therapist_id"],"assignment_id":assignment_id},order="assignment_id",limit=2))
     if len(rows)!=1:
@@ -1420,7 +1420,7 @@ async def get_primary_therapist_assignment(assignment_id:UuidV7,actor:CurrentUse
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/accept", response_model=PreparingCaseDTO,status_code=201)
-async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
+async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_case_writer_session)]):
     therapist=await _therapist_current(session,actor)
     public_id=UUID(str(therapist["tenant_public_id"]))
     context=_context(request,actor,actor.tenant_id,public_id,key)
@@ -1443,7 +1443,7 @@ async def accept_assignment(assignment_id:UuidV7,payload:VersionRequest,request:
 
 
 @therapist_router.post("/primary-assignments/{assignment_id}/decline", response_model=AssignmentDTO)
-async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineRequest,request:Request,key:IdempotencyKey,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_case_writer_session)):
+async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_case_writer_session)]):
     therapist=await _therapist_current(session,actor)
     public_id=UUID(str(therapist["tenant_public_id"]))
     context=_context(request,actor,actor.tenant_id,public_id,key)
@@ -1464,7 +1464,7 @@ async def decline_assignment(assignment_id:UuidV7,payload:AssignmentDeclineReque
 
 
 @therapist_router.get("/service-cases/{case_id}", response_model=PreparingCaseDTO)
-async def therapist_case(case_id:UuidV7,actor:CurrentUser=Depends(get_current_user_from_jwt),session=Depends(get_member_enrollment_reader_session)):
+async def therapist_case(case_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_enrollment_reader_session)]):
     therapist=await _therapist_current(session,actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_service_case_read_v1",predicates={"primary_therapist_id":therapist["therapist_id"],"case_id":case_id},order="case_id",limit=2))
     if len(rows)!=1:
