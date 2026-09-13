@@ -111,7 +111,25 @@ def test_批准机构事实由受限函数读取且其他路径保留正式Reade
 
 
 def test_十条机构路由只使用受限Currentness且其他路径保留InstitutionReader() -> None:
+    from typing import get_args, get_type_hints
+
+    from fastapi.params import Depends as DependsParam
+
     from app.modules.member_enrollment import api
+
+    def dependency(endpoint, parameter_name):
+        parameter = inspect.signature(endpoint).parameters.get(parameter_name)
+        if parameter is None:
+            return None
+        candidates = []
+        if isinstance(parameter.default, DependsParam):
+            candidates.append(parameter.default)
+        annotation = get_type_hints(endpoint, include_extras=True).get(parameter_name)
+        candidates.extend(
+            item for item in get_args(annotation) if isinstance(item, DependsParam)
+        )
+        assert len(candidates) <= 1
+        return candidates[0].dependency if candidates else None
 
     institution_sites = (
         api.create_invitation,
@@ -127,8 +145,8 @@ def test_十条机构路由只使用受限Currentness且其他路径保留Instit
     )
     for endpoint in institution_sites:
         source = inspect.getsource(endpoint)
-        assert "authority=Depends(get_db_session)" in source
-        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" not in source
+        assert dependency(endpoint, "authority") is api.get_db_session
+        assert dependency(endpoint, "institution_authority") is None
         assert "_current_institution(authority,actor)" in source.replace(" ", "")
 
     remaining_reader_sites = (
@@ -144,23 +162,39 @@ def test_十条机构路由只使用受限Currentness且其他路径保留Instit
     )
     for endpoint in remaining_reader_sites:
         source = inspect.getsource(endpoint)
-        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" in source
+        assert dependency(endpoint, "institution_authority") is api.get_institution_onboarding_reader_session
         assert "_tenant_public_id(authority" not in source
 
     for endpoint in (api.accept_assignment, api.decline_assignment):
         source = inspect.getsource(endpoint)
-        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" not in source
-        assert "session=Depends(get_member_case_writer_session)" in source
+        assert dependency(endpoint, "institution_authority") is None
+        assert dependency(endpoint, "session") is api.get_member_case_writer_session
         assert "_therapist_current(session,actor)" in source.replace(" ", "")
 
 
 def test_平台实名审核不得用ApplicationAuthority读取Slice3或机构基表() -> None:
+    from typing import get_args, get_type_hints
+
+    from fastapi.params import Depends as DependsParam
+
     from app.modules.member_enrollment import api
+
+    def dependency(endpoint, parameter_name):
+        parameter = inspect.signature(endpoint).parameters[parameter_name]
+        candidates = []
+        if isinstance(parameter.default, DependsParam):
+            candidates.append(parameter.default)
+        annotation = get_type_hints(endpoint, include_extras=True)[parameter_name]
+        candidates.extend(
+            item for item in get_args(annotation) if isinstance(item, DependsParam)
+        )
+        assert len(candidates) == 1
+        return candidates[0].dependency
 
     for endpoint in (api.claim_review, api.pii_access, api.platform_decision):
         source = inspect.getsource(endpoint)
-        assert "member_reader=Depends(get_member_enrollment_reader_session)" in source
-        assert "institution_authority=Depends(get_institution_onboarding_reader_session)" in source
+        assert dependency(endpoint, "member_reader") is api.get_member_enrollment_reader_session
+        assert dependency(endpoint, "institution_authority") is api.get_institution_onboarding_reader_session
         assert "institution_application" not in source
         assert "service_enrollment" not in source
         assert "await authority.execute" not in source
