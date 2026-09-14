@@ -7,7 +7,7 @@ import json
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 
@@ -575,6 +575,17 @@ async def _reviewer_read_currentness(session, actor: CurrentUser) -> None:
     await require_reviewer(session, actor)
 
 
+async def _institution_reader_read_currentness(
+    session, actor: CurrentUser
+) -> None:
+    await session.execute(
+        __import__("sqlalchemy").text(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        )
+    )
+    await require_institution_actor(session, actor)
+
+
 async def _review_decision_dto(repo, therapist_id: str, result: dict[str, object]) -> dict[str, object]:
     item = await repo.current_review_item(therapist_id)
     profile = await repo.profile_summary(therapist_id)
@@ -683,13 +694,18 @@ async def get_therapist(therapist_id: UUID, actor: CurrentUser = Depends(get_cur
     "/service-readiness", response_model=SuccessEnvelope[ReadinessDTO],
     responses=_errors(401, 403, 404, 503),
 )
-async def get_service_readiness(actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
-    await _safe(require_institution_actor(session, actor))
-    value, stale = await _safe(read_readiness_fail_closed(session, actor.tenant_id))
+async def get_service_readiness(response: Response, actor: CurrentUser = Depends(get_current_user_from_jwt), session=Depends(get_therapist_reader_session)):
+    await _safe(_institution_reader_read_currentness(session, actor))
+    value, stale = await _safe(
+        read_readiness_fail_closed(
+            session, actor.tenant_id, establish_transaction=False
+        )
+    )
     if value is None:
         raise HTTPException(404, "READINESS_NOT_FOUND")
     if stale:
         await _request_readiness_refresh(actor.tenant_id)
+    response.headers["Cache-Control"] = "no-store, private"
     return _ok(ReadinessDTO, value)
 
 
