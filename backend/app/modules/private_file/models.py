@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Integer, SmallInteger, String, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.modules.institution_onboarding.models import InstitutionApplicationModel
 
 
 class PrivateFileModel(Base):
@@ -73,7 +82,12 @@ class PrivateFileModel(Base):
     actual_sha256: Mapped[str | None] = mapped_column(String(64))
     object_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False)
-    bound_application_id: Mapped[str | None] = mapped_column(ForeignKey("public.institution_application.application_id", name="fk_private_file_bound_application"))
+    bound_application_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            InstitutionApplicationModel.__table__.c.application_id,
+            name="fk_private_file_bound_application",
+        )
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
