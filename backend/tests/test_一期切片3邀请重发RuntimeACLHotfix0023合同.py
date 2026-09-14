@@ -90,7 +90,7 @@ def test_当前Head传播只更新Head合同而不改0022历史合同() -> None:
     migration_0022_contract = (
         ROOT / "tests" / "test_一期切片3Migration0022合同.py"
     ).read_text(encoding="utf-8")
-    assert 'REQUIRED_HEAD_REVISION = "20260913_0044"' in conftest
-    assert 'EXPECTED_HEAD = "20260913_0044"' in ci_contract
+    assert 'REQUIRED_HEAD_REVISION = "20260914_0046"' in conftest
+    assert 'EXPECTED_HEAD = "20260914_0046"' in ci_contract
     assert "20260818_0022_phase1_slice3_member_proxy_consent_service_case.py" in migration_0022_contract
     assert '"revision": "20260818_0022"' in migration_0022_contract

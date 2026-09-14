@@ -535,3 +535,8 @@ def test_0044到0043对称往返且仅删除本Revision函数(pg_database):
         "SELECT to_regprocedure('" + _CURRENTNESS_SIGNATURE + "') IS NOT NULL"
     ) is True
     assert _invitation_count(pg_database) == before
+
+    command.upgrade(config, "20260914_0046")
+    assert pg_database.fetch_value(
+        "SELECT version_num FROM alembic_version"
+    ) == "20260914_0046"
