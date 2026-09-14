@@ -1631,6 +1631,124 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Run frontend tests
+        run: npm run test -- --reporter=junit --outputFile=frontend-test-report.xml
+
+      - name: Run frontend lint
+        run: |
+          npm run lint
+          npm run lint:slice4
+          npm run lint:slice5
+          npm run lint:slice6
+          npm run lint:slice7
+
+      - name: Scan frontend source for PII
+        run: npm run pii:scan
+
+      - name: Verify and scan frontend JUnit
+        if: always()
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const reportPath = 'frontend-test-report.xml';
+          const summaryPath = 'frontend-test-diagnostics.json';
+          const safeMarker = '.frontend-junit-safe';
+          const exists = fs.existsSync(reportPath);
+          let tests = 0;
+          let failures = 0;
+          let errors = 0;
+          let skipped = 0;
+          let sensitive = false;
+          if (exists) {
+            const report = fs.readFileSync(reportPath, 'utf8');
+            tests = (report.match(/<testcase(?:\s|>)/g) || []).length;
+            failures = (report.match(/<failure(?:\s|>)/g) || []).length;
+            errors = (report.match(/<error(?:\s|>)/g) || []).length;
+            skipped = (report.match(/<skipped(?:\s|>)/g) || []).length;
+            const forbidden = [
+              /(?:postgres(?:ql)?(?:\+asyncpg)?|amqps?):\/\/[^\s<]+:[^\s<]+@/i,
+              /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
+              /\bBearer\s+[A-Za-z0-9._~-]+/,
+              /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/,
+              /(?<!\d)1[3-9]\d{9}(?!\d)/,
+              /(?<![0-9A-Za-z])\d{17}[0-9Xx](?![0-9A-Za-z])/,
+            ];
+            sensitive = forbidden.some((pattern) => pattern.test(report));
+          }
+          const safe = exists && tests > 0 && failures === 0 && errors === 0 && skipped === 0 && !sensitive;
+          fs.writeFileSync(
+            summaryPath,
+            `${JSON.stringify({schema_version: 1, report_present: exists, tests, failures, errors, skipped, sensitive_pattern_present: sensitive, safe})}\n`,
+            'utf8',
+          );
+          if (safe) fs.writeFileSync(safeMarker, 'safe\n', 'utf8');
+          if (!safe) {
+            console.error('FRONTEND_JUNIT_VALIDATION_FAILED');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Scan frontend delivery artifacts
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const roots = [
+            "dist",
+            "frontend-test-report.xml",
+            "frontend-test-diagnostics.json",
+            "../docs/一期交付/一期发布证据Manifest模板_V1.md",
+          ];
+          const forbidden = [
+            /(?:postgres(?:ql)?(?:\+asyncpg)?|amqps?):\/\/[^\s<]+:[^\s<]+@/i,
+            /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
+            /\bBearer\s+[A-Za-z0-9._~-]+/,
+            /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/,
+            /(?<!\d)1[3-9]\d{9}(?!\d)/,
+            /(?<![0-9A-Za-z])\d{17}[0-9Xx](?![0-9A-Za-z])/,
+          ];
+          const files = [];
+          const visit = (target) => {
+            const status = fs.statSync(target);
+            if (status.isDirectory()) {
+              for (const name of fs.readdirSync(target).sort()) visit(path.join(target, name));
+            } else {
+              files.push(target);
+            }
+          };
+          try {
+            for (const root of roots) visit(root);
+            for (const file of files) {
+              const content = fs.readFileSync(file, 'utf8');
+              if (forbidden.some((pattern) => pattern.test(content))) {
+                throw new Error('unsafe');
+              }
+            }
+            fs.writeFileSync('.frontend-delivery-safe', 'safe\n', 'utf8');
+          } catch {
+            console.error('FRONTEND_DELIVERY_ARTIFACT_SCAN_FAILED');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Upload frontend safe test summary
+        if: always() && hashFiles('frontend/frontend-test-diagnostics.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-test-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/frontend-test-diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload frontend test diagnostics
+        if: always() && hashFiles('frontend/.frontend-junit-safe') != '' && hashFiles('frontend/.frontend-delivery-safe') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-test-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/frontend-test-report.xml
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload frontend build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
