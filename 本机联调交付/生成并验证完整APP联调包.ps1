@@ -32,7 +32,12 @@ try {
   $ownershipValue=[Guid]::NewGuid().ToString('N');$ownershipPath=Join-Path $out '.kg-g1-package-owner'
   $ownershipStream=[IO.File]::Open($ownershipPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
   try{$ownershipBytes=[Text.Encoding]::ASCII.GetBytes($ownershipValue);$ownershipStream.Write($ownershipBytes,0,$ownershipBytes.Length)}finally{$ownershipStream.Dispose()}
-  $stage=Join-Path $out "stage-$($Commit.Substring(0,12))"
+  $stageRoot=Join-Path ([IO.Path]::GetTempPath()) "kg-g1-package-$($Commit.Substring(0,12))-$ownershipValue"
+  if(Test-Path -LiteralPath $stageRoot){Fail-Package 'KG_PACKAGE_CLEANUP_SCOPE_INVALID'}
+  New-Item -ItemType Directory -Path $stageRoot|Out-Null
+  $stageOwnershipPath=Join-Path $stageRoot '.kg-g1-package-owner'
+  [IO.File]::WriteAllText($stageOwnershipPath,$ownershipValue,[Text.Encoding]::ASCII)
+  $stage=Join-Path $stageRoot 'stage'
   New-Item -ItemType Directory -Path $stage|Out-Null
 
   $lsTreeRaw=git -C $root ls-tree -r -z --full-tree $Commit
@@ -122,8 +127,11 @@ try {
   try{$zipPaths=@($zipReader.Entries|Where-Object{-not$_.FullName.EndsWith('/')}|ForEach-Object{$_.FullName.Replace('\','/')}|Sort-Object)}finally{$zipReader.Dispose()}
   if(Compare-Object -ReferenceObject $finalExpectedPaths -DifferenceObject $zipPaths){Fail-Package 'KG_PACKAGE_MANIFEST_MISMATCH'}
   $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-  if([IO.Path]::GetFullPath($stage)-ne[IO.Path]::GetFullPath((Join-Path $out "stage-$($Commit.Substring(0,12))"))-or((Get-Item -LiteralPath $stage -Force).Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0-or[IO.File]::ReadAllText($ownershipPath,[Text.Encoding]::ASCII)-ne$ownershipValue){Fail-Package 'KG_PACKAGE_CLEANUP_SCOPE_INVALID'}
+  $expectedStageRoot=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "kg-g1-package-$($Commit.Substring(0,12))-$ownershipValue"))
+  if([IO.Path]::GetFullPath($stageRoot)-ne$expectedStageRoot-or[IO.Path]::GetFullPath($stage)-ne[IO.Path]::GetFullPath((Join-Path $expectedStageRoot 'stage'))-or((Get-Item -LiteralPath $stageRoot -Force).Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0-or((Get-Item -LiteralPath $stage -Force).Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0-or[IO.File]::ReadAllText($stageOwnershipPath,[Text.Encoding]::ASCII)-ne$ownershipValue-or[IO.File]::ReadAllText($ownershipPath,[Text.Encoding]::ASCII)-ne$ownershipValue){Fail-Package 'KG_PACKAGE_CLEANUP_SCOPE_INVALID'}
   [IO.Directory]::Delete($stage,$true)
+  [IO.File]::Delete($stageOwnershipPath)
+  [IO.Directory]::Delete($stageRoot)
   [IO.File]::Delete($ownershipPath)
   [ordered]@{status='BUILT';code='BUILT';source_commit=$Commit;source_tree=$tree;zip=(Split-Path $zip -Leaf);zip_sha256=$hash;openapi=(Split-Path $openApiArtifact -Leaf);openapi_sha256=$actualOpenApiSha256}|ConvertTo-Json -Compress
 } catch {

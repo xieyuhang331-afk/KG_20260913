@@ -646,6 +646,9 @@ def test_G1_OpenAPI生成禁止字节码且压缩前后文件集合必须精确(
     assert "function Write-GitBlobExact" in package
     assert "cat-file','blob',$Oid" in package
     assert "StandardOutput.BaseStream.CopyTo" in package
+    assert "[IO.Path]::GetTempPath()" in package
+    assert "kg-g1-package-$($Commit.Substring(0,12))-$ownershipValue" in package
+    assert "[IO.File]::ReadAllText($stageOwnershipPath" in package
     assert "PYTHONDONTWRITEBYTECODE" in package
     assert "ArgumentList.Add('-B')" in package
     assert "$finalActualPaths" in package
