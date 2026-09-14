@@ -11,10 +11,40 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest_asyncio.fixture
+async def _slice1_runtime_environment(tmp_path: Path, monkeypatch):
+    from app.core.config import get_settings
+    from app.core.database import (
+        _SLICE1_RUNTIMES,
+        dispose_database_runtimes,
+        dispose_slice1_runtime,
+    )
+
+    for kind in tuple(_SLICE1_RUNTIMES):
+        await dispose_slice1_runtime(kind)
+    with monkeypatch.context() as scoped:
+        scoped.setenv("KG_PRIVATE_FILE_STORAGE_ROOT", str(tmp_path))
+        scoped.setenv("KG_TEST_ENVIRONMENT", "ci_ephemeral")
+        scoped.setenv(
+            "KG_PRIVATE_FILE_ACCESS_SIGNING_KEY",
+            "slice1-test-only-signing-key-32-bytes",
+        )
+        get_settings.cache_clear()
+        try:
+            yield scoped
+        finally:
+            try:
+                await dispose_database_runtimes()
+            finally:
+                scoped.undo()
+                get_settings.cache_clear()
 
 
 class _CommitOutcomeSession:
@@ -73,7 +103,7 @@ async def _seed_closure_sources(application_database) -> None:
 
 
 def test_0020对象与四身份最小权限(pg_database, application_database):
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260913_0044"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0046"
     assert pg_database.fetch_value("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('institution_invitation','institution_onboarding_account','institution_application','institution_application_revision','institution_license','private_file','institution_onboarding_idempotency','institution_onboarding_audit','institution_onboarding_outbox','institution_onboarding_delivery')") == 10
     application_role = os.environ["KG_TEST_APPLICATION_ROLE"]
     readonly_role = os.environ["KG_TEST_READONLY_ROLE"]
@@ -112,9 +142,14 @@ def test_0020对象与四身份最小权限(pg_database, application_database):
 
 
 @pytest.mark.asyncio
-async def test_邀请激活文件扫描提交审核批准完整闭环(pg_database, application_database, tmp_path: Path, monkeypatch, request):
-    from app.core.config import get_settings
-    from app.core.database import _SLICE1_RUNTIMES, get_session_factory, get_slice1_session_factory
+async def test_邀请激活文件扫描提交审核批准完整闭环(
+    pg_database,
+    application_database,
+    tmp_path: Path,
+    _slice1_runtime_environment,
+    request,
+):
+    from app.core.database import get_session_factory, get_slice1_session_factory
     from app.modules.institution_onboarding.domain import generate_totp
     from app.modules.institution_onboarding.schemas import ActivationRequest, ApplicationDraftRequest, ApplicationResubmitRequest, ApplicationSubmitRequest, InvitationCreate, InvitationResendRequest, InvitationRevokeRequest, LicenseBinding, ReviewDecisionRequest
     from app.modules.institution_onboarding.service import activate, create_invitation, get_application, resend_invitation, resubmit_application, review_decision, revoke_invitation, save_draft, submit_application, utcnow
@@ -128,14 +163,10 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
             assert path.is_file() and mime_type == "application/pdf"
             return "CLEAN"
 
-    os.environ["KG_PRIVATE_FILE_STORAGE_ROOT"] = str(tmp_path)
-    monkeypatch.setenv("KG_TEST_ENVIRONMENT", "ci_ephemeral")
-    monkeypatch.setenv("KG_PRIVATE_FILE_ACCESS_SIGNING_KEY", "slice1-test-only-signing-key-32-bytes")
-    get_settings.cache_clear(); _SLICE1_RUNTIMES.clear()
     use_worker = os.getenv("KG_RUN_SLICE1_CELERY_WORKER") == "1"
     worker = None
     if use_worker:
-        monkeypatch.setenv(
+        _slice1_runtime_environment.setenv(
             "KG_PRIVATE_FILE_SCANNER_FACTORY",
             "tests.test_一期切片1私有文件Celery合同:create_ci_scanner",
         )
@@ -577,7 +608,11 @@ async def test_邀请激活文件扫描提交审核批准完整闭环(pg_databas
             raise AssertionError("SLICE1_OUTBOX_NOT_DELIVERED")
     else:
         delivered = []
-        monkeypatch.setattr(slice1_tasks.celery_app, "send_task", lambda *args, **kwargs: delivered.append((args, kwargs)))
+        _slice1_runtime_environment.setattr(
+            slice1_tasks.celery_app,
+            "send_task",
+            lambda *args, **kwargs: delivered.append((args, kwargs)),
+        )
         dispatched = await slice1_tasks._dispatch_one_outbox()
         assert dispatched["status"] == "PROCESSING"
         assert len(delivered) == 1

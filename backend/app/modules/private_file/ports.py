@@ -37,6 +37,7 @@ class PrivateObjectStorePort(Protocol):
 
 
 class PrivateFileScanner(Protocol):
+    async def health(self) -> bool: ...
     async def scan(self, path: Path, *, mime_type: str) -> str: ...
 
 

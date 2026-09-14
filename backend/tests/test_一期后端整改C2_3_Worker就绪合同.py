@@ -774,18 +774,58 @@ async def test_C2_3_R07_private_file缺少显式scanner_health即失败(monkeypa
     assert await module.check_private_file_worker_readiness() is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("health_result", "store_result", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+    ids=["all-ready", "scanner-not-ready", "store-not-ready"],
+)
+async def test_S1_private_file就绪要求真实Scanner与对象存储均通过(
+    monkeypatch, health_result, store_result, expected
+) -> None:
+    import app.tasks.institution_onboarding_tasks as module
+
+    class Scanner:
+        async def health(self) -> bool:
+            return health_result
+
+        async def scan(self, path, *, mime_type: str) -> str:
+            raise AssertionError("S1_READINESS_MUST_NOT_SCAN_FILE")
+
+    monkeypatch.setattr(module, "_scanner_for_worker", Scanner)
+    monkeypatch.setattr(module, "_object_store_for_worker", lambda: object())
+
+    async def probe(_: object) -> bool:
+        return store_result
+
+    monkeypatch.setattr(module, "probe_private_object_store", probe)
+    assert await module.check_private_file_worker_readiness() is expected
+
+
+def test_S1_Scanner内部health预算小于Worker整体预算() -> None:
+    import app.modules.private_file.clamav_scanner as scanner_module
+    import app.tasks.readiness as readiness_module
+
+    assert (
+        0 < scanner_module._HEALTH_TIMEOUT_SECONDS
+        < readiness_module._WORKER_PROBE_TIMEOUT_SECONDS
+    )
+
+
 def test_C2_3_R10_CI以精确目标运行产品探针并收集JUnit() -> None:
     workflow = (
         Path(__file__).resolve().parents[2] / ".github/workflows/p2-foundation-ci.yml"
     ).read_text(encoding="utf-8")
     assert "--ignore=tests/integration/test_一期后端整改C2_3_Worker就绪RabbitMQ闭环.py" in workflow
-    assert workflow.count("python scripts/check_worker_readiness.py") == 2
-    assert "--worker-kind slice7" in workflow
-    assert "--worker-kind slice5" in workflow
+    assert workflow.count("python scripts/check_worker_readiness.py") == 3
+    for worker_kind in ("private_file", "slice7", "slice5"):
+        assert workflow.count(f"--worker-kind {worker_kind}") == 1
+    assert "pytest-c23-private-file-readiness-report.xml" in workflow
     assert "pytest-c23-slice7-readiness-report.xml" in workflow
     assert "pytest-c23-slice5-readiness-report.xml" in workflow
     assert "backend/pytest-c23-slice7-readiness-report.xml" in workflow
     assert "backend/pytest-c23-slice5-readiness-report.xml" in workflow
+    assert "backend/pytest-c23-private-file-readiness-report.xml" in workflow
 
 
 def test_C2_3_R10_依赖合并后CI只保留正式Base触发() -> None:

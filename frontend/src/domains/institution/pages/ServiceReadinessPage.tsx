@@ -131,7 +131,9 @@ export function ServiceReadinessPage() {
                   >
                     <div>
                       <p className="font-semibold text-slate-950">就绪证据 v{item.evidence_version}</p>
-                      <p className="mt-1 text-xs text-slate-500">原因代码 {item.reason_codes.join("、") || "无"}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        原因：{item.reason_codes.map(reasonLabel).join("、") || "无"}
+                      </p>
                     </div>
                     <div className="text-sm text-slate-600">
                       <Clock3 aria-hidden="true" className="mr-1 inline" size={14} />
@@ -184,16 +186,15 @@ function readinessError(error: unknown) {
   return "证据加载失败，请重试。";
 }
 function reasonLabel(value: ReadinessReason) {
-  return (
-    {
-      COMPLIANCE_SUSPENDED: "机构当前处于合规暂停状态",
-      INSTITUTION_APPROVAL_SOURCE_INVALID: "机构审批来源或版本需要平台核对",
-      INSTITUTION_LICENSE_INVALID: "机构许可证缺失、尚未生效或已过期",
-      METABOLIC_SCOPE_MISSING: "机构与健管师的代谢健康服务范围尚未匹配",
-      NO_APPROVED_ACTIVE_THERAPIST: "暂无审核通过且资质有效的健管师",
-      TENANT_NOT_ACTIVE: "机构经营主体尚未激活",
-    } as Record<ReadinessReason, string>
-  )[value];
+  const labels: Record<ReadinessReason, string> = {
+    COMPLIANCE_SUSPENDED: "机构当前处于合规暂停状态",
+    INSTITUTION_APPROVAL_SOURCE_INVALID: "机构审批来源或版本需要平台核对",
+    INSTITUTION_LICENSE_INVALID: "机构许可证缺失、尚未生效或已过期",
+    METABOLIC_SCOPE_MISSING: "机构与健管师的代谢健康服务范围尚未匹配",
+    NO_APPROVED_ACTIVE_THERAPIST: "暂无审核通过且资质有效的健管师",
+    TENANT_NOT_ACTIVE: "机构经营主体尚未激活",
+  };
+  return labels[value] ?? "未识别的就绪条件，请刷新或联系平台核对";
 }
 function formatTime(value: string) {
   const date = new Date(value);
