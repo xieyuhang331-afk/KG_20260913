@@ -159,16 +159,28 @@ def test_Batch_B第五function_only身份按正式CI合同闭合传播() -> None
     assert 'REQUIRED_HEAD_REVISION = "20260914_0047"' in conftest
 
 
-def test_Batch_B正式Integration的private_file_Worker只装配冻结CI扫描器() -> None:
+def test_Batch_B正式Integration的private_file_Worker装配真实S1扫描器() -> None:
     workflow = _read(WORKFLOW)
     integration_job = workflow.split("  backend-integration:", 1)[1].split(
         "\n  frontend-build:", 1
     )[0]
     assert "KG_TEST_ENVIRONMENT: ci_ephemeral" in integration_job
     assert (
+        "KG_PRIVATE_FILE_SCANNER_FACTORY="
+        "app.modules.private_file.clamav_scanner:build_clamav_scanner"
+    ) in integration_job
+    assert (
         "KG_PRIVATE_FILE_SCANNER_FACTORY: "
         "tests.test_一期切片1私有文件Celery合同:create_ci_scanner"
+    ) not in integration_job
+    assert (
+        "clamav/clamav@sha256:"
+        "f156095071757e3838caa50265d65e36cdf7f934a27aacf851ea6d2fadbe8200"
     ) in integration_job
+    assert "Start independent private-file Celery worker" in integration_job
+    assert "-Q private-file" in integration_job
+    assert "pytest-s1-clamav-report.xml" in integration_job
+    assert "pytest-private-file-worker-report.xml" in integration_job
 
 
 def test_Batch_B_BackendUnit私有目录只能在Checkout后由RunnerTemp安全准备() -> None:

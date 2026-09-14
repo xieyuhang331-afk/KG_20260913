@@ -1,11 +1,13 @@
-import sys
-import types
 import os
 import subprocess
+import sys
+import textwrap
+import types
 from pathlib import Path
 
 import pytest
 
+from app.tasks import institution_onboarding_tasks as tasks
 from app.tasks.celery_app import (
     PRIVATE_FILE_CLEANUP_TASK_NAME,
     PRIVATE_FILE_QUEUE,
@@ -14,10 +16,12 @@ from app.tasks.celery_app import (
     celery_app,
     get_declared_queues,
 )
-from app.tasks import institution_onboarding_tasks as tasks
 
 
 class CiDeterministicScanner:
+    async def health(self) -> bool:
+        return True
+
     async def scan(self, path, *, mime_type: str) -> str:
         assert os.getenv("KG_TEST_ENVIRONMENT") == "ci_ephemeral"
         assert mime_type in {"application/pdf", "image/jpeg", "image/png"}
@@ -40,7 +44,9 @@ def test_私有文件扫描使用独立队列且JSON序列化():
     assert celery_app.conf.task_reject_on_worker_lost is True
 
 
-def test_生产Worker通过显式Port工厂装配扫描器且缺失配置时fail_closed(monkeypatch):
+def test_生产Worker通过显式Port工厂装配扫描器且缺失配置时fail_closed(
+    monkeypatch, tmp_path
+):
     class Scanner:
         async def scan(self, path, *, mime_type):
             return "CLEAN"
@@ -53,6 +59,146 @@ def test_生产Worker通过显式Port工厂装配扫描器且缺失配置时fail
     assert type(tasks._scanner_for_worker()) is Scanner
     monkeypatch.delenv("KG_PRIVATE_FILE_SCANNER_FACTORY")
     assert type(tasks._scanner_for_worker()).__name__ == "_UnavailableScanner"
+
+    monkeypatch.setenv(
+        "KG_PRIVATE_FILE_SCANNER_FACTORY",
+        "app.modules.private_file.clamav_scanner:build_clamav_scanner",
+    )
+    monkeypatch.setenv("KG_PRIVATE_FILE_CLAMD_HOST", "127.0.0.1")
+    monkeypatch.setenv("KG_PRIVATE_FILE_CLAMD_PORT", "3310")
+    monkeypatch.setenv("KG_PRIVATE_FILE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("KG_PRIVATE_FILE_SCANNER_ENGINE_VERSION", "1.4.6")
+    scanner = tasks._scanner_for_worker()
+    assert type(scanner).__name__ == "ClamAVScanner"
+
+
+def test_S1_真实factory与测试factory在CI合同中明确分离() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/p2-foundation-ci.yml"
+    ).read_text(encoding="utf-8")
+    s1_setup = workflow.split(
+        "- name: Prepare digest-pinned S1 ClamAV scanner", maxsplit=1
+    )[1].split("- name: Run real S1 ClamAV scanner contract", maxsplit=1)[0]
+    assert (
+        "KG_PRIVATE_FILE_SCANNER_FACTORY=app.modules.private_file.clamav_scanner:build_clamav_scanner"
+        in workflow
+    )
+    assert "KG_RUN_S1_CLAMAV_INTEGRATION=1" in workflow
+    assert "Run real S1 ClamAV scanner contract" in workflow
+    assert "pytest-s1-clamav-report.xml" in workflow
+    assert "--health-cmd \"printf 'zPING\\\\0'" in workflow
+    assert "S1 scanner container is unhealthy." in workflow
+    assert "--entrypoint /usr/bin/clamconf \"$image\" -n" in workflow
+    assert "host_hash" in workflow and "container_hash" in workflow
+    assert 'readonly"' in s1_setup
+    assert "Start independent private-file Celery worker" in workflow
+    assert "--worker-kind private_file" in workflow
+    assert "pytest-private-file-worker-report.xml" in workflow
+    assert "pytest-c23-private-file-readiness-report.xml" in workflow
+    assert "KG_TEST_A3_REAL_RABBIT=1" in workflow
+    assert "Private-file Celery worker remains after cleanup." in workflow
+    assert "--ignore=tests/integration/test_S1私有文件ClamAV扫描适配器Fresh闭环.py" in workflow
+    assert s1_setup.index('echo "KG_S1_CLAMD_SENTINEL=$sentinel"') < s1_setup.index(
+        "docker network create"
+    )
+    assert (
+        "KG_PRIVATE_FILE_SCANNER_FACTORY: tests.test_一期切片1私有文件Celery合同:create_ci_scanner"
+        not in workflow
+    )
+
+
+def test_S1_清理只删除归属精确匹配资源并继续处理其余资源() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/p2-foundation-ci.yml"
+    ).read_text(encoding="utf-8")
+    cleanup = workflow.split(
+        "- name: Stop and remove disposable S1 ClamAV scanner", maxsplit=1
+    )[1].split("- name: Stop and remove disposable RabbitMQ", maxsplit=1)[0]
+    assert "def s1_cleanup(run, environ):" in cleanup
+    assert "S1_RESOURCE_OWNER_MISMATCH" in cleanup
+    assert "S1_RESOURCE_INSPECTION_FAILED" in cleanup
+    embedded = cleanup.split("# S1_OWNERSHIP_CLEANUP_BEGIN", maxsplit=1)[1].split(
+        "# S1_OWNERSHIP_CLEANUP_END", maxsplit=1
+    )[0]
+    namespace = {"__name__": "s1_cleanup_contract"}
+    exec(compile(textwrap.dedent(embedded), "<s1-cleanup>", "exec"), namespace)
+    s1_cleanup = namespace["s1_cleanup"]
+
+    class Result:
+        def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+
+    names = {
+        "container": "kg-s1-123456abcdef-clamd",
+        "network": "kg-s1-123456abcdef-network",
+        "volume": "kg-s1-123456abcdef-signatures",
+    }
+    environment = {
+        "KG_S1_CLAMD_CONTAINER_NAME": names["container"],
+        "KG_S1_CLAMD_NETWORK_NAME": names["network"],
+        "KG_S1_CLAMD_VOLUME_NAME": names["volume"],
+        "KG_S1_CLAMD_SENTINEL": "task-sentinel",
+    }
+
+    def run_cleanup(modes: dict[str, str]):
+        actions: list[tuple[str, ...]] = []
+        present = {kind: mode != "absent" for kind, mode in modes.items()}
+
+        def fake_run(arguments, **_kwargs):
+            command = tuple(arguments[1:])
+            if command[:2] == ("inspect", "--format"):
+                kind = "container"
+            elif len(command) > 2 and command[1] == "inspect":
+                kind = command[0]
+            elif command[:3] == ("ps", "-a", "--format"):
+                return Result(stdout=(names["container"] + "\n") if present["container"] else "")
+            elif command[:3] == ("network", "ls", "--format"):
+                return Result(stdout=(names["network"] + "\n") if present["network"] else "")
+            elif command[:3] == ("volume", "ls", "--format"):
+                return Result(stdout=(names["volume"] + "\n") if present["volume"] else "")
+            else:
+                actions.append(command)
+                if command[0] == "rm":
+                    present["container"] = False
+                elif command[0] in {"network", "volume"} and command[1] == "rm":
+                    present[command[0]] = False
+                return Result()
+
+            mode = modes[kind]
+            if mode == "match":
+                return Result(stdout="task-sentinel\n")
+            if mode == "mismatch":
+                return Result(stdout="other-task\n")
+            if mode == "missing-label":
+                return Result(stdout="\n")
+            return Result(returncode=1)
+
+        return s1_cleanup(fake_run, environment), actions
+
+    returncode, actions = run_cleanup(
+        {"container": "match", "network": "match", "volume": "match"}
+    )
+    assert returncode == 0
+    assert ("stop", "--time", "15", names["container"]) in actions
+    assert ("rm", names["container"]) in actions
+    assert ("network", "rm", names["network"]) in actions
+    assert ("volume", "rm", names["volume"]) in actions
+
+    for unsafe_mode in ("mismatch", "missing-label", "inspect-fail"):
+        returncode, actions = run_cleanup(
+            {"container": unsafe_mode, "network": "match", "volume": "match"}
+        )
+        assert returncode != 0
+        assert not any(names["container"] in command for command in actions)
+        assert ("network", "rm", names["network"]) in actions
+        assert ("volume", "rm", names["volume"]) in actions
+
+    returncode, actions = run_cleanup(
+        {"container": "absent", "network": "absent", "volume": "absent"}
+    )
+    assert returncode == 0
+    assert actions == []
 
 
 def test_恢复任务与Outbox投递均注册为周期任务入口():
