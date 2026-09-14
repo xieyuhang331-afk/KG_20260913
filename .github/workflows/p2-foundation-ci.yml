@@ -230,7 +230,6 @@ jobs:
       KG_ALLOW_DESTRUCTIVE_TEST_DATABASE: '1'
       KG_TEST_ENVIRONMENT: ci_ephemeral
       KG_TEST_ROLE_SEPARATION: '1'
-      KG_PRIVATE_FILE_SCANNER_FACTORY: tests.test_一期切片1私有文件Celery合同:create_ci_scanner
     services:
       timescaledb:
         image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
@@ -1066,9 +1065,95 @@ jobs:
           echo "KG_FILE_STORAGE_BACKEND=local_filesystem" >>"$GITHUB_ENV"
           echo "KG_PRIVATE_FILE_STORAGE_ROOT=$storage_root" >>"$GITHUB_ENV"
 
+      - name: Prepare digest-pinned S1 ClamAV scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='clamav/clamav@sha256:f156095071757e3838caa50265d65e36cdf7f934a27aacf851ea6d2fadbe8200'
+          token="$(python -c 'import secrets; print(secrets.token_hex(6))')"
+          container="kg-s1-${token}-clamd"
+          network="kg-s1-${token}-network"
+          volume="kg-s1-${token}-signatures"
+          sentinel="kg-s1-scanner:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${token}"
+          config="$PWD/clamd私有文件扫描_V1.conf"
+          echo "KG_S1_CLAMD_CONTAINER_NAME=$container" >>"$GITHUB_ENV"
+          echo "KG_S1_CLAMD_NETWORK_NAME=$network" >>"$GITHUB_ENV"
+          echo "KG_S1_CLAMD_VOLUME_NAME=$volume" >>"$GITHUB_ENV"
+          echo "KG_S1_CLAMD_SENTINEL=$sentinel" >>"$GITHUB_ENV"
+          [[ -f "$config" ]] || { echo 'S1 scanner config is missing.'; exit 1; }
+          docker run --rm --network none --memory 128m \
+            --mount "type=bind,source=$config,target=/etc/clamav/clamd.conf,readonly" \
+            --entrypoint /usr/bin/clamconf "$image" -n >/dev/null
+          docker network create --label "kg.test.sentinel=$sentinel" "$network" >/dev/null
+          docker volume create --label "kg.test.sentinel=$sentinel" "$volume" >/dev/null
+          docker run --rm --network none --memory 256m \
+            --mount "type=volume,source=$volume,target=/s1-signatures" \
+            --entrypoint sh "$image" \
+            -c 'cp -a /var/lib/clamav/. /s1-signatures/'
+          docker run --rm --network "$network" --memory 512m \
+            --mount "type=volume,source=$volume,target=/var/lib/clamav" \
+            --entrypoint /usr/bin/freshclam "$image" \
+            --datadir=/var/lib/clamav --stdout --no-warnings
+          docker run -d --name "$container" --network "$network" --memory 3g \
+            --label "kg.test.sentinel=$sentinel" -e TZ=UTC \
+            -p 127.0.0.1::3310 \
+            --mount "type=bind,source=$config,target=/etc/clamav/clamd.conf,readonly" \
+            --mount "type=volume,source=$volume,target=/var/lib/clamav,readonly" \
+            --health-cmd "printf 'zPING\\0' | nc -w 1 127.0.0.1 3310 | grep -q PONG" \
+            --health-interval 2s --health-timeout 1s --health-retries 10 \
+            --health-start-period 2s \
+            --entrypoint /usr/sbin/clamd "$image" \
+            --config-file=/etc/clamav/clamd.conf --foreground >/dev/null
+          port="$(docker port "$container" 3310/tcp | sed -E 's/^.*:([0-9]+)$/\1/')"
+          [[ "$port" =~ ^[0-9]+$ ]] || { echo 'S1 scanner port is invalid.'; exit 1; }
+          host_hash="$(sha256sum "$config" | awk '{print $1}')"
+          container_hash="$(docker exec "$container" sha256sum /etc/clamav/clamd.conf | awk '{print $1}')"
+          [[ "$host_hash" == "$container_hash" ]] || { echo 'S1 scanner config hash mismatch.'; exit 1; }
+          [[ "$(docker inspect --format '{{.Path}}' "$container")" == '/usr/sbin/clamd' ]]
+          [[ "$(docker inspect --format '{{json .Args}}' "$container")" == '["--config-file=/etc/clamav/clamd.conf","--foreground"]' ]]
+          [[ "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/clamav/clamd.conf"}}{{.RW}}{{end}}{{end}}' "$container")" == 'false' ]]
+          S1_CLAMD_PORT="$port" python - <<'PY'
+          import os
+          import socket
+          import time
+
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(
+                      ("127.0.0.1", int(os.environ["S1_CLAMD_PORT"])), timeout=0.5
+                  ) as connection:
+                      connection.sendall(b"zPING\0")
+                      if connection.recv(16) == b"PONG\0":
+                          break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit("S1_SCANNER_NOT_READY")
+          PY
+          deadline=$((SECONDS + 15))
+          until [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == 'healthy' ]]; do
+            (( SECONDS < deadline )) || { echo 'S1 scanner container is unhealthy.'; exit 1; }
+            sleep 1
+          done
+          echo "KG_RUN_S1_CLAMAV_INTEGRATION=1" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_SCANNER_FACTORY=app.modules.private_file.clamav_scanner:build_clamav_scanner" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_CLAMD_HOST=127.0.0.1" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_CLAMD_PORT=$port" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_SCANNER_ENGINE_VERSION=1.4.6" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_SCANNER_TIMEOUT_SECONDS=30" >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_SCANNER_MAX_SIGNATURE_AGE_HOURS=48" >>"$GITHUB_ENV"
+
+      - name: Run real S1 ClamAV scanner contract
+        run: >-
+          python -m pytest
+          tests/integration/test_S1私有文件ClamAV扫描适配器Fresh闭环.py
+          -q --junitxml=pytest-s1-clamav-report.xml
+
       - name: Run PostgreSQL integration and migration tests
         run: >-
           python -m pytest tests/integration
+          --ignore=tests/integration/test_S1私有文件ClamAV扫描适配器Fresh闭环.py
           --ignore=tests/integration/test_身份注册持久发件箱数据库合同.py
           --ignore=tests/integration/test_一期切片7Outbox与RabbitMQ闭环.py
           --ignore=tests/integration/test_一期后端整改C2_3_Worker就绪RabbitMQ闭环.py
@@ -1080,6 +1165,109 @@ jobs:
           set -euo pipefail
           if pgrep -f -- 'celery.*--hostname=slice1-ci@' >/dev/null; then
             echo 'Slice 1 Celery worker remained after the regular integration phase.'
+            exit 1
+          fi
+
+      - name: Prepare independent private-file worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_hostname="private-file-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@$(hostname)"
+          echo 'KG_TEST_A3_REAL_RABBIT=1' >>"$GITHUB_ENV"
+          echo "KG_PRIVATE_FILE_CI_WORKER_HOSTNAME=$worker_hostname" >>"$GITHUB_ENV"
+
+      - name: Start independent private-file Celery worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_pid_file="$RUNNER_TEMP/kg-private-file-worker.pid"
+          worker_log="$RUNNER_TEMP/kg-private-file-worker.log"
+          worker_ping="$RUNNER_TEMP/kg-private-file-ping.log"
+          rm -f "$worker_pid_file" "$worker_log" "$worker_ping"
+          nohup python -m celery -A app.tasks.celery_app:celery_app worker \
+            -Q private-file \
+            --hostname="$KG_PRIVATE_FILE_CI_WORKER_HOSTNAME" \
+            --pool=solo --concurrency=1 --loglevel=WARNING \
+            --without-gossip --without-mingle --without-heartbeat \
+            >"$worker_log" 2>&1 &
+          worker_pid="$!"
+          echo "$worker_pid" >"$worker_pid_file"
+          worker_ready="false"
+          for _ in $(seq 1 30); do
+            if ! kill -0 "$worker_pid" 2>/dev/null; then
+              echo 'Independent private-file Celery worker exited before readiness.'
+              exit 1
+            fi
+            if python scripts/check_worker_readiness.py \
+              --worker-kind private_file \
+              --hostname "$KG_PRIVATE_FILE_CI_WORKER_HOSTNAME" \
+              >"$worker_ping" 2>&1 \
+              && grep -F -- '"status":"READY"' "$worker_ping" >/dev/null; then
+              worker_ready="true"
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$worker_ready" != "true" ]] || ! kill -0 "$worker_pid" 2>/dev/null; then
+            echo 'Independent private-file Celery worker is unavailable.'
+            exit 1
+          fi
+
+      - name: Run private-file scan recover cleanup worker contracts
+        run: >-
+          python -m pytest
+          tests/integration/test_一期后端整改A3私有文件扫描数据库与Worker闭环.py::test_A3_scan_recover_cleanup由独立private_file_worker真实消费
+          tests/integration/test_一期后端整改批次B私有文件完整链路数据库与Worker闭环.py::test_B_R35_scan_recover_cleanup固定private_file队列由独立Worker消费
+          -q --junitxml=pytest-private-file-worker-report.xml
+
+      - name: Run private-file product readiness probe
+        env:
+          KG_C2_3_WORKER_KIND: private_file
+          KG_C2_3_WORKER_HOSTNAME: ${{ env.KG_PRIVATE_FILE_CI_WORKER_HOSTNAME }}
+        run: >-
+          python -m pytest
+          tests/integration/test_一期后端整改C2_3_Worker就绪RabbitMQ闭环.py
+          -q --junitxml=pytest-c23-private-file-readiness-report.xml
+
+      - name: Stop independent private-file Celery worker
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker_pid_file="$RUNNER_TEMP/kg-private-file-worker.pid"
+          if [[ -f "$worker_pid_file" ]]; then
+            worker_pid="$(cat "$worker_pid_file")"
+            if [[ "$worker_pid" =~ ^[0-9]+$ ]] && kill -0 "$worker_pid" 2>/dev/null; then
+              kill "$worker_pid"
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$worker_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              if kill -0 "$worker_pid" 2>/dev/null; then
+                kill -KILL "$worker_pid"
+              fi
+              wait "$worker_pid" 2>/dev/null || true
+            fi
+          fi
+          rm -f "$worker_pid_file" \
+            "$RUNNER_TEMP/kg-private-file-worker.log" \
+            "$RUNNER_TEMP/kg-private-file-ping.log"
+
+      - name: Verify private-file worker cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e "$RUNNER_TEMP/kg-private-file-worker.pid" \
+            || -e "$RUNNER_TEMP/kg-private-file-worker.log" \
+            || -e "$RUNNER_TEMP/kg-private-file-ping.log" ]]; then
+            echo 'Private-file worker artifact remains after cleanup.'
+            exit 1
+          fi
+          if pgrep -f -- "celery.*--hostname=${KG_PRIVATE_FILE_CI_WORKER_HOSTNAME:-missing}" >/dev/null; then
+            echo 'Private-file Celery worker remains after cleanup.'
             exit 1
           fi
 
@@ -1471,8 +1659,46 @@ jobs:
             backend/pytest-outbox-steady-state-report.xml
             backend/pytest-outbox-r2-report.xml
             backend/pytest-uuid-validation-report.xml
+            backend/pytest-s1-clamav-report.xml
+            backend/pytest-private-file-worker-report.xml
+            backend/pytest-c23-private-file-readiness-report.xml
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stop and remove disposable S1 ClamAV scanner
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="${KG_S1_CLAMD_CONTAINER_NAME:-}"
+          network="${KG_S1_CLAMD_NETWORK_NAME:-}"
+          volume="${KG_S1_CLAMD_VOLUME_NAME:-}"
+          sentinel="${KG_S1_CLAMD_SENTINEL:-}"
+          if [[ -z "$container" && -z "$network" && -z "$volume" ]]; then
+            exit 0
+          fi
+          [[ "$container" =~ ^kg-s1-[0-9a-f]{12}-clamd$ ]]
+          [[ "$network" == "${container%-clamd}-network" ]]
+          [[ "$volume" == "${container%-clamd}-signatures" ]]
+          [[ -n "$sentinel" ]]
+          cleanup_failed=0
+          if docker inspect "$container" >/dev/null 2>&1; then
+            [[ "$(docker inspect --format '{{index .Config.Labels "kg.test.sentinel"}}' "$container")" == "$sentinel" ]] || cleanup_failed=1
+            docker stop --time 15 "$container" >/dev/null || cleanup_failed=1
+            docker rm "$container" >/dev/null || cleanup_failed=1
+          fi
+          if docker network inspect "$network" >/dev/null 2>&1; then
+            [[ "$(docker network inspect --format '{{index .Labels "kg.test.sentinel"}}' "$network")" == "$sentinel" ]] || cleanup_failed=1
+            docker network rm "$network" >/dev/null || cleanup_failed=1
+          fi
+          if docker volume inspect "$volume" >/dev/null 2>&1; then
+            [[ "$(docker volume inspect --format '{{index .Labels "kg.test.sentinel"}}' "$volume")" == "$sentinel" ]] || cleanup_failed=1
+            docker volume rm "$volume" >/dev/null || cleanup_failed=1
+          fi
+          docker inspect "$container" >/dev/null 2>&1 && cleanup_failed=1
+          docker network inspect "$network" >/dev/null 2>&1 && cleanup_failed=1
+          docker volume inspect "$volume" >/dev/null 2>&1 && cleanup_failed=1
+          [[ "$cleanup_failed" -eq 0 ]] || { echo 'S1 scanner cleanup failed.'; exit 1; }
 
       - name: Stop and remove disposable RabbitMQ
         if: always()
