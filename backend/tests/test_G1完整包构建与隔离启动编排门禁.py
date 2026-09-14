@@ -643,6 +643,9 @@ try{{Assert-KgNoReparsePath $file;'FILE_OK'}}catch{{$_.Exception.Message}}
 
 def test_G1_OpenAPI生成禁止字节码且压缩前后文件集合必须精确() -> None:
     package = _text("生成并验证完整APP联调包.ps1")
+    assert "function Write-GitBlobExact" in package
+    assert "cat-file','blob',$Oid" in package
+    assert "StandardOutput.BaseStream.CopyTo" in package
     assert "PYTHONDONTWRITEBYTECODE" in package
     assert "ArgumentList.Add('-B')" in package
     assert "$finalActualPaths" in package

@@ -7,6 +7,19 @@ $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $approvedExclusion='frontend/验收证据/组织前端原型对齐V1/前端测试结果.xml'
 function Fail-Package([string]$Code){throw $Code}
+function Write-GitBlobExact([string]$Oid,[string]$Destination) {
+  $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName='git';$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+  foreach($argument in @('-C',$root,'cat-file','blob',$Oid)){[void]$info.ArgumentList.Add($argument)}
+  $process=[Diagnostics.Process]::new();$process.StartInfo=$info;$stream=$null
+  try{
+    if(-not$process.Start()){Fail-Package 'KG_PACKAGE_ARCHIVE_FAILED'}
+    $stderrTask=$process.StandardError.ReadToEndAsync()
+    $stream=[IO.File]::Open($Destination,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    $process.StandardOutput.BaseStream.CopyTo($stream);$stream.Dispose();$stream=$null
+    $process.WaitForExit();[void]$stderrTask.GetAwaiter().GetResult()
+    if($process.ExitCode-ne0){Fail-Package 'KG_PACKAGE_ARCHIVE_FAILED'}
+  }finally{if($stream){$stream.Dispose()};$process.Dispose()}
+}
 try {
   if((git -C $root cat-file -t $Commit).Trim()-ne'commit'){Fail-Package 'KG_PACKAGE_SOURCE_INVALID'}
   $tree=(git -C $root rev-parse "$Commit`^{tree}").Trim()
@@ -40,6 +53,11 @@ try {
   try{Expand-Archive -LiteralPath $archive -DestinationPath $stage}catch{Fail-Package 'KG_PACKAGE_ARCHIVE_FAILED'}
   [IO.File]::Delete($archive)
   $stageBoundary=[IO.Path]::GetFullPath($stage).TrimEnd('\')+'\'
+  foreach($object in $objects){
+    $objectPath=[IO.Path]::GetFullPath((Join-Path $stage $object.path))
+    if(-not$objectPath.StartsWith($stageBoundary,[StringComparison]::OrdinalIgnoreCase)-or-not(Test-Path -LiteralPath $objectPath -PathType Leaf)-or((Get-Item -LiteralPath $objectPath -Force).Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){Fail-Package 'KG_PACKAGE_UNSUPPORTED_GIT_OBJECT'}
+    Write-GitBlobExact $object.oid $objectPath
+  }
   $excluded=@()
   $approvedPath=[IO.Path]::GetFullPath((Join-Path $stage $approvedExclusion))
   if(-not$approvedPath.StartsWith($stageBoundary,[StringComparison]::OrdinalIgnoreCase)){Fail-Package 'KG_PACKAGE_CLEANUP_SCOPE_INVALID'}
