@@ -156,7 +156,7 @@ def test_Batch_B第五function_only身份按正式CI合同闭合传播() -> None
         assert token in workflow, f"BATCH_B_CI_ACCESS_WRITER_MISSING_{token}"
     assert "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_ROLE" in conftest
     assert "KG_TEST_PRIVATE_FILE_ACCESS_WRITER_DATABASE_URL" in conftest
-    assert 'REQUIRED_HEAD_REVISION = "20260913_0044"' in conftest
+    assert 'REQUIRED_HEAD_REVISION = "20260914_0046"' in conftest
 
 
 def test_Batch_B正式Integration的private_file_Worker只装配冻结CI扫描器() -> None:
