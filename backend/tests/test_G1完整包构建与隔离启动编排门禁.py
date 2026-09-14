@@ -649,6 +649,9 @@ def test_G1_OpenAPI生成禁止字节码且压缩前后文件集合必须精确(
     assert "[IO.Path]::GetTempPath()" in package
     assert "kg-g1-package-$($Commit.Substring(0,12))-$ownershipValue" in package
     assert "[IO.File]::ReadAllText($stageOwnershipPath" in package
+    assert "KG_FILE_STORAGE_BACKEND']='local_filesystem'" in package
+    assert "KG_PRIVATE_FILE_STORAGE_ROOT']=$openApiPrivateRoot" in package
+    assert "[IO.Directory]::Delete($openApiPrivateRoot)" in package
     assert "PYTHONDONTWRITEBYTECODE" in package
     assert "ArgumentList.Add('-B')" in package
     assert "$finalActualPaths" in package

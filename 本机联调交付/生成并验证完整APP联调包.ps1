@@ -98,14 +98,18 @@ try {
   foreach($lock in @($uvLock,$frontendLock)){if(-not(Test-Path -LiteralPath $lock -PathType Leaf)){Fail-Package 'KG_PACKAGE_LOCK_INVALID'}}
   $python=Join-Path $root 'backend/.venv/Scripts/python.exe'
   if(-not(Test-Path -LiteralPath $python -PathType Leaf)){Fail-Package 'KG_PACKAGE_LOCK_INVALID'}
+  $openApiPrivateRoot=Join-Path $stageRoot 'openapi-private'
+  New-Item -ItemType Directory -Path $openApiPrivateRoot|Out-Null
   $openApiArtifact=Join-Path $out "openapi_$($Commit.Substring(0,12)).json"
   $openApiProcess=[Diagnostics.ProcessStartInfo]::new();$openApiProcess.FileName=$python;$openApiProcess.WorkingDirectory=(Join-Path $stage 'backend');$openApiProcess.UseShellExecute=$false;$openApiProcess.CreateNoWindow=$true;$openApiProcess.RedirectStandardOutput=$true;$openApiProcess.RedirectStandardError=$true
   foreach($name in @($openApiProcess.Environment.Keys)){if($name.StartsWith('KG_',[StringComparison]::Ordinal)){$openApiProcess.Environment.Remove($name)}}
-  $openApiProcess.Environment['PYTHONDONTWRITEBYTECODE']='1';$openApiProcess.Environment['KG_ENV']='local';$openApiProcess.Environment['KG_DATABASE_HOST']='127.0.0.1';$openApiProcess.Environment['KG_G1_OPENAPI_OUTPUT']=$openApiArtifact
+  $openApiProcess.Environment['PYTHONDONTWRITEBYTECODE']='1';$openApiProcess.Environment['KG_ENV']='local';$openApiProcess.Environment['KG_DATABASE_HOST']='127.0.0.1';$openApiProcess.Environment['KG_FILE_STORAGE_BACKEND']='local_filesystem';$openApiProcess.Environment['KG_PRIVATE_FILE_STORAGE_ROOT']=$openApiPrivateRoot;$openApiProcess.Environment['KG_G1_OPENAPI_OUTPUT']=$openApiArtifact
   $seed=0;foreach($name in @('KG_DATABASE_PASSWORD','KG_JWT_SECRET_KEY','KG_AUTH_RATE_LIMIT_HMAC_KEY','KG_SLICE5_CURSOR_SIGNING_KEY','KG_SLICE7_CURSOR_SIGNING_KEY','KG_SLICE5_PUBLIC_REFERENCE_HMAC_KEY','KG_PRIVATE_FILE_ACCESS_SIGNING_KEY')){$seed++;$openApiProcess.Environment[$name]=(([char](96+$seed)).ToString()*40)}
   [void]$openApiProcess.ArgumentList.Add('-B');[void]$openApiProcess.ArgumentList.Add('-c');[void]$openApiProcess.ArgumentList.Add("import json,os; from pathlib import Path; from app.main import create_app; Path(os.environ['KG_G1_OPENAPI_OUTPUT']).write_bytes(json.dumps(create_app().openapi(),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8'))")
   $openApiRunner=[Diagnostics.Process]::new();$openApiRunner.StartInfo=$openApiProcess
   try{if(-not$openApiRunner.Start()){Fail-Package 'KG_PACKAGE_OPENAPI_INVALID'};$stdoutTask=$openApiRunner.StandardOutput.ReadToEndAsync();$stderrTask=$openApiRunner.StandardError.ReadToEndAsync();if(-not$openApiRunner.WaitForExit(120000)){$openApiRunner.Kill($true);$openApiRunner.WaitForExit();Fail-Package 'KG_PACKAGE_OPENAPI_INVALID'};[void]$stdoutTask.GetAwaiter().GetResult();[void]$stderrTask.GetAwaiter().GetResult();if($openApiRunner.ExitCode-ne0){Fail-Package 'KG_PACKAGE_OPENAPI_INVALID'}}finally{$openApiRunner.Dispose()}
+  if((Get-ChildItem -LiteralPath $openApiPrivateRoot -Force|Measure-Object).Count-ne0){Fail-Package 'KG_PACKAGE_OPENAPI_INVALID'}
+  [IO.Directory]::Delete($openApiPrivateRoot)
   $actualOpenApiSha256=(Get-FileHash -LiteralPath $openApiArtifact -Algorithm SHA256).Hash
   if($actualOpenApiSha256-ne$OpenApiSha256.ToUpperInvariant()){Fail-Package 'KG_PACKAGE_OPENAPI_INVALID'}
   $toolVersions=[ordered]@{pwsh=$PSVersionTable.PSVersion.ToString();git=(git --version);python=(& $python --version);node=(node --version);npm=(npm --version);uv=(uvx --from uv==0.12.7 uv --version)}
