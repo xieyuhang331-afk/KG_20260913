@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -104,6 +105,100 @@ def test_S1_真实factory与测试factory在CI合同中明确分离() -> None:
         "KG_PRIVATE_FILE_SCANNER_FACTORY: tests.test_一期切片1私有文件Celery合同:create_ci_scanner"
         not in workflow
     )
+
+
+def test_S1_清理只删除归属精确匹配资源并继续处理其余资源() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/p2-foundation-ci.yml"
+    ).read_text(encoding="utf-8")
+    cleanup = workflow.split(
+        "- name: Stop and remove disposable S1 ClamAV scanner", maxsplit=1
+    )[1].split("- name: Stop and remove disposable RabbitMQ", maxsplit=1)[0]
+    assert "def s1_cleanup(run, environ):" in cleanup
+    assert "S1_RESOURCE_OWNER_MISMATCH" in cleanup
+    assert "S1_RESOURCE_INSPECTION_FAILED" in cleanup
+    embedded = cleanup.split("# S1_OWNERSHIP_CLEANUP_BEGIN", maxsplit=1)[1].split(
+        "# S1_OWNERSHIP_CLEANUP_END", maxsplit=1
+    )[0]
+    namespace = {"__name__": "s1_cleanup_contract"}
+    exec(compile(textwrap.dedent(embedded), "<s1-cleanup>", "exec"), namespace)
+    s1_cleanup = namespace["s1_cleanup"]
+
+    class Result:
+        def __init__(self, returncode: int = 0, stdout: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+
+    names = {
+        "container": "kg-s1-123456abcdef-clamd",
+        "network": "kg-s1-123456abcdef-network",
+        "volume": "kg-s1-123456abcdef-signatures",
+    }
+    environment = {
+        "KG_S1_CLAMD_CONTAINER_NAME": names["container"],
+        "KG_S1_CLAMD_NETWORK_NAME": names["network"],
+        "KG_S1_CLAMD_VOLUME_NAME": names["volume"],
+        "KG_S1_CLAMD_SENTINEL": "task-sentinel",
+    }
+
+    def run_cleanup(modes: dict[str, str]):
+        actions: list[tuple[str, ...]] = []
+        present = {kind: mode != "absent" for kind, mode in modes.items()}
+
+        def fake_run(arguments, **_kwargs):
+            command = tuple(arguments[1:])
+            if command[:2] == ("inspect", "--format"):
+                kind = "container"
+            elif len(command) > 2 and command[1] == "inspect":
+                kind = command[0]
+            elif command[:3] == ("ps", "-a", "--format"):
+                return Result(stdout=(names["container"] + "\n") if present["container"] else "")
+            elif command[:3] == ("network", "ls", "--format"):
+                return Result(stdout=(names["network"] + "\n") if present["network"] else "")
+            elif command[:3] == ("volume", "ls", "--format"):
+                return Result(stdout=(names["volume"] + "\n") if present["volume"] else "")
+            else:
+                actions.append(command)
+                if command[0] == "rm":
+                    present["container"] = False
+                elif command[0] in {"network", "volume"} and command[1] == "rm":
+                    present[command[0]] = False
+                return Result()
+
+            mode = modes[kind]
+            if mode == "match":
+                return Result(stdout="task-sentinel\n")
+            if mode == "mismatch":
+                return Result(stdout="other-task\n")
+            if mode == "missing-label":
+                return Result(stdout="\n")
+            return Result(returncode=1)
+
+        return s1_cleanup(fake_run, environment), actions
+
+    returncode, actions = run_cleanup(
+        {"container": "match", "network": "match", "volume": "match"}
+    )
+    assert returncode == 0
+    assert ("stop", "--time", "15", names["container"]) in actions
+    assert ("rm", names["container"]) in actions
+    assert ("network", "rm", names["network"]) in actions
+    assert ("volume", "rm", names["volume"]) in actions
+
+    for unsafe_mode in ("mismatch", "missing-label", "inspect-fail"):
+        returncode, actions = run_cleanup(
+            {"container": unsafe_mode, "network": "match", "volume": "match"}
+        )
+        assert returncode != 0
+        assert not any(names["container"] in command for command in actions)
+        assert ("network", "rm", names["network"]) in actions
+        assert ("volume", "rm", names["volume"]) in actions
+
+    returncode, actions = run_cleanup(
+        {"container": "absent", "network": "absent", "volume": "absent"}
+    )
+    assert returncode == 0
+    assert actions == []
 
 
 def test_恢复任务与Outbox投递均注册为周期任务入口():

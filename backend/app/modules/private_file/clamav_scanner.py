@@ -245,10 +245,10 @@ class ClamAVScanner:
         record = await reader.readuntil(b"\0")
         if not 1 < len(record) <= _MAX_RESPONSE_SIZE:
             raise _scanner_unavailable()
-        try:
-            extra = await asyncio.wait_for(reader.read(1), timeout=0.01)
-        except TimeoutError:
-            extra = b""
+        # clamd closes a single-command connection after its one NUL-terminated
+        # response.  Only EOF proves that the response is complete; a short
+        # period without bytes does not rule out a delayed second record.
+        extra = await reader.read(_MAX_RESPONSE_SIZE + 1)
         if extra:
             raise _scanner_unavailable()
         return record[:-1]

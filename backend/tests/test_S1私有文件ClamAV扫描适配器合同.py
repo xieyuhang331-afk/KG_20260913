@@ -318,6 +318,51 @@ async def test_S1_R12_超长引擎响应稳定fail_closed(tmp_path) -> None:
             await scanner.scan(path, mime_type="application/pdf")
 
 
+@pytest.mark.asyncio
+async def test_S1_R04_OK后连接未结束且延迟第二记录绝不接受() -> None:
+    reader = asyncio.StreamReader(limit=4096)
+    reader.feed_data(b"stream: OK\0")
+    pending = asyncio.create_task(ClamAVScanner._read_single_record(reader))
+    await asyncio.sleep(0.03)
+    assert pending.done() is False
+
+    reader.feed_data(b"stream: Synthetic-Delayed FOUND\0")
+    reader.feed_eof()
+    with pytest.raises(
+        PrivateFileScannerUnavailable,
+        match="PRIVATE_FILE_SCANNER_UNAVAILABLE",
+    ):
+        await pending
+
+
+@pytest.mark.asyncio
+async def test_S1_R04_OK后连接不结束由调用方总预算超时() -> None:
+    reader = asyncio.StreamReader(limit=4096)
+    reader.feed_data(b"stream: OK\0")
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.03):
+            await ClamAVScanner._read_single_record(reader)
+
+
+@pytest.mark.asyncio
+async def test_S1_R04_单一记录必须以EOF完成() -> None:
+    reader = asyncio.StreamReader(limit=4096)
+    reader.feed_data(b"stream: OK\0")
+    reader.feed_eof()
+    assert await ClamAVScanner._read_single_record(reader) == b"stream: OK"
+
+
+@pytest.mark.asyncio
+async def test_S1_R08_等待响应结束期间取消仍优先传播() -> None:
+    reader = asyncio.StreamReader(limit=4096)
+    reader.feed_data(b"stream: OK\0")
+    pending = asyncio.create_task(ClamAVScanner._read_single_record(reader))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+
 def test_S1_R18_clamd唯一配置拒绝部分扫描与敏感日志() -> None:
     config_path = Path(__file__).resolve().parents[1] / "clamd私有文件扫描_V1.conf"
     text = config_path.read_text(encoding="utf-8")

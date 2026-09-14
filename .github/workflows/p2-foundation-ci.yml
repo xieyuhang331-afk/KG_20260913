@@ -1670,35 +1670,115 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          container="${KG_S1_CLAMD_CONTAINER_NAME:-}"
-          network="${KG_S1_CLAMD_NETWORK_NAME:-}"
-          volume="${KG_S1_CLAMD_VOLUME_NAME:-}"
-          sentinel="${KG_S1_CLAMD_SENTINEL:-}"
-          if [[ -z "$container" && -z "$network" && -z "$volume" ]]; then
-            exit 0
-          fi
-          [[ "$container" =~ ^kg-s1-[0-9a-f]{12}-clamd$ ]]
-          [[ "$network" == "${container%-clamd}-network" ]]
-          [[ "$volume" == "${container%-clamd}-signatures" ]]
-          [[ -n "$sentinel" ]]
-          cleanup_failed=0
-          if docker inspect "$container" >/dev/null 2>&1; then
-            [[ "$(docker inspect --format '{{index .Config.Labels "kg.test.sentinel"}}' "$container")" == "$sentinel" ]] || cleanup_failed=1
-            docker stop --time 15 "$container" >/dev/null || cleanup_failed=1
-            docker rm "$container" >/dev/null || cleanup_failed=1
-          fi
-          if docker network inspect "$network" >/dev/null 2>&1; then
-            [[ "$(docker network inspect --format '{{index .Labels "kg.test.sentinel"}}' "$network")" == "$sentinel" ]] || cleanup_failed=1
-            docker network rm "$network" >/dev/null || cleanup_failed=1
-          fi
-          if docker volume inspect "$volume" >/dev/null 2>&1; then
-            [[ "$(docker volume inspect --format '{{index .Labels "kg.test.sentinel"}}' "$volume")" == "$sentinel" ]] || cleanup_failed=1
-            docker volume rm "$volume" >/dev/null || cleanup_failed=1
-          fi
-          docker inspect "$container" >/dev/null 2>&1 && cleanup_failed=1
-          docker network inspect "$network" >/dev/null 2>&1 && cleanup_failed=1
-          docker volume inspect "$volume" >/dev/null 2>&1 && cleanup_failed=1
-          [[ "$cleanup_failed" -eq 0 ]] || { echo 'S1 scanner cleanup failed.'; exit 1; }
+          python - <<'PY'
+          # S1_OWNERSHIP_CLEANUP_BEGIN
+          import os
+          import re
+          import subprocess
+
+
+          def s1_cleanup(run, environ):
+              resources = (
+                  (
+                      "container",
+                      environ.get("KG_S1_CLAMD_CONTAINER_NAME", ""),
+                      r"^kg-s1-[0-9a-f]{12}-clamd$",
+                  ),
+                  (
+                      "network",
+                      environ.get("KG_S1_CLAMD_NETWORK_NAME", ""),
+                      r"^kg-s1-[0-9a-f]{12}-network$",
+                  ),
+                  (
+                      "volume",
+                      environ.get("KG_S1_CLAMD_VOLUME_NAME", ""),
+                      r"^kg-s1-[0-9a-f]{12}-signatures$",
+                  ),
+              )
+              sentinel = environ.get("KG_S1_CLAMD_SENTINEL", "")
+              if not any(name for _, name, _ in resources):
+                  return 0
+
+              failed = False
+
+              def invoke(arguments):
+                  return run(
+                      ["docker", *arguments],
+                      check=False,
+                      capture_output=True,
+                      text=True,
+                  )
+
+              def listed(kind, name):
+                  arguments = {
+                      "container": ["ps", "-a", "--format", "{{.Names}}"],
+                      "network": ["network", "ls", "--format", "{{.Name}}"],
+                      "volume": ["volume", "ls", "--format", "{{.Name}}"],
+                  }[kind]
+                  result = invoke(arguments)
+                  if result.returncode != 0:
+                      return None
+                  return name in result.stdout.splitlines()
+
+              for kind, name, pattern in resources:
+                  if not sentinel or re.fullmatch(pattern, name) is None:
+                      print("S1_RESOURCE_INSPECTION_FAILED")
+                      failed = True
+                      continue
+
+                  if kind == "container":
+                      inspect_arguments = [
+                          "inspect",
+                          "--format",
+                          '{{index .Config.Labels "kg.test.sentinel"}}',
+                          name,
+                      ]
+                  else:
+                      inspect_arguments = [
+                          kind,
+                          "inspect",
+                          "--format",
+                          '{{index .Labels "kg.test.sentinel"}}',
+                          name,
+                      ]
+                  inspection = invoke(inspect_arguments)
+                  if inspection.returncode != 0:
+                      presence = listed(kind, name)
+                      if presence is not False:
+                          print("S1_RESOURCE_INSPECTION_FAILED")
+                          failed = True
+                      continue
+
+                  if inspection.stdout.rstrip("\r\n") != sentinel:
+                      print("S1_RESOURCE_OWNER_MISMATCH")
+                      failed = True
+                      continue
+
+                  if kind == "container":
+                      deletion_commands = (
+                          ["stop", "--time", "15", name],
+                          ["rm", name],
+                      )
+                  else:
+                      deletion_commands = ([kind, "rm", name],)
+                  for arguments in deletion_commands:
+                      if invoke(arguments).returncode != 0:
+                          failed = True
+
+                  if listed(kind, name) is not False:
+                      print("S1_RESOURCE_INSPECTION_FAILED")
+                      failed = True
+
+              if failed:
+                  print("S1 scanner cleanup failed.")
+                  return 1
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(s1_cleanup(subprocess.run, os.environ))
+          # S1_OWNERSHIP_CLEANUP_END
+          PY
 
       - name: Stop and remove disposable RabbitMQ
         if: always()
