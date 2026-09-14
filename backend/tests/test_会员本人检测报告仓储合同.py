@@ -51,9 +51,8 @@ def test_列表使用owner过滤稳定keyset且只读() -> None:
         )
     )
     sql = _sql(session.statements[0])
-    assert "detection_report.user_id = 7" in sql
-    assert "detection_report.report_type = 'store_retest'" in sql
-    assert "ORDER BY detection_report.detection_time DESC, detection_report.id DESC" in sql
+    assert "r4_member_self_detection_report_history_v1" in sql
+    assert "(7,'store_retest'" in sql
     assert "INSERT" not in sql and "UPDATE" not in sql and "DELETE" not in sql
 
 
@@ -63,6 +62,5 @@ def test_详情同时过滤report_id和owner_user_id() -> None:
     session = _Session()
     asyncio.run(get_member_detection_report(session, user_id=7, report_id=11))
     sql = _sql(session.statements[0])
-    assert "detection_report.user_id = 7" in sql
-    assert "detection_report.id = 11" in sql
+    assert "r4_member_self_detection_report_read_v1(7,11)" in sql
     assert "FROM user" not in sql

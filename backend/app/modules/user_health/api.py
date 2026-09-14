@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Requ
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from app.core.database import (
     get_db_session,
@@ -23,7 +24,7 @@ from app.core.database import (
 )
 from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_member
 from app.core.responses import ok_response
-from app.core.security import CurrentUser, get_current_user, get_current_user_from_jwt
+from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.接口合同 import error_response
 from app.modules.assessment_readiness.repository import AssessmentReadinessRepository
 from app.modules.assessment_readiness.schemas import AssessmentReadinessDTO
@@ -92,7 +93,41 @@ from app.modules.user_health.service import (
     transition_formal_health_fact_state,
 )
 
-router = APIRouter(prefix="/api/v1/users", tags=["user_health"])
+
+class LegacyUserHealthRoute(APIRoute):
+    """Translate only known persistence failures for the 11 compatibility routes."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            try:
+                return await original(request)
+            except UserHealthRepositoryError as exc:
+                if exc.args == ("DEPENDENCY_UNAVAILABLE",):
+                    return error_response(
+                        request,
+                        503,
+                        "DEPENDENCY_UNAVAILABLE",
+                        retryable=True,
+                    )
+                raise
+            except DBAPIError:
+                return error_response(
+                    request,
+                    503,
+                    "DEPENDENCY_UNAVAILABLE",
+                    retryable=True,
+                )
+
+        return handler
+
+
+router = APIRouter(
+    prefix="/api/v1/users",
+    tags=["user_health"],
+    route_class=LegacyUserHealthRoute,
+)
 
 
 @router.get("/me/detection-reports")

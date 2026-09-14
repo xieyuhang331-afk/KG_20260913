@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import asyncpg
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from app.core.sqlalchemy_mapping import map_core_model_classes
-from app.modules.auth.models import User
 from app.modules.health_fact.repository import SqlAlchemyHealthFactRepository
-from app.modules.user_health.models import (
-    DetectionReport,
-    HealthIndicator,
-    HealthProfile,
-)
 
 
 class UserHealthRepositoryError(RuntimeError):
@@ -43,6 +38,16 @@ _DATABASE_ERRORS = {
     },
 }
 
+_R4_LEGACY_ERRORS = {
+    "R4_MEMBER_HEALTH_CURRENTNESS_INVALID": "MEMBER_HEALTH_CURRENTNESS_INVALID",
+    "R4_MEMBER_HEALTH_SCOPE_FORBIDDEN": "MEMBER_HEALTH_SCOPE_FORBIDDEN",
+    "R4_HEALTH_PROFILE_REQUIRED": "HEALTH_PROFILE_REQUIRED",
+}
+
+
+def _jsonb_parameter(value):
+    return None if value is None else json.dumps(value)
+
 
 def _database_error(exc: DBAPIError, callpoint: str) -> str | None:
     original = exc.orig
@@ -70,6 +75,31 @@ async def _execute_registered(session, statement, parameters, callpoint: str):
         if code is None:
             raise
         raise UserHealthRepositoryError(code) from None
+
+
+async def _execute_r4_legacy(session, statement):
+    try:
+        return await session.execute(statement)
+    except DBAPIError as exc:
+        original = exc.orig
+        direct_cause = getattr(original, "__cause__", None)
+        driver_error = next(
+            (
+                candidate
+                for candidate in (original, direct_cause)
+                if isinstance(candidate, asyncpg.PostgresError)
+            ),
+            None,
+        )
+        if driver_error is None:
+            raise
+        if driver_error.sqlstate == "P0001" and len(driver_error.args) == 1:
+            code = _R4_LEGACY_ERRORS.get(driver_error.args[0])
+            if code is not None:
+                raise UserHealthRepositoryError(code) from None
+        if driver_error.sqlstate in {"42501", "42883"}:
+            raise UserHealthRepositoryError("DEPENDENCY_UNAVAILABLE") from None
+        raise
 
 
 def _ensure_mapped() -> None:
@@ -308,43 +338,62 @@ class Slice4HealthRecordRepository:
 
 
 async def get_member_profile_user_state(session, user_id: int):
-    _ensure_mapped()
-    statement = (
-        select(
-            User.id,
-            User.role,
-            User.status,
-            User.verify_status,
-        )
-        .where(User.id == user_id)
-        .limit(1)
-    )
-    row = (await session.execute(statement)).one_or_none()
+    statement = text(
+        "SELECT * FROM public.r4_member_health_currentness_v1(:actor_user_id)"
+    ).bindparams(actor_user_id=user_id)
+    row = (await _execute_r4_legacy(session, statement)).mappings().one_or_none()
     if row is None:
         return None
     return SimpleNamespace(
-        id=row.id,
-        role=row.role,
-        status=row.status,
-        verify_status=row.verify_status,
+        id=row["id"],
+        role=row["role"],
+        status=row["status"],
+        verify_status=row["verify_status"],
     )
 
 
 async def get_health_profile_by_user_id(session, user_id: int):
-    _ensure_mapped()
-    result = await session.execute(select(HealthProfile).where(HealthProfile.user_id == user_id).limit(1))
-    return result.scalar_one_or_none()
+    statement = text(
+        "SELECT * FROM public.r4_member_legacy_health_profile_read_v1("
+        ":actor_user_id,:target_user_id)"
+    ).bindparams(actor_user_id=user_id, target_user_id=user_id)
+    result = await _execute_r4_legacy(session, statement)
+    if not hasattr(result, "mappings"):
+        return result.scalar_one_or_none()
+    row = result.mappings().one_or_none()
+    return SimpleNamespace(**row) if row is not None else None
 
 
 async def create_health_profile_record(session, *, profile_data: dict):
-    _ensure_mapped()
-    profile = HealthProfile()
-    for key, value in profile_data.items():
-        setattr(profile, key, value)
-
-    session.add(profile)
-    await session.flush()
-    return profile
+    values = {
+        "actor_user_id": profile_data["user_id"],
+        "target_user_id": profile_data["user_id"],
+        "gender": profile_data["gender"],
+        "birth_date": profile_data["birth_date"],
+        "height": profile_data.get("height"),
+        "weight": profile_data.get("weight"),
+        "blood_type": profile_data.get("blood_type"),
+        "medical_history": _jsonb_parameter(profile_data.get("medical_history")),
+        "allergy_history": _jsonb_parameter(profile_data.get("allergy_history")),
+        "family_history": _jsonb_parameter(profile_data.get("family_history")),
+        "smoking": profile_data.get("smoking"),
+        "drinking": profile_data.get("drinking"),
+        "symptoms": _jsonb_parameter(profile_data.get("symptoms")),
+        "sleep_quality": profile_data.get("sleep_quality"),
+        "bowel_urination": profile_data.get("bowel_urination"),
+        "updated_at": profile_data.get("updated_at"),
+    }
+    if values["updated_at"] is None:
+        values["updated_at"] = datetime.now(UTC)
+    statement = text(
+        "SELECT * FROM public.r4_member_legacy_health_profile_create_v1("
+        ":actor_user_id,:target_user_id,:gender,:birth_date,:height,:weight,"
+        ":blood_type,CAST(:medical_history AS jsonb),CAST(:allergy_history AS jsonb),"
+        "CAST(:family_history AS jsonb),:smoking,:drinking,CAST(:symptoms AS jsonb),"
+        ":sleep_quality,:bowel_urination,:updated_at)"
+    ).bindparams(**values)
+    row = (await _execute_r4_legacy(session, statement)).mappings().one()
+    return SimpleNamespace(**row)
 
 
 async def update_health_profile_record(
@@ -355,32 +404,44 @@ async def update_health_profile_record(
     profile_data: dict,
     updated_at,
 ):
-    _ensure_mapped()
-    table = HealthProfile.__table__
-    statement = (
-        update(table)
-        .where(
-            table.c.user_id == user_id,
-            table.c.updated_at == expected_updated_at,
-        )
-        .values(**profile_data, updated_at=updated_at)
-        .returning(*table.c)
+    statement = text(
+        "SELECT * FROM public.r4_member_legacy_health_profile_update_v1("
+        ":actor_user_id,:target_user_id,:expected_updated_at,:gender,:birth_date,"
+        ":height,:weight,:blood_type,:updated_at)"
+    ).bindparams(
+        actor_user_id=user_id,
+        target_user_id=user_id,
+        expected_updated_at=expected_updated_at,
+        gender=profile_data["gender"],
+        birth_date=profile_data["birth_date"],
+        height=profile_data.get("height"),
+        weight=profile_data.get("weight"),
+        blood_type=profile_data.get("blood_type"),
+        updated_at=updated_at,
     )
-    row = (await session.execute(statement)).mappings().one_or_none()
+    row = (await _execute_r4_legacy(session, statement)).mappings().one_or_none()
     return SimpleNamespace(**row) if row is not None else None
 
 
 async def create_health_indicator_records(session, *, records: list[dict]):
-    _ensure_mapped()
     indicators = []
     for record in records:
-        indicator = HealthIndicator()
-        for key, value in record.items():
-            setattr(indicator, key, value)
-        indicators.append(indicator)
-
-    session.add_all(indicators)
-    await session.flush()
+        statement = text(
+            "SELECT * FROM public.r4_member_legacy_health_indicator_create_v1("
+            ":actor_user_id,:target_user_id,:batch_id,:indicator_type,:value,"
+            ":unit,:source,:recorded_at)"
+        ).bindparams(
+            actor_user_id=record["user_id"],
+            target_user_id=record["user_id"],
+            batch_id=record.get("batch_id"),
+            indicator_type=record["indicator_type"],
+            value=record["value"],
+            unit=record["unit"],
+            source=record["source"],
+            recorded_at=record["recorded_at"],
+        )
+        row = (await _execute_r4_legacy(session, statement)).mappings().one()
+        indicators.append(SimpleNamespace(**row))
     return indicators
 
 
@@ -393,44 +454,28 @@ async def list_health_indicators_by_user(
     end_at=None,
     limit: int = 50,
 ):
-    _ensure_mapped()
-    statement = select(HealthIndicator).where(HealthIndicator.user_id == user_id)
-
-    if indicator_type is not None:
-        statement = statement.where(HealthIndicator.indicator_type == indicator_type)
-    if start_at is not None:
-        statement = statement.where(HealthIndicator.recorded_at >= start_at)
-    if end_at is not None:
-        statement = statement.where(HealthIndicator.recorded_at <= end_at)
-
-    statement = statement.order_by(HealthIndicator.recorded_at.desc()).limit(limit)
-    result = await session.execute(statement)
-    return result.scalars().all()
+    statement = text(
+        "SELECT * FROM public.r4_member_legacy_health_indicator_history_v1("
+        ":actor_user_id,:target_user_id,:indicator_type,:start_at,:end_at,:limit)"
+    ).bindparams(
+        actor_user_id=user_id,
+        target_user_id=user_id,
+        indicator_type=indicator_type,
+        start_at=start_at,
+        end_at=end_at,
+        limit=limit,
+    )
+    rows = (await _execute_r4_legacy(session, statement)).mappings().all()
+    return [SimpleNamespace(**row) for row in rows]
 
 
 async def list_latest_health_indicators_by_user(session, *, user_id: int):
-    _ensure_mapped()
-    statement = (
-        select(HealthIndicator)
-        .distinct(HealthIndicator.indicator_type)
-        .where(HealthIndicator.user_id == user_id)
-        .order_by(HealthIndicator.indicator_type, HealthIndicator.recorded_at.desc(), HealthIndicator.id.desc())
-    )
-    result = await session.execute(statement)
-    return result.scalars().all()
-
-
-def _member_indicator_projection():
-    table = HealthIndicator.__table__
-    return (
-        table.c.id,
-        table.c.batch_id,
-        table.c.indicator_type,
-        table.c.value,
-        table.c.unit,
-        table.c.source,
-        table.c.recorded_at,
-    )
+    statement = text(
+        "SELECT * FROM public.r4_member_legacy_health_indicator_latest_v1("
+        ":actor_user_id,:target_user_id)"
+    ).bindparams(actor_user_id=user_id, target_user_id=user_id)
+    rows = (await _execute_r4_legacy(session, statement)).mappings().all()
+    return [SimpleNamespace(**row) for row in rows]
 
 
 async def list_member_health_indicator_history(
@@ -444,61 +489,29 @@ async def list_member_health_indicator_history(
     cursor_id: int | None,
     limit: int,
 ):
-    _ensure_mapped()
-    table = HealthIndicator.__table__
-    statement = select(*_member_indicator_projection()).where(table.c.user_id == user_id)
-    if indicator_type is not None:
-        statement = statement.where(table.c.indicator_type == indicator_type)
-    if start_at is not None:
-        statement = statement.where(table.c.recorded_at >= start_at)
-    if end_at is not None:
-        statement = statement.where(table.c.recorded_at <= end_at)
-    if cursor_recorded_at is not None and cursor_id is not None:
-        statement = statement.where(
-            or_(
-                table.c.recorded_at < cursor_recorded_at,
-                and_(table.c.recorded_at == cursor_recorded_at, table.c.id < cursor_id),
-            )
-        )
-    statement = statement.order_by(table.c.recorded_at.desc(), table.c.id.desc()).limit(limit)
-    return (await session.execute(statement)).mappings().all()
+    statement = text(
+        "SELECT * FROM public.r4_member_self_health_indicator_history_v1("
+        ":actor_user_id,:indicator_type,:start_at,:end_at,:cursor_recorded_at,"
+        ":cursor_id,:limit)"
+    ).bindparams(
+        actor_user_id=user_id,
+        indicator_type=indicator_type,
+        start_at=start_at,
+        end_at=end_at,
+        cursor_recorded_at=cursor_recorded_at,
+        cursor_id=cursor_id,
+        limit=limit,
+    )
+    return (await _execute_r4_legacy(session, statement)).mappings().all()
 
 
 async def list_member_latest_health_indicators(session, *, user_id: int):
-    _ensure_mapped()
-    table = HealthIndicator.__table__
-    statement = (
-        select(*_member_indicator_projection())
-        .distinct(table.c.indicator_type)
-        .where(table.c.user_id == user_id)
-        .order_by(table.c.indicator_type, table.c.recorded_at.desc(), table.c.id.desc())
-    )
-    return (await session.execute(statement)).mappings().all()
-
-
-def _detection_report_projection(*, include_data: bool):
-    table = DetectionReport.__table__
-    candidate = table.alias("first_detection_report")
-    first_report_id = (
-        select(candidate.c.id)
-        .where(candidate.c.user_id == table.c.user_id)
-        .order_by(candidate.c.detection_time.asc(), candidate.c.id.asc())
-        .limit(1)
-        .correlate(table)
-        .scalar_subquery()
-    )
-    columns = [
-        table.c.id,
-        table.c.report_type,
-        table.c.detection_time,
-        table.c.view_status,
-        table.c.summary,
-        table.c.report_schema_version,
-        (table.c.id == first_report_id).label("is_initial_baseline"),
-    ]
-    if include_data:
-        columns.append(table.c.report_data)
-    return tuple(columns)
+    statement = text(
+        "SELECT id,batch_id,indicator_type,value,unit,source,recorded_at "
+        "FROM public.r4_member_legacy_health_indicator_latest_v1("
+        ":actor_user_id,:target_user_id)"
+    ).bindparams(actor_user_id=user_id, target_user_id=user_id)
+    return (await _execute_r4_legacy(session, statement)).mappings().all()
 
 
 async def list_member_detection_reports(
@@ -512,34 +525,25 @@ async def list_member_detection_reports(
     cursor_id: int | None,
     limit: int,
 ):
-    _ensure_mapped()
-    table = DetectionReport.__table__
-    statement = select(*_detection_report_projection(include_data=False)).where(
-        table.c.user_id == user_id
+    statement = text(
+        "SELECT * FROM public.r4_member_self_detection_report_history_v1("
+        ":actor_user_id,:report_type,:start_at,:end_at,:cursor_detection_time,"
+        ":cursor_id,:limit)"
+    ).bindparams(
+        actor_user_id=user_id,
+        report_type=report_type,
+        start_at=start_at,
+        end_at=end_at,
+        cursor_detection_time=cursor_detection_time,
+        cursor_id=cursor_id,
+        limit=limit,
     )
-    if report_type is not None:
-        statement = statement.where(table.c.report_type == report_type)
-    if start_at is not None:
-        statement = statement.where(table.c.detection_time >= start_at)
-    if end_at is not None:
-        statement = statement.where(table.c.detection_time <= end_at)
-    if cursor_detection_time is not None and cursor_id is not None:
-        statement = statement.where(
-            or_(
-                table.c.detection_time < cursor_detection_time,
-                and_(table.c.detection_time == cursor_detection_time, table.c.id < cursor_id),
-            )
-        )
-    statement = statement.order_by(table.c.detection_time.desc(), table.c.id.desc()).limit(limit)
-    return (await session.execute(statement)).mappings().all()
+    return (await _execute_r4_legacy(session, statement)).mappings().all()
 
 
 async def get_member_detection_report(session, *, user_id: int, report_id: int):
-    _ensure_mapped()
-    table = DetectionReport.__table__
-    statement = (
-        select(*_detection_report_projection(include_data=True))
-        .where(table.c.user_id == user_id, table.c.id == report_id)
-        .limit(1)
-    )
-    return (await session.execute(statement)).mappings().one_or_none()
+    statement = text(
+        "SELECT * FROM public.r4_member_self_detection_report_read_v1("
+        ":actor_user_id,:report_id)"
+    ).bindparams(actor_user_id=user_id, report_id=report_id)
+    return (await _execute_r4_legacy(session, statement)).mappings().one_or_none()

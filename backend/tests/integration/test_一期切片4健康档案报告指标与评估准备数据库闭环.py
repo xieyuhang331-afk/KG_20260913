@@ -57,7 +57,7 @@ def _hotfix_acl_present(pg_database) -> bool:
 
 def test_PG34_空库0027_0028往返对象ACL与Hotfix权限精确对称(pg_database) -> None:
     config = _build_alembic_config(_get_test_database_url())
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0046"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0047"
     assert _hotfix_acl_present(pg_database)
     for signature in BOUNDARY_FUNCTIONS:
         assert pg_database.fetch_value(f"SELECT to_regprocedure('{signature}') IS NOT NULL")
@@ -80,7 +80,7 @@ def test_PG34_空库0027_0028往返对象ACL与Hotfix权限精确对称(pg_datab
     for view in BOUNDARY_VIEWS:
         assert pg_database.fetch_value(f"SELECT to_regclass('public.{view}') IS NOT NULL")
     command.upgrade(config, "head")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0046"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0047"
 
 
 def test_PG35_非空降级在任何对象或ACL变化前fail_closed(pg_database) -> None:
@@ -105,7 +105,7 @@ def test_PG35_非空降级在任何对象或ACL变化前fail_closed(pg_database)
     acl_snapshot = _hotfix_acl_present(pg_database)
     with pytest.raises(RuntimeError, match="Slice 4 downgrade requires empty module tables"):
         command.downgrade(config, "20260822_0027")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0046"
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260914_0047"
     assert function_snapshot == tuple(
         pg_database.fetch_value(f"SELECT to_regprocedure('{signature}') IS NOT NULL")
         for signature in BOUNDARY_FUNCTIONS
