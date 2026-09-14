@@ -149,6 +149,7 @@ def test_Repository将真实SQLAlchemy_RowMapping严格转换为内部DTO() -> N
             "login",
         ),
     ),
+    ids=(None, "login-empty-row"),
 )
 def test_Repository真实SQLAlchemy空结果严格返回None(query: str, loader: str) -> None:
     from app.modules.auth import repository
@@ -181,6 +182,7 @@ def test_Repository真实SQLAlchemy空结果严格返回None(query: str, loader:
         "NULL AS deletion_requested_at, NULL AS tenant_org_id, "
         "'must-not-leak' AS unexpected_field",
     ),
+    ids=("login-row-missing-column", "login-row-unexpected-column"),
 )
 def test_Repository真实SQLAlchemy缺列或多列时FailClosed且不回显记录(query: str) -> None:
     from app.modules.auth import repository
