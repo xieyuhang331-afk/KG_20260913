@@ -34,6 +34,18 @@ class UserCurrentness:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewerCredentialMaterial:
+    id: int
+    password_hash: str = field(repr=False)
+    role: str
+    status: str | None
+    tenant_id: int | None
+    exited_at: datetime | None
+    deletion_requested_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class RegisteredMember:
     id: int
     phone: str
@@ -95,6 +107,17 @@ async def get_user_currentness(session, user_id: int):
     result = await session.execute(statement)
     row = result.mappings().one_or_none()
     return UserCurrentness(**row) if row is not None else None
+
+
+async def get_reviewer_credential_material(session, user_id: int):
+    statement = text(
+        "SELECT id,password_hash,role,status,tenant_id,exited_at,"
+        "deletion_requested_at,updated_at "
+        "FROM public.auth_user_credential_material_v1(:user_id)"
+    ).bindparams(bindparam("user_id", type_=BigInteger())).params(user_id=user_id)
+    result = await session.execute(statement)
+    row = result.mappings().one_or_none()
+    return ReviewerCredentialMaterial(**row) if row is not None else None
 
 
 async def get_user_for_tenant_binding_update(session, user_id: int):

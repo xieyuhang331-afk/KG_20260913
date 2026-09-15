@@ -159,8 +159,11 @@ def test_旧JWT在四类actor_currentness漂移后拒绝() -> None:
     therapist_source = inspect.getsource(api._therapist_current)
     assert "slice3_therapist_service_currentness_v1" in therapist_source
     assert "JOIN public.\"user\" u" not in therapist_source
-    assert "await _current_reviewer(authority,actor)" in inspect.getsource(api.identity_reviews)
-    assert "await _current_reviewer(authority,actor)" in inspect.getsource(api.identity_review)
+    for reviewer_read in (api.identity_reviews, api.identity_review):
+        reviewer_source = inspect.getsource(reviewer_read)
+        assert "_require_platform(actor)" in reviewer_source
+        assert "_current_reviewer" not in reviewer_source
+        assert "get_current_user_from_jwt" in reviewer_source
 
 
 def test_三类分页与detail真实投影() -> None:

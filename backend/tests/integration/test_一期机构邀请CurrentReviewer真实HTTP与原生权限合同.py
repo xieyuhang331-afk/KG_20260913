@@ -536,7 +536,7 @@ def test_0044到0043对称往返且仅删除本Revision函数(pg_database):
     ) is True
     assert _invitation_count(pg_database) == before
 
-    command.upgrade(config, "20260914_0047")
+    command.upgrade(config, "20260915_0048")
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260914_0047"
+    ) == "20260915_0048"
