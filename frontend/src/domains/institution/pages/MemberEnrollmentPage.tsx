@@ -65,7 +65,9 @@ export function MemberEnrollmentPage() {
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">客户服务 / 服务准备</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">服务客户列表</h1>
-          <p className="mt-2 text-sm text-slate-500">查看已与当前机构建立健康管理服务关系的用户；服务接入不代表付费会员关系。</p>
+          <p className="mt-2 text-sm text-slate-500">
+            查看已与当前机构建立健康管理服务关系的用户；服务接入不代表付费会员关系。
+          </p>
         </div>
         <button className={secondaryButtonClassName} disabled={loading} onClick={() => void load(cursor)} type="button">
           <RefreshCw aria-hidden="true" className="mr-2" size={16} />
