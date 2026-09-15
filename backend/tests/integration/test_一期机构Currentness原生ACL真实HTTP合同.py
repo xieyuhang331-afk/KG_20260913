@@ -96,7 +96,7 @@ def test_0042真实ACL与机构邀请列表使用原生CurrentnessAuthority(
     current_institution,
 ) -> None:
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-        "20260914_0047"
+        "20260915_0048"
     )
     seeded = current_institution
 

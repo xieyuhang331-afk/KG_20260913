@@ -229,6 +229,16 @@ class MemberEnrollmentRepository:
         lock_key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big", signed=True)
         await self.session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
+    async def platform_reviewer_write_currentness(self, reviewer_user_id: int):
+        result = await self.session.execute(
+            text(
+                "SELECT * FROM public."
+                "slice3_platform_reviewer_write_currentness_v1(:reviewer_user_id)"
+            ),
+            {"reviewer_user_id": reviewer_user_id},
+        )
+        return result.mappings().one_or_none()
+
     async def lock_active_enrollment_boundary(self, subject_member_id: UUID) -> None:
         payload = f"slice3-active-enrollment-boundary\x1f{subject_member_id}".encode()
         lock_key = int.from_bytes(

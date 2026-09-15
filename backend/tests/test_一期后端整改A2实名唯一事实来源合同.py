@@ -569,6 +569,6 @@ def test_A2_R23_R28_A2_1无Migration且仅允许获批A2_2_Migration链() -> Non
         "20260902_0035_a2_identity_remediation_ledger.py",
         "20260903_0036_a2_remediation_subject_h3_closed_boundary.py",
     ]
-    assert "20260914_0047" in (
+    assert "20260915_0048" in (
         root / "tests/integration/conftest.py"
     ).read_text(encoding="utf-8")

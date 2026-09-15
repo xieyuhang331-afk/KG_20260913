@@ -97,7 +97,7 @@ def test_R4_0046_0047空库往返且非空降级在DDL前拒绝(pg_database) -> 
     config = _build_alembic_config(_get_test_database_url())
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260914_0047"
+    ) == "20260915_0048"
 
     command.downgrade(config, "20260914_0046")
     assert pg_database.fetch_value(
@@ -143,3 +143,7 @@ def test_R4_0046_0047空库往返且非空降级在DDL前拒绝(pg_database) -> 
     finally:
         pg_database.execute("DELETE FROM public.health_profile WHERE user_id=9470047")
         pg_database.execute('DELETE FROM public."user" WHERE id=9470047')
+        if pg_database.fetch_value(
+            "SELECT version_num FROM alembic_version"
+        ) != "20260915_0048":
+            command.upgrade(config, "20260915_0048")

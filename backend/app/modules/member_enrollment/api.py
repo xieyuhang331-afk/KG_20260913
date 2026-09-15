@@ -24,6 +24,7 @@ from app.core.database import (
 from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.uuid_generator import Uuid7Generator
 from app.core.接口合同 import error_response
+from app.modules.auth.repository import get_reviewer_credential_material
 from app.modules.auth.service import verify_password
 from app.modules.member_enrollment.domain import InvitationAttemptRejected
 from app.modules.member_enrollment.identity_authority import (
@@ -860,30 +861,17 @@ def _document(row, renditions) -> dict:
     }
 
 
-async def _current_reviewer(authority, actor: CurrentUser):
-    _require_platform(actor)
-    await authority.execute(
-        text("SELECT pg_advisory_xact_lock(:key)"),
-        {"key": 6052316115572200000 + actor.id},
-    )
-    result = await authority.execute(text(
-        "SELECT id,role,status,tenant_id,password_hash,1::bigint AS version,updated_at FROM public.user "
-        "WHERE id=:user_id FOR SHARE"
-    ), {"user_id": actor.id})
-    row = result.mappings().one_or_none()
-    if row is None or row["role"] != "super_admin" or row["status"] != "active" or row["tenant_id"] is not None:
-        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
-    return row
-
-
 def _reviewer_currentness_payload(reviewer):
+    def value(name: str):
+        return getattr(reviewer, name) if hasattr(reviewer, name) else reviewer[name]
+
     return {
-        "id": reviewer["id"],
-        "role": reviewer["role"],
-        "status": reviewer["status"],
-        "tenant_id": reviewer["tenant_id"],
-        "version": reviewer["version"],
-        "updated_at": reviewer["updated_at"],
+        "id": value("id"),
+        "role": value("role"),
+        "status": value("status"),
+        "tenant_id": value("tenant_id"),
+        "version": 1,
+        "updated_at": value("updated_at"),
     }
 
 
@@ -1261,8 +1249,8 @@ async def revoke_proxy(grant_id:UuidV7,payload:ProxyRevokeRequest,request:Reques
 
 
 @platform_router.get("/member-identity-reviews", response_model=IdentityReviewPageDTO)
-async def identity_reviews(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],authority:Annotated[object,Depends(get_db_session)],status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
-    await _current_reviewer(authority,actor)
+async def identity_reviews(actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],status:str|None=None,cursor:str|None=None,limit:int=Query(50,ge=1,le=100)):
+    _require_platform(actor)
     async with (await get_slice3_session_factory("identity_review_writer"))() as session:
         predicates={}
         if status is not None:
@@ -1272,8 +1260,8 @@ async def identity_reviews(actor:Annotated[CurrentUser,Depends(get_current_user_
 
 
 @platform_router.get("/member-identity-reviews/{review_id}", response_model=IdentityReviewDetailDTO)
-async def identity_review(review_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
-    await _current_reviewer(authority,actor)
+async def identity_review(review_id:UuidV7,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)]):
+    _require_platform(actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
         raise _error("IDENTITY_REVIEW_NOT_FOUND")
@@ -1281,8 +1269,8 @@ async def identity_review(review_id:UuidV7,actor:Annotated[CurrentUser,Depends(g
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/claim", response_model=IdentityReviewDetailDTO)
-async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
-    await _current_reviewer(authority,actor)
+async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
+    _require_platform(actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
         raise _error("IDENTITY_REVIEW_NOT_FOUND")
@@ -1290,6 +1278,8 @@ async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,k
     context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True)
     request_value=_request_value(payload,review_id)
     target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_CLAIM",request_value,target_id=review_id)
+    if await _safe(MemberEnrollmentRepository(session).platform_reviewer_write_currentness(actor.id)) is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         return replay
     await _safe(_service(session).claim_identity_review(context,review_id,expected_version=payload.expected_version))
@@ -1300,7 +1290,10 @@ async def claim_review(review_id:UuidV7,payload:VersionRequest,request:Request,k
 
 @platform_router.post("/member-identity-reviews/{review_id}/pii-access", response_model=IdentityPiiDTO)
 async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,response:Response,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
-    reviewer=await _current_reviewer(authority,actor)
+    _require_platform(actor)
+    reviewer=await _safe(get_reviewer_credential_material(authority,actor.id))
+    if reviewer is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     repo=MemberEnrollmentRepository(session)
     rows=await _safe(repo.safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
@@ -1315,13 +1308,17 @@ async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,r
     request_digest=proof_secrets.request_digest(request_value)
     currentness=proof_secrets.audit_digest(_reviewer_currentness_payload(reviewer))
     access_token_digest=proof_secrets.request_digest({"authorization":request.headers.get("authorization",""),"reviewer_user_id":actor.id})
-    password_valid=verify_password(payload.current_password,reviewer["password_hash"])
+    password_valid=verify_password(payload.current_password,reviewer.password_hash)
     proof_issued_at=datetime.now(UTC)
     proof_expires_at=proof_issued_at+timedelta(seconds=15)
-    proof_values={"proof_version":1,"reviewer_user_id":actor.id,"user_version":reviewer["version"],"user_updated_at":reviewer["updated_at"],"verification_id":review_id,"current_revision_id":rows[0]["current_revision_id"],"actor_scope":context.actor_scope,"idempotency_key":context.idempotency_key,"request_id":context.request_id,"request_digest":request_digest,"access_token_digest":access_token_digest,"currentness_digest":currentness,"reason_code":payload.reason_code,"password_valid":password_valid,"proof_issued_at":proof_issued_at,"proof_expires_at":proof_expires_at}
-    credential_proof_digest=reviewer_credential_proof(reviewer["password_hash"],proof_values)
+    proof_values={"proof_version":1,"reviewer_user_id":actor.id,"user_version":1,"user_updated_at":reviewer.updated_at,"verification_id":review_id,"current_revision_id":rows[0]["current_revision_id"],"actor_scope":context.actor_scope,"idempotency_key":context.idempotency_key,"request_id":context.request_id,"request_digest":request_digest,"access_token_digest":access_token_digest,"currentness_digest":currentness,"reason_code":payload.reason_code,"password_valid":password_valid,"proof_issued_at":proof_issued_at,"proof_expires_at":proof_expires_at}
+    credential_proof_digest=reviewer_credential_proof(reviewer.password_hash,proof_values)
     await authority.rollback()
     target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_PII_ACCESS",request_value,target_id=review_id)
+    writer_reviewer=await _safe(repo.platform_reviewer_write_currentness(actor.id))
+    if (writer_reviewer is None or writer_reviewer["id"] != reviewer.id
+            or writer_reviewer["updated_at"] != reviewer.updated_at):
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         response.headers["Cache-Control"]="no-store"
         return replay
@@ -1334,8 +1331,8 @@ async def pii_access(review_id:UuidV7,payload:PiiAccessRequest,request:Request,r
 
 
 @platform_router.post("/member-identity-reviews/{review_id}/decision", response_model=IdentityStatusDTO)
-async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
-    reviewer=await _current_reviewer(authority,actor)
+async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],member_reader:Annotated[object,Depends(get_member_enrollment_reader_session)],institution_authority:Annotated[object,Depends(get_institution_onboarding_reader_session)]):
+    _require_platform(actor)
     rows=await _safe(MemberEnrollmentRepository(session).safe_view_rows("slice3_platform_identity_review_read_v1",predicates={"verification_id":review_id},order="verification_id",limit=2))
     if len(rows)!=1:
         raise _error("IDENTITY_REVIEW_NOT_FOUND")
@@ -1343,6 +1340,9 @@ async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionReq
     context=_context(request,actor,tenant_id,tenant_public_id,key,platform_scope=True)
     request_value=_request_value(payload,review_id)
     target,secrets,replay=await _begin_mutation(session,context,"IDENTITY_REVIEW_DECIDE",request_value,target_id=review_id)
+    reviewer=await _safe(MemberEnrollmentRepository(session).platform_reviewer_write_currentness(actor.id))
+    if reviewer is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         return replay
     currentness=secrets.audit_digest(_reviewer_currentness_payload(reviewer))
@@ -1356,11 +1356,13 @@ async def platform_decision(review_id:UuidV7,payload:PlatformIdentityDecisionReq
 
 
 @platform_router.post("/consent-documents", response_model=ConsentDocumentDTO,status_code=201)
-async def create_document(payload:CreateConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
-    await _current_reviewer(authority,actor)
+async def create_document(payload:CreateConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)]):
+    _require_platform(actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload)
     target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_CREATE",request_value)
+    if await _safe(MemberEnrollmentRepository(session).platform_reviewer_write_currentness(actor.id)) is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         return replay
     document_id=await _safe(_service(session).create_consent_document(context,payload))
@@ -1371,11 +1373,13 @@ async def create_document(payload:CreateConsentDocumentRequest,request:Request,k
 
 
 @platform_router.post("/consent-documents/{document_version_id}/publish", response_model=ConsentDocumentDTO)
-async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
-    await _current_reviewer(authority,actor)
+async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocumentRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)]):
+    _require_platform(actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload,document_version_id)
     target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_PUBLISH",request_value,target_id=document_version_id)
+    if await _safe(MemberEnrollmentRepository(session).platform_reviewer_write_currentness(actor.id)) is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         return replay
     await _safe(_service(session).publish_consent_document(context,document_version_id,payload))
@@ -1386,11 +1390,13 @@ async def publish_document(document_version_id:UuidV7,payload:PublishConsentDocu
 
 
 @platform_router.post("/consent-documents/{document_version_id}/retire", response_model=ConsentDocumentDTO)
-async def retire_document(document_version_id:UuidV7,payload:ConsentRetireRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)],authority:Annotated[object,Depends(get_db_session)]):
-    await _current_reviewer(authority,actor)
+async def retire_document(document_version_id:UuidV7,payload:ConsentRetireRequest,request:Request,key:IdempotencyKey,actor:Annotated[CurrentUser,Depends(get_current_user_from_jwt)],session:Annotated[object,Depends(get_member_identity_review_writer_session)]):
+    _require_platform(actor)
     context=_context(request,actor,None,Uuid7Generator().generate(),key,platform_scope=True)
     request_value=_request_value(payload,document_version_id)
     target,secrets,replay=await _begin_mutation(session,context,"CONSENT_DOCUMENT_RETIRE",request_value,target_id=document_version_id)
+    if await _safe(MemberEnrollmentRepository(session).platform_reviewer_write_currentness(actor.id)) is None:
+        raise _error("REVIEWER_CURRENTNESS_FORBIDDEN")
     if replay is not None:
         return replay
     await _safe(_service(session).retire_consent_document(context,document_version_id,payload))

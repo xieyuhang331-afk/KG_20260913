@@ -101,7 +101,7 @@ def test_A2_2_P专用角色只可读取闭合匿名快照(
     a2_identity_inventory_database,
 ):
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-        "20260914_0047"
+        "20260915_0048"
     )
     initial_user_count = pg_database.fetch_value('SELECT count(*) FROM public."user"')
     inserted_rows = _insert_synthetic_facts(pg_database)
@@ -209,7 +209,7 @@ def test_A2_2_P_upgrade_downgrade_reupgrade撤销并恢复最小权限(
     finally:
         command.upgrade(config, "head")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-        "20260914_0047"
+        "20260915_0048"
     )
     assert pg_database.fetch_value(
         f"SELECT to_regprocedure('{FUNCTION}') IS NOT NULL"
