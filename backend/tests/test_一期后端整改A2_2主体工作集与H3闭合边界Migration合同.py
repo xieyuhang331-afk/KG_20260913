@@ -60,7 +60,7 @@ def test_A2_2_RP_0036从0035派生且保持单一Head() -> None:
     assert module.down_revision == "20260902_0035"
     assert module.branch_labels is None
     assert module.depends_on is None
-    assert _revision_heads() == {"20260914_0046"}
+    assert _revision_heads() == {"20260914_0047"}
     assert HISTORICAL_0034.is_file()
     assert HISTORICAL_0035.is_file()
 

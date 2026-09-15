@@ -7,7 +7,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import DBAPIError
 
@@ -55,12 +55,20 @@ from app.modules.user_health.api import (
 from app.modules.user_health.api import (
     _SLICE4_HTTP_ERROR_CONTRACT_ROUTES,
     SLICE4_ROUTE_ERROR_CODES,
+    LegacyUserHealthRoute,
     Slice4Route,
     strip_slice4_validation_responses,
 )
 
 REQUEST_ID = "01990000-0000-7000-8000-000000000222"
 EXPECTED_KEYS = {"code", "message", "request_id", "retryable", "field_errors"}
+
+
+async def _r4_authentication_required() -> None:
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+
+_R4_AUTHENTICATION_REQUIRED = Depends(_r4_authentication_required)
 
 _S7_BASE = (
     "UNAUTHENTICATED",
@@ -888,13 +896,347 @@ def _repository_error_response(
     for parameter in (
         "version_id", "service_case_id", "case_id", "fact_ref", "assessment_id",
         "task_id", "review_id", "plan_id", "template_version_id", "milestone_id",
-        "summary_id", "transfer_id", "export_id",
+        "summary_id", "transfer_id", "export_id", "report_id", "user_id",
     ):
         concrete = concrete.replace(
             "{" + parameter + "}",
             "01990000-0000-7000-8000-000000000229",
         )
     return TestClient(app, raise_server_exceptions=False).request(method, concrete)
+
+
+class _FailingLegacyUserHealthSession:
+    def __init__(self, driver_error: BaseException) -> None:
+        self.driver_error = driver_error
+
+    async def execute(self, _statement):
+        raise DBAPIError(
+            "SELECT private_sql",
+            {"private": "parameter"},
+            self.driver_error,
+            False,
+        )
+
+
+def _legacy_database_error_response(
+    method: str,
+    path: str,
+    driver_error: BaseException,
+) -> object:
+    from app.core.middleware import add_request_middleware
+    from app.modules.user_health.repository import _execute_r4_legacy
+
+    async def endpoint() -> None:
+        await _execute_r4_legacy(
+            _FailingLegacyUserHealthSession(driver_error),
+            None,
+        )
+
+    app = FastAPI()
+    install_error_contract(app)
+    app.router.add_api_route(
+        path,
+        endpoint,
+        methods=[method],
+        route_class_override=LegacyUserHealthRoute,
+    )
+    add_request_middleware(app)
+    concrete = path
+    for parameter in ("report_id", "user_id"):
+        concrete = concrete.replace(
+            "{" + parameter + "}",
+            "9001",
+        )
+    return TestClient(app, raise_server_exceptions=False).request(
+        method,
+        concrete,
+        headers={"X-Request-ID": REQUEST_ID},
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "raw_code", "expected_status", "expected_code"),
+    [
+        (
+            "GET",
+            "/api/v1/users/me/detection-reports",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            403,
+            "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+        ),
+        (
+            "GET",
+            "/api/v1/users/me/detection-reports/{report_id}",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            403,
+            "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+        ),
+        (
+            "GET",
+            "/api/v1/users/me/health-indicators",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            409,
+            "HEALTH_DATA_UNAVAILABLE",
+        ),
+        (
+            "GET",
+            "/api/v1/users/me/health-indicators/latest",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            409,
+            "HEALTH_DATA_UNAVAILABLE",
+        ),
+        (
+            "GET",
+            "/api/v1/users/me/health-profile",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            409,
+            "CONFLICT",
+        ),
+        (
+            "PUT",
+            "/api/v1/users/me/health-profile",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            409,
+            "CONFLICT",
+        ),
+        (
+            "POST",
+            "/api/v1/users/{user_id}/health-profile",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            404,
+            "USER_NOT_FOUND",
+        ),
+        (
+            "GET",
+            "/api/v1/users/{user_id}/health-profile",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            404,
+            "USER_NOT_FOUND",
+        ),
+        (
+            "POST",
+            "/api/v1/users/{user_id}/health-indicators",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            409,
+            "USER_INACTIVE",
+        ),
+        (
+            "GET",
+            "/api/v1/users/{user_id}/health-indicators",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            404,
+            "USER_NOT_FOUND",
+        ),
+        (
+            "GET",
+            "/api/v1/users/{user_id}/health-indicators/latest",
+            "R4_MEMBER_HEALTH_CURRENTNESS_INVALID",
+            404,
+            "USER_NOT_FOUND",
+        ),
+        (
+            "POST",
+            "/api/v1/users/{user_id}/health-indicators",
+            "R4_HEALTH_PROFILE_REQUIRED",
+            409,
+            "HEALTH_PROFILE_REQUIRED",
+        ),
+    ],
+)
+def test_C2_2_R03_R4受控P0001按11路由既有语义翻译(
+    method: str,
+    path: str,
+    raw_code: str,
+    expected_status: int,
+    expected_code: str,
+) -> None:
+    response = _legacy_database_error_response(
+        method,
+        path,
+        asyncpg.exceptions.RaiseError(raw_code),
+    )
+    assert response.status_code == expected_status
+    assert response.json() == {
+        "code": expected_code,
+        "message": "request rejected",
+        "request_id": REQUEST_ID,
+        "retryable": False,
+        "field_errors": [],
+    }
+
+
+def test_C2_2_R03_R4精确42501范围拒绝与ACL缺失严格分界() -> None:
+    for path in (
+        "/api/v1/users/{user_id}/health-profile",
+        "/api/v1/users/{user_id}/health-indicators/latest",
+    ):
+        scope = _legacy_database_error_response(
+            "GET",
+            path,
+            asyncpg.exceptions.InsufficientPrivilegeError(
+                "R4_MEMBER_HEALTH_SCOPE_FORBIDDEN"
+            ),
+        )
+        assert scope.status_code == 403
+        assert scope.json()["code"] == "FORBIDDEN"
+        assert scope.json()["retryable"] is False
+
+    unavailable = _legacy_database_error_response(
+        "GET",
+        "/api/v1/users/{user_id}/health-profile",
+        asyncpg.exceptions.InsufficientPrivilegeError(
+            "synthetic private ACL detail"
+        ),
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert unavailable.json()["retryable"] is True
+    assert "synthetic" not in unavailable.text
+    assert "private" not in unavailable.text
+
+
+@pytest.mark.parametrize(
+    "driver_error",
+    [
+        asyncpg.exceptions.RaiseError("UNREGISTERED_R4_DATABASE_CODE"),
+        asyncpg.exceptions.PostgresSyntaxError("synthetic private SQL detail"),
+        asyncpg.exceptions.UniqueViolationError("synthetic private constraint"),
+    ],
+    ids=("unknown-p0001", "syntax", "constraint"),
+)
+def test_C2_2_R03_R4未知数据库错误保持安全500(
+    driver_error: BaseException,
+) -> None:
+    response = _legacy_database_error_response(
+        "GET",
+        "/api/v1/users/me/health-profile",
+        driver_error,
+    )
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "INTERNAL_ERROR",
+        "message": "request rejected",
+        "request_id": REQUEST_ID,
+        "retryable": False,
+        "field_errors": [],
+    }
+    assert "synthetic" not in response.text
+    assert "UNREGISTERED" not in response.text
+
+
+def test_C2_2_R03_R4缺失受限函数仍为安全可重试503() -> None:
+    response = _legacy_database_error_response(
+        "GET",
+        "/api/v1/users/me/health-profile",
+        asyncpg.exceptions.UndefinedFunctionError("synthetic private function"),
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert response.json()["retryable"] is True
+    assert "synthetic" not in response.text
+
+
+def test_C2_2_R03_R4兼容翻译不覆盖正式Slice4未知数据库错误() -> None:
+    async def endpoint() -> None:
+        raise DBAPIError(
+            "SELECT private_sql",
+            {"private": "parameter"},
+            asyncpg.exceptions.InsufficientPrivilegeError("synthetic private ACL"),
+            False,
+        )
+
+    response = _repository_error_response(
+        Slice4Route,
+        "GET",
+        "/api/v1/family/health-profile",
+        endpoint,
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+    assert response.json()["retryable"] is False
+    assert "synthetic" not in response.text
+
+
+def test_C2_2_R03_R4认证错误先于业务数据库且不被兼容翻译覆盖() -> None:
+    execute_count = 0
+
+    async def endpoint(_auth=_R4_AUTHENTICATION_REQUIRED) -> None:
+        nonlocal execute_count
+        execute_count += 1
+        raise DBAPIError(
+            "SELECT private_sql",
+            {"private": "parameter"},
+            asyncpg.exceptions.InsufficientPrivilegeError("synthetic private ACL"),
+            False,
+        )
+
+    response = _repository_error_response(
+        LegacyUserHealthRoute,
+        "GET",
+        "/api/v1/users/me/health-profile",
+        endpoint,
+    )
+    assert response.status_code == 401
+    assert response.json()["code"] == "AUTHENTICATION_REQUIRED"
+    assert execute_count == 0
+
+
+@pytest.mark.parametrize(
+    ("service_name", "kwargs"),
+    [
+        (
+            "list_member_self_health_indicators",
+            {
+                "user_id": 9001,
+                "indicator_type": None,
+                "start_at": None,
+                "end_at": None,
+                "limit": 20,
+                "cursor": None,
+            },
+        ),
+        (
+            "get_member_self_latest_health_indicators",
+            {"user_id": 9001},
+        ),
+        (
+            "list_member_self_detection_reports_service",
+            {
+                "user_id": 9001,
+                "report_type": None,
+                "start_at": None,
+                "end_at": None,
+                "limit": 20,
+                "cursor": None,
+            },
+        ),
+        (
+            "get_member_self_detection_report_service",
+            {"user_id": 9001, "report_id": 1},
+        ),
+    ],
+)
+def test_C2_2_R03_R4服务不得把受控Repository错误吞成通用503(
+    monkeypatch,
+    service_name: str,
+    kwargs: dict[str, object],
+) -> None:
+    from app.modules.user_health import service
+    from app.modules.user_health.repository import UserHealthRepositoryError
+
+    async def rejected_currentness(*_args, **_kwargs):
+        raise UserHealthRepositoryError("MEMBER_HEALTH_CURRENTNESS_INVALID")
+
+    monkeypatch.setattr(
+        service,
+        "get_member_profile_user_state",
+        rejected_currentness,
+    )
+    with pytest.raises(
+        UserHealthRepositoryError,
+        match="^MEMBER_HEALTH_CURRENTNESS_INVALID$",
+    ):
+        asyncio.run(getattr(service, service_name)(None, **kwargs))
 
 
 def test_C2_2_R03_Slice5精确数据库领域码经Repository进入409且未知诊断保持500() -> None:

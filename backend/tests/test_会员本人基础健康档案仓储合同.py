@@ -22,9 +22,13 @@ async def test_用户状态查询只选择授权所需投影() -> None:
 
     captured = []
 
-    class Result:
+    class Mappings:
         def one_or_none(self):
             return None
+
+    class Result:
+        def mappings(self):
+            return Mappings()
 
     class Session:
         async def execute(self, statement):
@@ -32,9 +36,10 @@ async def test_用户状态查询只选择授权所需投影() -> None:
             return Result()
 
     assert await get_member_profile_user_state(Session(), 1001) is None
-    selected = {column.key for column in captured[0].selected_columns}
-    assert selected == {"id", "role", "status", "verify_status"}
     rendered = str(captured[0]).lower()
+    assert "r4_member_health_currentness_v1" in rendered
+    assert captured[0].compile().params["actor_user_id"] == 1001
+    assert 'public."user"' not in rendered
     assert "phone" not in rendered
     assert "id_card" not in rendered
     assert "password_hash" not in rendered
@@ -64,12 +69,22 @@ async def test_条件更新同时绑定user_id与expected_updated_at() -> None:
         Session(),
         user_id=1001,
         expected_updated_at=version,
-        profile_data={"weight": Decimal("56.0")},
+        profile_data={
+            "gender": "female",
+            "birth_date": "1990-01-01",
+            "height": Decimal("165.5"),
+            "weight": Decimal("56.0"),
+            "blood_type": "A",
+        },
         updated_at=version,
     )
 
     assert result is None
     rendered = str(captured[0]).lower()
-    assert "health_profile.user_id" in rendered
-    assert "health_profile.updated_at" in rendered
-    assert "returning" in rendered
+    assert "r4_member_legacy_health_profile_update_v1" in rendered
+    parameters = captured[0].compile().params
+    assert parameters["actor_user_id"] == 1001
+    assert parameters["target_user_id"] == 1001
+    assert parameters["expected_updated_at"] == version
+    assert parameters["updated_at"] == version
+    assert "update health_profile" not in rendered

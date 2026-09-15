@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import hmac
 import json
 import os
 import secrets
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from cryptography.exceptions import InvalidTag
@@ -20,7 +20,6 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
-from app.modules.auth.repository import get_user_by_id
 from app.modules.health_fact.domain import (
     CanonicalHealthFactDraft,
     HealthFactDigestKeyring,
@@ -32,42 +31,48 @@ from app.modules.health_fact.domain import (
     verify_payload,
 )
 from app.modules.user_health.repository import (
+    UserHealthRepositoryError,
     create_health_indicator_records,
     create_health_profile_record,
     get_health_profile_by_user_id,
     get_member_detection_report,
     get_member_profile_user_state,
+    list_health_indicators_by_user,
+    list_latest_health_indicators_by_user,
     list_member_detection_reports,
     list_member_health_indicator_history,
     list_member_latest_health_indicators,
-    list_health_indicators_by_user,
-    list_latest_health_indicators_by_user,
     update_health_profile_record,
 )
 from app.modules.user_health.schemas import (
     DetectionReportAttachmentDTO,
-    DetectionReportDTO,
     DetectionReportDetailDTO,
+    DetectionReportDTO,
     DetectionReportPageDTO,
+    DetectionReportStoredData,
+    HealthFactBatchDTO,
+    HealthFactDTO,
     HealthIdentitySummaryDTO,
     HealthIndicatorBatchCreateRequest,
     HealthIndicatorResponse,
     HealthProfileCreateRequest,
+    HealthProfileDTO,
     HealthProfileResponse,
-    MemberSelfHealthProfileData,
-    MemberSelfHealthProfileResult,
-    MemberSelfHealthProfileWriteRequest,
-    MemberSelfHealthIndicatorItem,
-    MemberSelfHealthIndicatorLatest,
-    MemberSelfHealthIndicatorPage,
-    DetectionReportStoredData,
     MemberSelfDetectionReportDetail,
     MemberSelfDetectionReportListItem,
     MemberSelfDetectionReportPage,
-    HealthProfileDTO,
-    HealthFactBatchDTO,
-    HealthFactDTO,
+    MemberSelfHealthIndicatorItem,
+    MemberSelfHealthIndicatorLatest,
+    MemberSelfHealthIndicatorPage,
+    MemberSelfHealthProfileData,
+    MemberSelfHealthProfileResult,
+    MemberSelfHealthProfileWriteRequest,
 )
+
+# Legacy explicit-user routes are self-only at the API boundary.  Keep the
+# historical service symbol while sourcing its state through the bounded R4
+# currentness authority instead of the protected user base table.
+get_user_by_id = get_member_profile_user_state
 
 
 class UserHealthError(RuntimeError):
@@ -1175,6 +1180,8 @@ async def list_member_self_health_indicators(
         raise
     except HTTPException:
         raise
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
     visible = rows[:limit]
@@ -1197,6 +1204,8 @@ async def get_member_self_latest_health_indicators(
     except asyncio.CancelledError:
         raise
     except HTTPException:
+        raise
+    except UserHealthRepositoryError:
         raise
     except Exception:
         raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
@@ -1318,6 +1327,8 @@ async def list_member_self_detection_reports_service(
         raise
     except HTTPException:
         raise
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
     return MemberSelfDetectionReportPage(
@@ -1347,6 +1358,8 @@ async def get_member_self_detection_report_service(
         raise
     except ValidationError:
         raise HTTPException(status_code=409, detail="DETECTION_REPORT_CONTENT_INCONSISTENT") from None
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
     return MemberSelfDetectionReportDetail(
@@ -1465,7 +1478,7 @@ async def put_member_self_health_profile(
             user_id=user_id,
             expected_updated_at=payload.expected_version,
             profile_data=_profile_write_data(payload),
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
         )
         if profile is None:
             await _rollback(session)
@@ -1485,7 +1498,7 @@ async def put_member_self_health_profile(
                 profile_data={
                     "user_id": user_id,
                     **_profile_write_data(payload),
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                 },
             )
         except asyncio.CancelledError:

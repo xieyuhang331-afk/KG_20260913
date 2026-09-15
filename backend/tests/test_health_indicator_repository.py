@@ -6,36 +6,32 @@ from sqlalchemy.dialects import postgresql
 
 
 class HealthIndicatorRepositoryTests(unittest.IsolatedAsyncioTestCase):
-    class ScalarListResult:
+    class MappingResult:
         def __init__(self, values):
             self.values = values
 
-        def scalars(self):
+        def mappings(self):
             return self
 
         def all(self):
             return self.values
 
+        def one(self):
+            assert len(self.values) == 1
+            return self.values[0]
+
     class FakeSession:
-        def __init__(self, execute_result=None):
-            self.added_all = None
-            self.flush_called = False
+        def __init__(self, execute_results=None):
             self.commit_called = False
             self.rollback_called = False
             self.statements = []
-            self.execute_result = execute_result or HealthIndicatorRepositoryTests.ScalarListResult([])
-
-        def add_all(self, values):
-            self.added_all = values
-
-        async def flush(self):
-            self.flush_called = True
-            for index, value in enumerate(self.added_all or [], start=1):
-                value.id = index
+            self.execute_results = list(execute_results or [])
 
         async def execute(self, statement):
             self.statements.append(statement)
-            return self.execute_result
+            if self.execute_results:
+                return self.execute_results.pop(0)
+            return HealthIndicatorRepositoryTests.MappingResult([])
 
         async def commit(self):
             self.commit_called = True
@@ -57,43 +53,50 @@ class HealthIndicatorRepositoryTests(unittest.IsolatedAsyncioTestCase):
             "recorded_at": recorded_at or datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
         }
 
-    async def test_create_health_indicator_records_creates_orm_objects_and_flushes(self):
-        from app.modules.user_health.models import HealthIndicator
+    async def test_create_health_indicator_records_uses_bounded_function_for_each_record(self):
         from app.modules.user_health.repository import create_health_indicator_records
 
-        session = self.FakeSession()
         records = [
             self._record_data(indicator_type="systolic_bp"),
             self._record_data(indicator_type="diastolic_bp"),
         ]
+        session = self.FakeSession(
+            execute_results=[
+                self.MappingResult([{"id": index, **record}])
+                for index, record in enumerate(records, start=1)
+            ]
+        )
 
         indicators = await create_health_indicator_records(session, records=records)
 
         self.assertEqual(len(indicators), 2)
-        self.assertTrue(all(isinstance(indicator, HealthIndicator) for indicator in indicators))
-        self.assertIs(session.added_all, indicators)
-        self.assertTrue(session.flush_called)
         self.assertEqual([indicator.id for indicator in indicators], [1, 2])
         self.assertEqual(indicators[0].indicator_type, "systolic_bp")
         self.assertEqual(indicators[1].indicator_type, "diastolic_bp")
+        self.assertEqual(len(session.statements), 2)
+        for statement in session.statements:
+            sql = self._compiled_sql(statement)
+            self.assertIn("r4_member_legacy_health_indicator_create_v1", sql)
+            params = statement.compile().params
+            self.assertEqual(params["actor_user_id"], 1001)
+            self.assertEqual(params["target_user_id"], 1001)
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 
     async def test_list_health_indicators_by_user_filters_user_and_orders_by_recorded_at_desc(self):
-        from app.modules.user_health.models import HealthIndicator
         from app.modules.user_health.repository import list_health_indicators_by_user
 
-        indicator = HealthIndicator()
-        indicator.user_id = 1001
-        session = self.FakeSession(execute_result=self.ScalarListResult([indicator]))
+        indicator = {"id": 1, **self._record_data()}
+        indicator.pop("user_id")
+        session = self.FakeSession(execute_results=[self.MappingResult([indicator])])
 
         result = await list_health_indicators_by_user(session, user_id=1001)
 
-        self.assertEqual(result, [indicator])
+        self.assertEqual(result[0].indicator_type, "systolic_bp")
         sql = self._compiled_sql(session.statements[0])
-        self.assertIn("health_indicator.user_id = 1001", sql)
-        self.assertIn("ORDER BY health_indicator.recorded_at DESC", sql)
-        self.assertIn("LIMIT 50", sql)
+        self.assertIn("r4_member_legacy_health_indicator_history_v1", sql)
+        self.assertIn("(1001,1001", sql)
+        self.assertTrue(sql.rstrip().endswith("50)"))
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 
@@ -114,39 +117,36 @@ class HealthIndicatorRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         sql = self._compiled_sql(session.statements[0])
-        self.assertIn("health_indicator.user_id = 1001", sql)
-        self.assertIn("health_indicator.indicator_type = 'systolic_bp'", sql)
-        self.assertIn("health_indicator.recorded_at >= '2026-07-01", sql)
-        self.assertIn("health_indicator.recorded_at <= '2026-07-08", sql)
-        self.assertIn("LIMIT 10", sql)
+        self.assertIn("r4_member_legacy_health_indicator_history_v1", sql)
+        params = session.statements[0].compile().params
+        self.assertEqual(params["actor_user_id"], 1001)
+        self.assertEqual(params["target_user_id"], 1001)
+        self.assertEqual(params["indicator_type"], "systolic_bp")
+        self.assertEqual(params["start_at"], start_at)
+        self.assertEqual(params["end_at"], end_at)
+        self.assertEqual(params["limit"], 10)
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 
     async def test_list_latest_health_indicators_by_user_uses_distinct_on_indicator_type(self):
-        from app.modules.user_health.models import HealthIndicator
         from app.modules.user_health.repository import list_latest_health_indicators_by_user
 
-        latest = HealthIndicator()
-        latest.indicator_type = "systolic_bp"
-        session = self.FakeSession(execute_result=self.ScalarListResult([latest]))
+        latest = {"id": 1, **self._record_data()}
+        latest.pop("user_id")
+        session = self.FakeSession(execute_results=[self.MappingResult([latest])])
 
         result = await list_latest_health_indicators_by_user(session, user_id=1001)
 
-        self.assertEqual(result, [latest])
+        self.assertEqual(result[0].indicator_type, "systolic_bp")
         sql = self._compiled_sql(session.statements[0])
-        self.assertIn("SELECT DISTINCT ON (health_indicator.indicator_type)", sql)
-        self.assertIn("health_indicator.user_id = 1001", sql)
-        self.assertIn(
-            "ORDER BY health_indicator.indicator_type, health_indicator.recorded_at DESC, health_indicator.id DESC",
-            sql,
-        )
+        self.assertIn("r4_member_legacy_health_indicator_latest_v1(1001,1001)", sql)
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 
     async def test_list_health_indicators_by_user_returns_empty_result(self):
         from app.modules.user_health.repository import list_health_indicators_by_user
 
-        session = self.FakeSession(execute_result=self.ScalarListResult([]))
+        session = self.FakeSession(execute_results=[self.MappingResult([])])
 
         result = await list_health_indicators_by_user(session, user_id=1001)
 
@@ -157,7 +157,7 @@ class HealthIndicatorRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_latest_health_indicators_by_user_returns_empty_result(self):
         from app.modules.user_health.repository import list_latest_health_indicators_by_user
 
-        session = self.FakeSession(execute_result=self.ScalarListResult([]))
+        session = self.FakeSession(execute_results=[self.MappingResult([])])
 
         result = await list_latest_health_indicators_by_user(session, user_id=1001)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
+from threading import Barrier
 
 import asyncpg
 import pytest
@@ -156,6 +157,79 @@ def test_并发首次创建只有一个canonical档案(real_db_client, pg_databa
     assert [response.status_code for response in responses] == [200, 200]
     outcomes = sorted(response.json()["data"]["outcome"] for response in responses)
     assert outcomes == ["CREATED", "REPLAYED"]
+    assert pg_database.fetch_value(
+        "SELECT COUNT(*) FROM health_profile WHERE user_id = " + str(user["id"])
+    ) == 1
+
+
+def test_并发差异首次创建只有一个成功且不产生覆盖(real_db_client, pg_database) -> None:
+    user = _register(real_db_client, "13800139405")
+    _mark_verified(user["id"])
+    headers = _headers(user["id"])
+    barrier = Barrier(2)
+
+    def create_once(weight: str):
+        barrier.wait(timeout=10)
+        return real_db_client.put(
+            "/api/v1/users/me/health-profile",
+            json=_payload(weight=weight),
+            headers=headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(create_once, ("55.0", "56.0")))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert next(
+        response.json()["data"]["outcome"]
+        for response in responses
+        if response.status_code == 200
+    ) == "CREATED"
+    assert next(
+        response.json()["code"]
+        for response in responses
+        if response.status_code == 409
+    ) == "HEALTH_PROFILE_VERSION_CONFLICT"
+    assert pg_database.fetch_value(
+        "SELECT COUNT(*) FROM health_profile WHERE user_id = " + str(user["id"])
+    ) == 1
+
+
+def test_并发相同版本更新只有一个成功(real_db_client, pg_database) -> None:
+    user = _register(real_db_client, "13800139406")
+    _mark_verified(user["id"])
+    headers = _headers(user["id"])
+    created = real_db_client.put(
+        "/api/v1/users/me/health-profile",
+        json=_payload(),
+        headers=headers,
+    )
+    assert created.status_code == 200
+    version = created.json()["data"]["version"]
+    barrier = Barrier(2)
+
+    def update_once(weight: str):
+        barrier.wait(timeout=10)
+        return real_db_client.put(
+            "/api/v1/users/me/health-profile",
+            json=_payload(expected_version=version, weight=weight),
+            headers=headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(update_once, ("56.0", "57.0")))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert next(
+        response.json()["data"]["outcome"]
+        for response in responses
+        if response.status_code == 200
+    ) == "UPDATED"
+    assert next(
+        response.json()["code"]
+        for response in responses
+        if response.status_code == 409
+    ) == "HEALTH_PROFILE_VERSION_CONFLICT"
     assert pg_database.fetch_value(
         "SELECT COUNT(*) FROM health_profile WHERE user_id = " + str(user["id"])
     ) == 1

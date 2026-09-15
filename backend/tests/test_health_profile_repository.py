@@ -43,22 +43,38 @@ class HealthProfileRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
 
-    async def test_create_health_profile_record_creates_profile_and_flushes(self):
-        from app.modules.user_health.models import HealthProfile
+    async def test_create_health_profile_record_uses_bounded_function(self):
         from app.modules.user_health.repository import create_health_profile_record
+
+        profile_row = {
+            "id": 2001,
+            "user_id": 1001,
+            "gender": "F",
+            "birth_date": "1990-01-01",
+            "height": "165.5",
+            "weight": "55.0",
+            "medical_history": ["hypertension"],
+            "allergy_history": None,
+            "family_history": {"items": ["diabetes"]},
+            "symptoms": {"items": ["fatigue"]},
+        }
+
+        class Result:
+            def mappings(self):
+                return self
+
+            def one(self):
+                return profile_row
 
         class FakeSession:
             def __init__(self):
-                self.added = None
-                self.flush_called = False
+                self.statements = []
                 self.commit_called = False
                 self.rollback_called = False
 
-            def add(self, value):
-                self.added = value
-
-            async def flush(self):
-                self.flush_called = True
+            async def execute(self, statement):
+                self.statements.append(statement)
+                return Result()
 
             async def commit(self):
                 self.commit_called = True
@@ -82,8 +98,6 @@ class HealthProfileRepositoryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertIsInstance(profile, HealthProfile)
-        self.assertIs(session.added, profile)
         self.assertEqual(profile.user_id, 1001)
         self.assertEqual(profile.gender, "F")
         self.assertEqual(profile.birth_date, "1990-01-01")
@@ -93,7 +107,17 @@ class HealthProfileRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(profile.allergy_history)
         self.assertEqual(profile.family_history, {"items": ["diabetes"]})
         self.assertEqual(profile.symptoms, {"items": ["fatigue"]})
-        self.assertTrue(session.flush_called)
+        self.assertEqual(len(session.statements), 1)
+        statement = session.statements[0]
+        self.assertIn(
+            "r4_member_legacy_health_profile_create_v1",
+            str(statement),
+        )
+        parameters = statement.compile().params
+        self.assertEqual(parameters["actor_user_id"], 1001)
+        self.assertEqual(parameters["target_user_id"], 1001)
+        self.assertEqual(parameters["medical_history"], '["hypertension"]')
+        self.assertIsNone(parameters["allergy_history"])
         self.assertFalse(session.commit_called)
         self.assertFalse(session.rollback_called)
 

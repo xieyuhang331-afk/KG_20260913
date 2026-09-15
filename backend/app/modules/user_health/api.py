@@ -23,7 +23,7 @@ from app.core.database import (
 )
 from app.core.permissions import ensure_can_access_own_user_resource, ensure_is_member
 from app.core.responses import ok_response
-from app.core.security import CurrentUser, get_current_user, get_current_user_from_jwt
+from app.core.security import CurrentUser, get_current_user_from_jwt
 from app.core.接口合同 import error_response
 from app.modules.assessment_readiness.repository import AssessmentReadinessRepository
 from app.modules.assessment_readiness.schemas import AssessmentReadinessDTO
@@ -92,7 +92,73 @@ from app.modules.user_health.service import (
     transition_formal_health_fact_state,
 )
 
-router = APIRouter(prefix="/api/v1/users", tags=["user_health"])
+
+_R4_CURRENTNESS_HTTP = {
+    ("GET", "/api/v1/users/me/detection-reports"): (
+        403,
+        "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+    ),
+    ("GET", "/api/v1/users/me/detection-reports/{report_id}"): (
+        403,
+        "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+    ),
+    ("GET", "/api/v1/users/me/health-indicators"): (409, "HEALTH_DATA_UNAVAILABLE"),
+    ("GET", "/api/v1/users/me/health-indicators/latest"): (
+        409,
+        "HEALTH_DATA_UNAVAILABLE",
+    ),
+    ("GET", "/api/v1/users/me/health-profile"): (409, "CONFLICT"),
+    ("PUT", "/api/v1/users/me/health-profile"): (409, "CONFLICT"),
+    ("POST", "/api/v1/users/{user_id}/health-profile"): (404, "USER_NOT_FOUND"),
+    ("GET", "/api/v1/users/{user_id}/health-profile"): (404, "USER_NOT_FOUND"),
+    ("POST", "/api/v1/users/{user_id}/health-indicators"): (409, "USER_INACTIVE"),
+    ("GET", "/api/v1/users/{user_id}/health-indicators"): (404, "USER_NOT_FOUND"),
+    ("GET", "/api/v1/users/{user_id}/health-indicators/latest"): (
+        404,
+        "USER_NOT_FOUND",
+    ),
+}
+
+
+class LegacyUserHealthRoute(APIRoute):
+    """Translate only known persistence failures for the 11 compatibility routes."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            try:
+                return await original(request)
+            except UserHealthRepositoryError as exc:
+                if exc.args == ("MEMBER_HEALTH_CURRENTNESS_INVALID",):
+                    mapping = _R4_CURRENTNESS_HTTP.get(
+                        (request.method, self.path_format)
+                    )
+                    if mapping is None:
+                        raise
+                    status, code = mapping
+                    return error_response(request, status, code)
+                if exc.args == ("MEMBER_HEALTH_SCOPE_FORBIDDEN",):
+                    return error_response(request, 403, "FORBIDDEN")
+                if exc.args == ("HEALTH_PROFILE_REQUIRED",):
+                    return error_response(request, 409, "HEALTH_PROFILE_REQUIRED")
+                if exc.args == ("DEPENDENCY_UNAVAILABLE",):
+                    return error_response(
+                        request,
+                        503,
+                        "DEPENDENCY_UNAVAILABLE",
+                        retryable=True,
+                    )
+                raise
+
+        return handler
+
+
+router = APIRouter(
+    prefix="/api/v1/users",
+    tags=["user_health"],
+    route_class=LegacyUserHealthRoute,
+)
 
 
 @router.get("/me/detection-reports")
