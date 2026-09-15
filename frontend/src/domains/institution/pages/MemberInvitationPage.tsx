@@ -157,7 +157,9 @@ export function MemberInvitationPage() {
         <div>
           <p className="text-xs font-semibold tracking-wide text-teal-700">客户服务 / 受控邀约</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">客户服务邀约</h1>
-          <p className="mt-2 text-sm text-slate-500">邀请本人或代办长者建立本机构健康管理服务关系，不代表会员购买或权益开通。</p>
+          <p className="mt-2 text-sm text-slate-500">
+            邀请本人或代办长者建立本机构健康管理服务关系，不代表会员购买或权益开通。
+          </p>
         </div>
         <button
           className={secondaryButtonClassName}
