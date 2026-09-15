@@ -222,6 +222,85 @@ def test_C2_2_R01_R03_自定义Route未知异常统一为安全500(
     assert "vendor" not in response.text and "credential" not in response.text
 
 
+def test_P0_03_PrivateFile未知异常记录安全关联上下文且不泄漏(monkeypatch) -> None:
+    from app.core import logging as request_logging
+    from app.core.middleware import add_request_middleware
+    from app.core.接口合同 import safe_log_error_code
+
+    events: list[dict[str, object]] = []
+    sensitive_markers = (
+        "".join(("synthetic", "-sql", "-detail")),
+        "".join(("synthetic", "-database", "-url")),
+        "".join(("synthetic", "-credential")),
+        "".join(("synthetic", "-phone", "-text")),
+        "".join(("synthetic", "-request", "-parameter")),
+    )
+
+    def capture_event(**event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(request_logging, "emit_request_event", capture_event)
+
+    async def failed_endpoint(file_id: str) -> None:
+        del file_id
+        raise RuntimeError("|".join(sensitive_markers))
+
+    app = FastAPI()
+    install_error_contract(app)
+    path = "/api/v1/private-files/{file_id}/metadata"
+    app.router.add_api_route(
+        path,
+        failed_endpoint,
+        methods=["GET"],
+        route_class_override=_PrivateFileRoute,
+    )
+    add_request_middleware(app)
+
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/v1/private-files/file-safe/metadata",
+        headers={"X-Request-ID": REQUEST_ID},
+    )
+
+    assert response.status_code == 500, "P003_PUBLIC_STATUS_CHANGED"
+    assert response.json() == {
+        "code": "INTERNAL_ERROR",
+        "message": "request rejected",
+        "request_id": REQUEST_ID,
+        "retryable": False,
+        "field_errors": [],
+    }
+    assert response.headers["x-request-id"] == REQUEST_ID
+    assert response.headers["cache-control"] == "no-store, private, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
+    assert len(events) == 1, "P003_REQUEST_EVENT_NOT_UNIQUE"
+    event = events[0]
+    assert event == {
+        "request_id": REQUEST_ID,
+        "method": "GET",
+        "route_template": path,
+        "status_code": 500,
+        "duration_ms": event["duration_ms"],
+        "error_code": "PRIVATE_FILE_ROUTE_UNEXPECTED",
+        "retryable": False,
+    }
+    assert type(event["duration_ms"]) is int and event["duration_ms"] >= 0
+    event_is_safe = all(marker not in repr(event) for marker in sensitive_markers)
+    response_is_safe = all(marker not in response.text for marker in sensitive_markers)
+    safe_filter_contract = (
+        safe_log_error_code("PRIVATE_FILE_ROUTE_UNEXPECTED")
+        == "PRIVATE_FILE_ROUTE_UNEXPECTED"
+        and safe_log_error_code("INTERNAL_ERROR") == "INTERNAL_ERROR"
+        and safe_log_error_code("PRIVATE_FILE_ROUTE_UNEXPECTED_EXTRA") is None
+        and all(safe_log_error_code(marker) is None for marker in sensitive_markers)
+        and safe_log_error_code(None) is None
+        and safe_log_error_code(500) is None
+        and safe_log_error_code(object()) is None
+    )
+    assert event_is_safe is True, "P003_SENSITIVE_SENTINEL_IN_EVENT"
+    assert response_is_safe is True, "P003_SENSITIVE_SENTINEL_IN_RESPONSE"
+    assert safe_filter_contract is True, "P003_LOG_CATEGORY_FILTER_WIDENED"
+
+
 def _schema(path: str, method: str, statuses: tuple[str, ...]) -> dict[str, object]:
     return {
         "paths": {
