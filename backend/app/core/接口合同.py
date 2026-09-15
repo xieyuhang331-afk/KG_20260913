@@ -94,7 +94,7 @@ _RETRYABLE_ERRORS = frozenset({
 def safe_log_error_code(value: object) -> str | None:
     if type(value) is str and value in {
         *_HTTP_ERRORS.values(), *_DEFAULT_ERRORS.values(), "REQUEST_REJECTED",
-        "REQUEST_CANCELLED", "REQUEST_STREAM_FAILED",
+        "REQUEST_CANCELLED", "REQUEST_STREAM_FAILED", "PRIVATE_FILE_ROUTE_UNEXPECTED",
     }:
         return value
     return None
