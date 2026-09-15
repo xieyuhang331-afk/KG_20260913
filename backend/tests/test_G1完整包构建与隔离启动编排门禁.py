@@ -23,6 +23,7 @@ EXPECTED_ASSETS = {
     "合成业务初始化器接口_V1.json",
     "请先阅读_完整APP联调范围与启动说明.md",
     "故障码与排查说明_V2.md",
+    "初始化G2首个平台审核账号.ps1",
 }
 
 
@@ -317,7 +318,12 @@ def test_G1_运行边界不修改业务MigrationWorkflow或锁() -> None:
         ["git", "status", "--porcelain=v1", "-z"], cwd=REPOSITORY_ROOT, capture_output=True, check=True
     ).stdout
     paths = [item[3:].decode("utf-8") for item in raw.split(b"\0") if item]
-    approved_exact = {"backend/tests/test_一期认证受限读取边界合同.py"}
+    approved_exact = {
+        "backend/scripts/初始化G2首个平台审核账号.py",
+        "backend/tests/integration/test_G2首个平台审核账号Fresh数据库闭环.py",
+        "backend/tests/test_G2首个平台审核账号安全引导合同.py",
+        "backend/tests/test_一期认证受限读取边界合同.py",
+    }
     assert all(
         path.startswith(("本机联调交付/", "backend/tests/test_G1")) or path in approved_exact
         for path in paths
