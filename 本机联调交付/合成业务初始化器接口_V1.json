@@ -1,0 +1,1 @@
+{"schema_version":1,"implementation":"NOT_IMPLEMENTED","mode":"local_ephemeral","accepted_inputs":["requested_capabilities"],"forbidden_inputs":["credential","database_url","pii","sql","role_ddl"],"stable_code":"KG_LOCAL_BUSINESS_FIXTURE_NOT_IMPLEMENTED"}

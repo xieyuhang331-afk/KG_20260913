@@ -1,0 +1,46 @@
+name: kg-complete-local
+services:
+  database:
+    image: timescale/timescaledb:2.28.3-pg16@sha256:61f891691050da6032023c01ea885730eeeba06b7c17b403e7d0b9c49c37dfe9
+    container_name: ${KG_LOCAL_DATABASE_CONTAINER}
+    environment: { POSTGRES_PASSWORD: "${KG_LOCAL_POSTGRES_PASSWORD}" }
+    ports: ["127.0.0.1:${KG_LOCAL_DATABASE_PORT}:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"], interval: 2s, timeout: 3s, retries: 30 }
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+    volumes: ["database-data:/var/lib/postgresql/data"]
+  rabbitmq:
+    image: rabbitmq:3-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
+    container_name: ${KG_LOCAL_RABBITMQ_CONTAINER}
+    environment: { RABBITMQ_DEFAULT_USER: "${KG_LOCAL_RABBITMQ_USER}", RABBITMQ_DEFAULT_PASS: "${KG_LOCAL_RABBITMQ_PASSWORD}" }
+    ports: ["127.0.0.1:${KG_LOCAL_RABBITMQ_PORT}:5672"]
+    healthcheck: { test: ["CMD", "su-exec", "rabbitmq", "rabbitmq-diagnostics", "-q", "ping"], interval: 2s, timeout: 5s, retries: 30 }
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+  clamav:
+    image: clamav/clamav@sha256:f156095071757e3838caa50265d65e36cdf7f934a27aacf851ea6d2fadbe8200
+    container_name: ${KG_LOCAL_CLAMD_CONTAINER}
+    entrypoint: ["/usr/sbin/clamd"]
+    command: ["--config-file=/g1-config/clamd.conf", "--foreground"]
+    ports: ["127.0.0.1:${KG_LOCAL_CLAMD_PORT}:3310"]
+    healthcheck: { test: ["CMD-SHELL", "printf 'zPING\\0' | nc -w 1 127.0.0.1 3310 | grep -q PONG"], interval: 2s, timeout: 1s, retries: 15, start_period: 2s }
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+    volumes:
+      - "clamav-config:/g1-config:ro"
+      - "clamav-signatures:/var/lib/clamav:ro"
+volumes:
+  database-data:
+    name: ${KG_LOCAL_DATABASE_VOLUME}
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+  rabbitmq-data:
+    name: ${KG_LOCAL_RABBITMQ_VOLUME}
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+  clamav-signatures:
+    name: ${KG_LOCAL_CLAMD_SIGNATURE_VOLUME}
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+  clamav-config:
+    name: ${KG_LOCAL_CLAMD_CONFIG_VOLUME}
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
+networks:
+  default:
+    name: ${KG_LOCAL_NETWORK}
+    labels: { kg.g1.delivery: "${KG_LOCAL_RUN_ID}" }
