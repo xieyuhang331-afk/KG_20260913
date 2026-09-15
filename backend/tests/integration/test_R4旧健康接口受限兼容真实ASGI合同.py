@@ -304,7 +304,7 @@ def test_R4档案锁按用户隔离且等待后重新校验currentness(
         admin_url = os.environ["KG_TEST_MIGRATION_DATABASE_URL"].replace(
             "postgresql+asyncpg://", "postgresql://", 1
         )
-        application_url = os.environ["KG_TEST_APPLICATION_DATABASE_URL"].replace(
+        application_url = os.environ["KG_TEST_DATABASE_URL"].replace(
             "postgresql+asyncpg://", "postgresql://", 1
         )
         holder = await asyncpg.connect(admin_url)
