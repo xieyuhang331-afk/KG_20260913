@@ -90,7 +90,10 @@ class _PrivateFileRoute(APIRoute):
                     request, exc.status_code, code, headers=exc.headers,
                 )
             except Exception:
-                return _private_error_response(request, 500, "INTERNAL_ERROR")
+                response = _private_error_response(request, 500, "INTERNAL_ERROR")
+                request.state.error_code = "PRIVATE_FILE_ROUTE_UNEXPECTED"
+                request.state.error_retryable = False
+                return response
 
         return private_route_handler
 
