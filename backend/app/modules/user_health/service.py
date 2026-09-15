@@ -31,6 +31,7 @@ from app.modules.health_fact.domain import (
     verify_payload,
 )
 from app.modules.user_health.repository import (
+    UserHealthRepositoryError,
     create_health_indicator_records,
     create_health_profile_record,
     get_health_profile_by_user_id,
@@ -1179,6 +1180,8 @@ async def list_member_self_health_indicators(
         raise
     except HTTPException:
         raise
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
     visible = rows[:limit]
@@ -1201,6 +1204,8 @@ async def get_member_self_latest_health_indicators(
     except asyncio.CancelledError:
         raise
     except HTTPException:
+        raise
+    except UserHealthRepositoryError:
         raise
     except Exception:
         raise HTTPException(status_code=503, detail="HEALTH_DATA_UNAVAILABLE") from None
@@ -1322,6 +1327,8 @@ async def list_member_self_detection_reports_service(
         raise
     except HTTPException:
         raise
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
     return MemberSelfDetectionReportPage(
@@ -1351,6 +1358,8 @@ async def get_member_self_detection_report_service(
         raise
     except ValidationError:
         raise HTTPException(status_code=409, detail="DETECTION_REPORT_CONTENT_INCONSISTENT") from None
+    except UserHealthRepositoryError:
+        raise
     except Exception:
         raise HTTPException(status_code=503, detail="DETECTION_REPORT_UNAVAILABLE") from None
     return MemberSelfDetectionReportDetail(

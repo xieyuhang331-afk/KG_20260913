@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Requ
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
 
 from app.core.database import (
     get_db_session,
@@ -94,6 +93,33 @@ from app.modules.user_health.service import (
 )
 
 
+_R4_CURRENTNESS_HTTP = {
+    ("GET", "/api/v1/users/me/detection-reports"): (
+        403,
+        "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+    ),
+    ("GET", "/api/v1/users/me/detection-reports/{report_id}"): (
+        403,
+        "MEMBER_DETECTION_REPORT_ACCESS_DENIED",
+    ),
+    ("GET", "/api/v1/users/me/health-indicators"): (409, "HEALTH_DATA_UNAVAILABLE"),
+    ("GET", "/api/v1/users/me/health-indicators/latest"): (
+        409,
+        "HEALTH_DATA_UNAVAILABLE",
+    ),
+    ("GET", "/api/v1/users/me/health-profile"): (409, "CONFLICT"),
+    ("PUT", "/api/v1/users/me/health-profile"): (409, "CONFLICT"),
+    ("POST", "/api/v1/users/{user_id}/health-profile"): (404, "USER_NOT_FOUND"),
+    ("GET", "/api/v1/users/{user_id}/health-profile"): (404, "USER_NOT_FOUND"),
+    ("POST", "/api/v1/users/{user_id}/health-indicators"): (409, "USER_INACTIVE"),
+    ("GET", "/api/v1/users/{user_id}/health-indicators"): (404, "USER_NOT_FOUND"),
+    ("GET", "/api/v1/users/{user_id}/health-indicators/latest"): (
+        404,
+        "USER_NOT_FOUND",
+    ),
+}
+
+
 class LegacyUserHealthRoute(APIRoute):
     """Translate only known persistence failures for the 11 compatibility routes."""
 
@@ -104,6 +130,18 @@ class LegacyUserHealthRoute(APIRoute):
             try:
                 return await original(request)
             except UserHealthRepositoryError as exc:
+                if exc.args == ("MEMBER_HEALTH_CURRENTNESS_INVALID",):
+                    mapping = _R4_CURRENTNESS_HTTP.get(
+                        (request.method, self.path_format)
+                    )
+                    if mapping is None:
+                        raise
+                    status, code = mapping
+                    return error_response(request, status, code)
+                if exc.args == ("MEMBER_HEALTH_SCOPE_FORBIDDEN",):
+                    return error_response(request, 403, "FORBIDDEN")
+                if exc.args == ("HEALTH_PROFILE_REQUIRED",):
+                    return error_response(request, 409, "HEALTH_PROFILE_REQUIRED")
                 if exc.args == ("DEPENDENCY_UNAVAILABLE",):
                     return error_response(
                         request,
@@ -112,13 +150,6 @@ class LegacyUserHealthRoute(APIRoute):
                         retryable=True,
                     )
                 raise
-            except DBAPIError:
-                return error_response(
-                    request,
-                    503,
-                    "DEPENDENCY_UNAVAILABLE",
-                    retryable=True,
-                )
 
         return handler
 

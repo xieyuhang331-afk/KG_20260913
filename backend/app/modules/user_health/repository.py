@@ -39,9 +39,9 @@ _DATABASE_ERRORS = {
 }
 
 _R4_LEGACY_ERRORS = {
-    "R4_MEMBER_HEALTH_CURRENTNESS_INVALID": "MEMBER_HEALTH_CURRENTNESS_INVALID",
-    "R4_MEMBER_HEALTH_SCOPE_FORBIDDEN": "MEMBER_HEALTH_SCOPE_FORBIDDEN",
-    "R4_HEALTH_PROFILE_REQUIRED": "HEALTH_PROFILE_REQUIRED",
+    ("P0001", "R4_MEMBER_HEALTH_CURRENTNESS_INVALID"): "MEMBER_HEALTH_CURRENTNESS_INVALID",
+    ("42501", "R4_MEMBER_HEALTH_SCOPE_FORBIDDEN"): "MEMBER_HEALTH_SCOPE_FORBIDDEN",
+    ("P0001", "R4_HEALTH_PROFILE_REQUIRED"): "HEALTH_PROFILE_REQUIRED",
 }
 
 
@@ -93,8 +93,13 @@ async def _execute_r4_legacy(session, statement):
         )
         if driver_error is None:
             raise
-        if driver_error.sqlstate == "P0001" and len(driver_error.args) == 1:
-            code = _R4_LEGACY_ERRORS.get(driver_error.args[0])
+        if (
+            len(driver_error.args) == 1
+            and type(driver_error.args[0]) is str
+        ):
+            code = _R4_LEGACY_ERRORS.get(
+                (driver_error.sqlstate, driver_error.args[0])
+            )
             if code is not None:
                 raise UserHealthRepositoryError(code) from None
         if driver_error.sqlstate in {"42501", "42883"}:
