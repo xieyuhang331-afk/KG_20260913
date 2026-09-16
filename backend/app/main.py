@@ -16,6 +16,7 @@ from app.core.认证配置校验 import validated_auth_settings
 from app.core.认证限流 import AuthRateLimiter
 from app.modules.auth.api import auth_router
 from app.modules.auth.api import router as user_auth_router
+from app.modules.assessment_readiness.api import router as assessment_readiness_router
 from app.modules.health_analysis.api import (
     internal_router as health_analysis_internal_router,
 )
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(platform_router)
     app.include_router(onboarding_router)
     app.include_router(private_file_router)
+    app.include_router(assessment_readiness_router)
     app.include_router(therapist_institution_router)
     app.include_router(therapist_router)
     app.include_router(therapist_platform_router)

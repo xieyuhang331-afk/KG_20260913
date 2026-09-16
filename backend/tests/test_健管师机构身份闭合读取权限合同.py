@@ -300,6 +300,7 @@ def test_G02_唯一新修订与历史Hash():
             "20260914_0046_健管师完整性触发器执行权限收敛.py",
             "20260914_0047_R4旧健康接口受限兼容边界.py",
             "20260915_0048_平台实名审核Reviewer当前性受限读取.py",
+            "20260916_0049_评估就绪策略治理闭合边界.py",
         }:
             continue
         value = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")

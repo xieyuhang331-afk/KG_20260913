@@ -137,7 +137,7 @@ def test_C21_R02_全部操作显式分类且只七项公开(access_settings):
                 assert len(operation["security"]) == 1
                 assert operation["security"][0]["AccessBearer"] == []
     assert public == _PUBLIC
-    assert count == 255
+    assert count == 265
 
 
 @pytest.mark.parametrize(("method", "path", "extra"), [

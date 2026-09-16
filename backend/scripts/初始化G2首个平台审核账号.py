@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from app.modules.auth.service import hash_password
 
 BOOTSTRAP_SCHEMA_VERSION = 1
-EXPECTED_MIGRATION_HEAD = "20260915_0048"
+EXPECTED_MIGRATION_HEAD = "20260916_0049"
 PERSISTENT_DATABASE_OBJECTS_CREATED: tuple[str, ...] = ()
 _RUN_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _SENTINEL_PATTERN = re.compile(r"^[0-9a-f]{32}$")

@@ -210,7 +210,7 @@ def test_0044到0046往返只收敛PUBLIC且阻断Reader临时绑定(pg_database
     config = _alembic_config()
     assert pg_database.fetch_value(
         "SELECT version_num FROM alembic_version"
-    ) == "20260915_0048"
+    ) == "20260916_0049"
     post_currentness = _execute_matrix(pg_database, _CURRENTNESS_FUNCTIONS)
     assert not any(_execute_matrix(pg_database, _TARGET_FUNCTIONS).values())
     assert _unexpected_persistent_bindings(pg_database) == []
@@ -245,8 +245,8 @@ def test_0044到0046往返只收敛PUBLIC且阻断Reader临时绑定(pg_database
     finally:
         if pg_database.fetch_value(
             "SELECT version_num FROM alembic_version"
-        ) != "20260915_0048":
-            command.upgrade(config, "20260915_0048")
+        ) != "20260916_0049":
+            command.upgrade(config, "20260916_0049")
 
 
 @pytest.mark.asyncio
