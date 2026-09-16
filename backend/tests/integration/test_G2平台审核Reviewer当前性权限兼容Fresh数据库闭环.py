@@ -229,7 +229,7 @@ def test_0048降级只撤销本模块函数且可重升级(
     ) == before
     command.upgrade(config, "head")
     assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == (
-        "20260915_0048"
+        "20260916_0049"
     )
     for signature in (_WRITE_SIGNATURE, _CREDENTIAL_SIGNATURE):
         assert pg_database.fetch_value(

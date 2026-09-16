@@ -3,8 +3,20 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKeyConstraint, LargeBinary, SmallInteger, String, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as UUIDType
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKeyConstraint,
+    LargeBinary,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as UUIDType
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -14,7 +26,21 @@ class AssessmentReadinessPolicyVersionModel(Base):
     __tablename__ = "assessment_readiness_policy_version"
     __table_args__ = (
         UniqueConstraint("version_no", name="uq_assessment_readiness_policy_version_no"),
-        CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED') AND projection_version>=2", name="ck_assessment_readiness_policy_truth"),
+        CheckConstraint(
+            "status IN ('DRAFT','IN_REVIEW','NEEDS_CORRECTION','APPROVED',"
+            "'PUBLISHED','SUSPENDED','RETIRED') AND projection_version>=2 AND ("
+            "(author_user_id IS NULL AND status IN ('DRAFT','PUBLISHED','SUSPENDED','RETIRED')) OR ("
+            "author_user_id IS NOT NULL AND row_version>=1 AND ((status='APPROVED' AND "
+            "NOT professionally_approved AND reviewer_user_id IS NOT NULL AND reviewed_at IS NOT NULL "
+            "AND reviewed_content_digest IS NOT NULL AND reviewed_package_digest IS NOT NULL) OR "
+            "(status IN ('PUBLISHED','SUSPENDED','RETIRED') AND professionally_approved "
+            "AND reviewer_user_id IS NOT NULL AND reviewed_at IS NOT NULL "
+            "AND reviewed_content_digest IS NOT NULL AND reviewed_package_digest IS NOT NULL) OR "
+            "status NOT IN ('APPROVED','PUBLISHED','SUSPENDED','RETIRED')) "
+            "AND (status<>'PUBLISHED' OR (activated_at IS NOT NULL "
+            "AND effective_from=activated_at))))",
+            name="ck_assessment_readiness_policy_truth",
+        ),
         {"schema": "public"},
     )
     policy_version_id: Mapped[UUID] = mapped_column(UUIDType(as_uuid=True), primary_key=True)
@@ -33,6 +59,17 @@ class AssessmentReadinessPolicyVersionModel(Base):
     policy_digest: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     digest_key_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    author_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    reviewer_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    approval_evidence_ref: Mapped[str | None] = mapped_column(String(128))
+    approval_package_digest: Mapped[bytes | None] = mapped_column(LargeBinary)
+    reviewed_content_digest: Mapped[bytes | None] = mapped_column(LargeBinary)
+    reviewed_package_digest: Mapped[bytes | None] = mapped_column(LargeBinary)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    row_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class AssessmentInputAssemblyModel(Base):

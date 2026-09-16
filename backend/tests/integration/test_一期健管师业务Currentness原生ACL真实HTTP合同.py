@@ -368,29 +368,40 @@ def test_正式ReviewWriter本人退出有活动案例保持409且零副作用(
 def test_0042到0043对称往返且无对象残留(pg_database) -> None:
     config = _build_alembic_config(os.environ["KG_TEST_MIGRATION_DATABASE_URL"])
 
-    def object_counts() -> tuple[int, int, int]:
-        return tuple(
-            pg_database.fetch_value(
-                "SELECT count(*) FROM pg_catalog.pg_class c "
-                "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-                "WHERE n.nspname='public' AND c.relkind='" + kind + "'"
+    def object_names() -> dict[str, set[str]]:
+        return {
+            kind: set(
+                pg_database.fetch_column(
+                    "SELECT c.relname FROM pg_catalog.pg_class c "
+                    "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE n.nspname='public' AND c.relkind='" + kind + "'"
+                )
             )
             for kind in ("r", "v", "S")
-        )
+        }
 
-    before = object_counts()
-    command.downgrade(config, "20260911_0042")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"
-    for signature in _SIGNATURES:
-        assert pg_database.fetch_value(
-            "SELECT to_regprocedure('" + signature + "') IS NULL"
-        )
-    assert object_counts() == before
+    before = object_names()
+    try:
+        command.downgrade(config, "20260911_0042")
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260911_0042"
+        for signature in _SIGNATURES:
+            assert pg_database.fetch_value(
+                "SELECT to_regprocedure('" + signature + "') IS NULL"
+            )
+        at_0042 = object_names()
+        assert at_0042["r"] == before["r"]
+        assert at_0042["S"] == before["S"]
+        assert before["v"] - at_0042["v"] == {"readiness_policy_governance_read_v1"}
+        assert at_0042["v"] - before["v"] == set()
 
-    command.upgrade(config, "20260912_0043")
-    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
-    for signature in _SIGNATURES:
-        assert pg_database.fetch_value(
-            "SELECT to_regprocedure('" + signature + "') IS NOT NULL"
-        )
-    assert object_counts() == before
+        command.upgrade(config, "20260912_0043")
+        assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260912_0043"
+        for signature in _SIGNATURES:
+            assert pg_database.fetch_value(
+                "SELECT to_regprocedure('" + signature + "') IS NOT NULL"
+            )
+        assert object_names() == at_0042
+    finally:
+        command.upgrade(config, "head")
+    assert pg_database.fetch_value("SELECT version_num FROM alembic_version") == "20260916_0049"
+    assert object_names() == before

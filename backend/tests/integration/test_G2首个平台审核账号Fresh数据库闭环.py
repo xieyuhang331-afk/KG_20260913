@@ -451,7 +451,7 @@ def verify_offline_environment(backend_root):
     config = Config(str(backend_root / "alembic.ini"))
     config.set_main_option("script_location", str(backend_root / "app" / "migrations"))
     scripts = ScriptDirectory.from_config(config)
-    if scripts.get_heads() != ["20260915_0048"]:
+    if scripts.get_heads() != ["20260916_0049"]:
         raise RuntimeError("KG_G2_MIGRATION_REVISION_GRAPH_INVALID")
 
 
@@ -566,7 +566,7 @@ try:
     heads = scripts.get_heads()
     target = scripts.get_revision("20260914_0047")
     revisions = tuple(scripts.walk_revisions())
-    if heads != ["20260915_0048"] or target is None or not revisions:
+    if heads != ["20260916_0049"] or target is None or not revisions:
         raise RuntimeError("KG_G2_MIGRATION_REVISION_GRAPH_INVALID")
 except BaseException as error:
     exception_type = type(error).__name__
@@ -580,7 +580,7 @@ except BaseException as error:
     sys.exit(87)
 emit({
     "code": "KG_G2_MIGRATION_OFFLINE_PREFLIGHT_PASSED",
-    "head": "20260915_0048",
+    "head": "20260916_0049",
     "status": "PASSED",
     "target": "20260914_0047",
 })
@@ -1016,7 +1016,7 @@ def _run_migration_offline_preflight() -> dict[str, str]:
         pytest.fail("KG_G2_MIGRATION_OFFLINE_PREFLIGHT_FAILED", pytrace=False)
     expected = {
         "code": "KG_G2_MIGRATION_OFFLINE_PREFLIGHT_PASSED",
-        "head": "20260915_0048",
+        "head": "20260916_0049",
         "status": "PASSED",
         "target": "20260914_0047",
     }
@@ -1512,7 +1512,7 @@ def _prepare_private_credential_files(directory: Path, files: tuple[Path, ...]) 
 
 def test_G2_B_Fresh数据库闭环入口存在且不创建持久对象():
     module = _load_runner()
-    assert module.EXPECTED_MIGRATION_HEAD == "20260915_0048"
+    assert module.EXPECTED_MIGRATION_HEAD == "20260916_0049"
     assert module.BOOTSTRAP_SCHEMA_VERSION == 1
     assert module.PERSISTENT_DATABASE_OBJECTS_CREATED == ()
 
@@ -1733,7 +1733,7 @@ def test_G2_B_Migration离线预检必须加载配置Revision图且不执行env_
     result = _run_migration_offline_preflight()
     assert result == {
         "code": "KG_G2_MIGRATION_OFFLINE_PREFLIGHT_PASSED",
-        "head": "20260915_0048",
+        "head": "20260916_0049",
         "status": "PASSED",
         "target": "20260914_0047",
     }
@@ -2713,7 +2713,7 @@ def test_G2_B_Fresh真实数据库并发重放当前性权限与清理闭环(
         "KG_G2_BOOTSTRAP_DATABASE_NAME": task_database,
         "KG_G2_BOOTSTRAP_RUN_ID": run_id,
         "KG_G2_BOOTSTRAP_SENTINEL": "a" * 32,
-        "KG_G2_BOOTSTRAP_MIGRATION_HEAD": "20260915_0048",
+        "KG_G2_BOOTSTRAP_MIGRATION_HEAD": "20260916_0049",
         "KG_G2_BOOTSTRAP_OWNER_DATABASE_URL": migration_url,
         "KG_PRIVATE_FILE_STORAGE_ROOT": str(tmp_path / "private"),
     }.items():
@@ -2836,7 +2836,7 @@ def test_G2_B_Fresh真实数据库并发重放当前性权限与清理闭环(
             scope = module.RuntimeScope(
                 environment="local_ephemeral", database_host="127.0.0.1",
                 database_name=task_database, run_id=run_id, sentinel="a" * 32,
-                migration_head="20260915_0048",
+                migration_head="20260916_0049",
             )
             request, replay = module._load_or_prepare_request(scope)
             assert replay is False
@@ -3100,7 +3100,7 @@ def test_G2_B_Fresh真实数据库并发重放当前性权限与清理闭环(
         )
         _run(prepare_database(), entry_stage="PREPARE_ASYNCIO_RUN")
         _run_isolated_migration("upgrade-head", task_database)
-        _run(verify_migration_state("20260915_0048", objects_present=True))
+        _run(verify_migration_state("20260916_0049", objects_present=True))
         _run(verify_verification_writer_binding())
         request, user_id = _run(verify_database_contract())
 
@@ -3120,7 +3120,7 @@ def test_G2_B_Fresh真实数据库并发重放当前性权限与清理闭环(
         _run_isolated_migration("downgrade-0047", task_database)
         _run(verify_migration_state("20260914_0047", objects_present=False))
         _run_isolated_migration("reupgrade-head", task_database)
-        _run(verify_migration_state("20260915_0048", objects_present=True))
+        _run(verify_migration_state("20260916_0049", objects_present=True))
     except BaseException as error:
         primary = error
     finally:
