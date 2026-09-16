@@ -154,6 +154,70 @@ _G2_CHILD_SYSTEM_ENVIRONMENT = (
     "TMPDIR",
     "WINDIR",
 )
+
+
+def _normalized_runtime_path(value: str | Path, *, platform_name: str) -> str:
+    normalized = str(value).replace("\\", "/").rstrip("/")
+    return normalized.casefold() if platform_name.startswith("win") else normalized
+
+
+def _python_runtime_identity_is_approved(
+    *,
+    executable_path: str | Path,
+    resolved_executable_path: str | Path,
+    version: tuple[int, int, int],
+    app_origin: str | Path,
+    test_origin: str | Path,
+    backend_root: str | Path,
+    environment_prefix: str | Path,
+    platform_name: str,
+) -> bool:
+    def normalize(value: str | Path) -> str:
+        return _normalized_runtime_path(value, platform_name=platform_name)
+
+    backend = normalize(backend_root)
+    prefix = normalize(environment_prefix)
+    executable = normalize(executable_path)
+    resolved_name = normalize(resolved_executable_path).rsplit("/", 1)[-1]
+    approved_entrypoints = {
+        f"{prefix}/bin/python",
+        f"{prefix}/scripts/python.exe",
+    }
+    approved_resolved_names = {"python", "python.exe", "python3.11"}
+    return (
+        version == (3, 11, 16)
+        and prefix.rsplit("/", 1)[-1] == ".venv"
+        and executable in approved_entrypoints
+        and resolved_name in approved_resolved_names
+        and normalize(app_origin).startswith(f"{backend}/app/")
+        and normalize(test_origin).startswith(f"{backend}/tests/")
+    )
+
+
+def _migration_role_aliases_are_approved(role_values: dict[str, str]) -> bool:
+    approved_alias_groups = (
+        frozenset({"KG_DATABASE_USER", "KG_TEST_APPLICATION_ROLE"}),
+        frozenset({"KG_READONLY_ROLE", "KG_TEST_READONLY_ROLE"}),
+    )
+    if any(not group <= role_values.keys() for group in approved_alias_groups):
+        return False
+    if any(
+        len({role_values[name] for name in group}) != 1
+        for group in approved_alias_groups
+    ):
+        return False
+    semantic_values: dict[frozenset[str], str] = {}
+    for name, value in role_values.items():
+        group = next(
+            (candidate for candidate in approved_alias_groups if name in candidate),
+            frozenset({name}),
+        )
+        semantic_values[group] = value
+    return all(_SAFE_ROLE.fullmatch(value) for value in role_values.values()) and len(
+        set(semantic_values.values())
+    ) == len(semantic_values)
+
+
 _G2_MIGRATION_DIAGNOSTIC_SUPPORT = r"""
 import ast
 import hashlib
@@ -344,8 +408,25 @@ def verify_offline_environment(backend_root):
     ):
         raise RuntimeError("KG_G2_MIGRATION_MANIFEST_INVALID")
     role_values = {name: os.environ[name] for name in roles}
+    role_values["KG_TEST_APPLICATION_ROLE"] = os.environ["KG_TEST_APPLICATION_ROLE"]
     owner_role = role_values["KG_TEST_MIGRATION_ROLE"]
-    if len(set(role_values.values())) != len(role_values) or role_values["KG_DATABASE_USER"] == owner_role:
+    approved_alias_groups = (
+        frozenset({"KG_DATABASE_USER", "KG_TEST_APPLICATION_ROLE"}),
+        frozenset({"KG_READONLY_ROLE", "KG_TEST_READONLY_ROLE"}),
+    )
+    semantic_role_values = {}
+    for name, value in role_values.items():
+        group = next(
+            (candidate for candidate in approved_alias_groups if name in candidate),
+            frozenset({name}),
+        )
+        semantic_role_values[group] = value
+    if (
+        role_values["KG_DATABASE_USER"] != role_values["KG_TEST_APPLICATION_ROLE"]
+        or role_values["KG_READONLY_ROLE"] != role_values["KG_TEST_READONLY_ROLE"]
+        or len(set(semantic_role_values.values())) != len(semantic_role_values)
+        or role_values["KG_DATABASE_USER"] == owner_role
+    ):
         raise RuntimeError("KG_G2_MIGRATION_RUNTIME_INVALID")
     migration_url = make_url(os.environ["KG_DATABASE_URL"])
     task_database = os.environ["KG_G2_CHILD_TASK_DATABASE"]
@@ -1166,7 +1247,8 @@ def _migration_child_environment(
         if not _SAFE_ROLE.fullmatch(value):
             raise ValueError("KG_G2_MIGRATION_RUNTIME_INVALID")
         role_values[name] = value
-    if len(set(role_values.values())) != len(role_values):
+    role_values["KG_TEST_APPLICATION_ROLE"] = os.environ["KG_TEST_APPLICATION_ROLE"]
+    if not _migration_role_aliases_are_approved(role_values):
         raise ValueError("KG_G2_MIGRATION_RUNTIME_INVALID")
 
     migration_target = make_url(os.environ["KG_TEST_MIGRATION_DATABASE_URL"])
@@ -1589,13 +1671,62 @@ def test_G2_B_pytest主进程app与测试模块必须来自当前批准worktree(
     app_spec = importlib.util.find_spec("app")
     assert app_spec is not None
     assert app_spec.origin is not None
-    assert Path(app_spec.origin).resolve(strict=True).is_relative_to(BACKEND_ROOT)
-    assert Path(__file__).resolve(strict=True).is_relative_to(BACKEND_ROOT)
-    assert sys.version_info[:3] == (3, 11, 16)
-    assert Path(sys.executable).resolve(strict=True).name.lower() in {
-        "python",
-        "python.exe",
+    assert _python_runtime_identity_is_approved(
+        executable_path=sys.executable,
+        resolved_executable_path=Path(sys.executable).resolve(strict=True),
+        version=sys.version_info[:3],
+        app_origin=Path(app_spec.origin).resolve(strict=True),
+        test_origin=Path(__file__).resolve(strict=True),
+        backend_root=BACKEND_ROOT,
+        environment_prefix=sys.prefix,
+        platform_name=sys.platform,
+    )
+
+
+def test_G2_B_Python身份合同兼容正式Linux与Windows且拒绝错误解释器和checkout():
+    backend = "C:/approved/backend"
+    common = {
+        "version": (3, 11, 16),
+        "app_origin": f"{backend}/app/__init__.py",
+        "test_origin": f"{backend}/tests/integration/test_g2.py",
+        "backend_root": backend,
+        "environment_prefix": f"{backend}/.venv",
+        "platform_name": "linux",
     }
+    assert _python_runtime_identity_is_approved(
+        executable_path=f"{backend}/.venv/bin/python",
+        resolved_executable_path="/opt/hostedtoolcache/Python/3.11.16/x64/bin/python3.11",
+        **common,
+    )
+    assert _python_runtime_identity_is_approved(
+        executable_path=f"{backend}\\.venv\\Scripts\\python.exe",
+        resolved_executable_path="C:/Python311/python.exe",
+        **{
+            **common,
+            "app_origin": "C:/Approved/backend/app/__init__.py",
+            "platform_name": "win32",
+        },
+    )
+    assert not _python_runtime_identity_is_approved(
+        executable_path="C:/outside/python.exe",
+        resolved_executable_path="C:/Python311/python.exe",
+        **common,
+    )
+    assert not _python_runtime_identity_is_approved(
+        executable_path=f"{backend}/.venv/bin/python",
+        resolved_executable_path="/opt/python3.12",
+        **common,
+    )
+    assert not _python_runtime_identity_is_approved(
+        executable_path=f"{backend}/.venv/bin/python",
+        resolved_executable_path="/opt/python3.11",
+        **{**common, "app_origin": "C:/wrong/app/__init__.py"},
+    )
+    assert not _python_runtime_identity_is_approved(
+        executable_path=f"{backend}/.venv/bin/python",
+        resolved_executable_path="/opt/python3.11",
+        **{**common, "app_origin": "C:/Approved/backend/app/__init__.py"},
+    )
 
 
 def test_G2_B_Migration离线预检必须加载配置Revision图且不执行env_migrations(tmp_path):
@@ -1786,15 +1917,50 @@ def test_G2_B_Alembic连接owner与41Revision业务授予角色必须分离():
     )
 
 
+def test_G2_B_Migration正式Workflow应用角色别名精确闭合且其他职责保持隔离():
+    workflow = (
+        BACKEND_ROOT.parent / ".github" / "workflows" / "p2-foundation-ci.yml"
+    ).read_text(encoding="utf-8")
+    assert '"KG_DATABASE_USER": roles["KG_TEST_APPLICATION_ROLE"]' in workflow
+    roles = {
+        "KG_DATABASE_USER": "kg_ci_app_synthetic",
+        "KG_TEST_APPLICATION_ROLE": "kg_ci_app_synthetic",
+        "KG_TEST_MIGRATION_ROLE": "kg_ci_migration_synthetic",
+        "KG_READONLY_ROLE": "kg_ci_readonly_synthetic",
+        "KG_TEST_READONLY_ROLE": "kg_ci_readonly_synthetic",
+        "KG_TEST_VERIFICATION_WRITER_ROLE": "kg_ci_writer_synthetic",
+        "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE": "kg_ci_review_synthetic",
+    }
+    assert _migration_role_aliases_are_approved(roles)
+    assert not _migration_role_aliases_are_approved(
+        {**roles, "KG_DATABASE_USER": "kg_ci_other_synthetic"}
+    )
+    assert not _migration_role_aliases_are_approved(
+        {**roles, "KG_TEST_MIGRATION_ROLE": roles["KG_DATABASE_USER"]}
+    )
+    assert not _migration_role_aliases_are_approved(
+        {
+            **roles,
+            "KG_TEST_MEMBER_IDENTITY_REVIEW_WRITER_ROLE": roles[
+                "KG_TEST_VERIFICATION_WRITER_ROLE"
+            ],
+        }
+    )
+
+
 def test_G2_B_Migration最终子环境必须区分owner覆盖与业务manifest角色(monkeypatch):
     roles, urls, keys = _migration_purpose_names()
     role_values = {
         name: f"r{index:02d}_{hashlib.sha256(name.encode()).hexdigest()[:12]}"
         for index, name in enumerate(roles)
     }
+    application_role = "kg_ci_app_synthetic"
+    role_values["KG_DATABASE_USER"] = application_role
+    role_values["KG_READONLY_ROLE"] = role_values["KG_TEST_READONLY_ROLE"]
     role_values["KG_TEST_MIGRATION_ROLE"] = "postgres"
     for name, value in role_values.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("KG_TEST_APPLICATION_ROLE", application_role)
     task_database = "kg_it_0123456789abcdef"
     for name in urls:
         username = role_values[_migration_role_name_for_url(name)]
